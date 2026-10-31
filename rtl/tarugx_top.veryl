@@ -23,12 +23,12 @@ module tarugx_top (
     tx_data      : output logic<256>,
     led_status   : output logic<4>  ,
     uart_tx_o    : output logic     ,
+    display_ctrl : output logic<32> ,
+    display_color: output logic<32> ,
 ) {
     var framing_error: logic    ;
     var unsupported  : logic    ;
     var malformed    : logic    ;
-    var display_ctrl : logic<32>;
-    var display_color: logic<32>;
     var display_mode : logic<32>;
     var fb_base      : logic<32>;
     var fb_stride    : logic<32>;

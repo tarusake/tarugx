@@ -1,0 +1,37 @@
+#[test(video_timing_full_frame)]
+module video_timing_full_frame {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+    var x          : logic<10>;
+    var y          : logic<10>;
+    var de         : logic    ;
+    var hsync      : logic    ;
+    var vsync      : logic    ;
+    var frame_start: logic    ;
+    inst dut: video_timing (
+        clk             ,
+        rst_n      : rst,
+        x               ,
+        y               ,
+        de              ,
+        hsync           ,
+        vsync           ,
+        frame_start     ,
+    );
+    initial {
+        rst.assert();
+        for line in 0..525 {
+            for pixel in 0..800 {
+                $assert(x == pixel);
+                $assert(y == line);
+                $assert(de == ((pixel <: 640) && (line <: 480)));
+                $assert(hsync == !((pixel >= 656) && (pixel <: 752)));
+                $assert(vsync == !((line >= 490) && (line <: 492)));
+                $assert(frame_start == ((pixel == 0) && (line == 0)));
+                clk.next(1);
+            }
+        }
+        $assert(x == 0 && y == 0 && frame_start);
+        $finish();
+    }
+}

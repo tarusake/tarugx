@@ -1,0 +1,46 @@
+/// Bundled-data toggle mailbox; both domains must be reset together.
+/// The source holds all payload bits until the synchronized acknowledgement.
+module display_config_cdc (
+    src_clk   : input  'src clock    ,
+    src_rst_n : input  'src reset    ,
+    dst_clk   : input  'dst clock    ,
+    dst_rst_n : input  'dst reset    ,
+    src_config: input  'src logic<26>,
+    dst_config: output 'dst logic<26>,
+) {
+    var held   : logic<26>;
+    var request: logic    ;
+    var ack    : logic    ;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var ack_sync: logic<2>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var request_sync: logic<2>;
+    unsafe (cdc) {
+        always_ff (src_clk, src_rst_n) {
+            if_reset {
+                held     = 0;
+                request  = 0;
+                ack_sync = 0;
+            } else {
+                ack_sync = {ack_sync[0], ack};
+                if (request == ack_sync[1]) && (held != src_config) {
+                    held    = src_config;
+                    request = !request;
+                }
+            }
+        }
+        always_ff (dst_clk, dst_rst_n) {
+            if_reset {
+                request_sync = 0;
+                ack          = 0;
+                dst_config   = 0;
+            } else {
+                request_sync = {request_sync[0], request};
+                if request_sync[1] != ack {
+                    dst_config = held;
+                    ack        = request_sync[1];
+                }
+            }
+        }
+    }
+}

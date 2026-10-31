@@ -1,0 +1,25 @@
+/// Pixel-domain solid-color scanout. Timing stays active while disabled.
+module display_controller (
+    clk     : input  clock    ,
+    rst_n   : input  reset    ,
+    settings: input  logic<26>,
+    de      : output logic    ,
+    hsync   : output logic    ,
+    vsync   : output logic    ,
+    rgb     : output logic<24>,
+) {
+    var x          : logic<10>;
+    var y          : logic<10>;
+    var frame_start: logic    ;
+    var active     : logic<26>;
+    inst timing: video_timing ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+    always_ff {
+        if_reset {
+            active = 0;
+        } else if frame_start {
+            active = settings;
+        }
+    }
+    // config[25:24] = DISPLAY_CTRL[1:0], config[23:0] = 0xRRGGBB.
+    assign rgb = if de && active[24] && active[25] ? active[23:0] : 24'b0;
+}

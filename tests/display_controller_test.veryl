@@ -1,0 +1,38 @@
+#[test(display_color_frame_commit)]
+module display_color_frame_commit {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+    var settings: logic<26>;
+    var de      : logic    ;
+    var hsync   : logic    ;
+    var vsync   : logic    ;
+    var rgb     : logic<24>;
+    inst dut: display_controller (
+        clk          ,
+        rst_n   : rst,
+        settings     ,
+        de           ,
+        hsync        ,
+        vsync        ,
+        rgb          ,
+    );
+    initial {
+        settings = {2'b11, 24'h123456};
+        rst.assert();
+        $assert(rgb == 0);
+        clk.next(1);
+        $assert(rgb == 24'h123456);
+        settings = {2'b11, 24'habcdef};
+        clk.next(1);
+        $assert(rgb == 24'h123456);
+        clk.next(638);
+        $assert(!de && rgb == 0);
+        clk.next(419360);
+        clk.next(1);
+        $assert(de && rgb == 24'habcdef);
+        settings = 0;
+        clk.next(420000);
+        $assert(de && rgb == 0);
+        $finish();
+    }
+}

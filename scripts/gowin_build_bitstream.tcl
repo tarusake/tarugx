@@ -38,7 +38,15 @@ add_file $controller_vg
 add_file $serdes_v
 set_csr [file join $pcie_dir serdes.csr]
 
-foreach area {registers pcie debug} {
+if {[info exists ::env(SIPEED_HDMI_DIR)]} {
+    set video_dir [tarugx_required_dir SIPEED_HDMI_DIR]
+} else {
+    set video_dir [tarugx_required_dir SIPEED_HDMI_DIR]
+}
+add_file [file join $repo build gowin_video tarugx_video_pll.v]
+foreach source [glob [file join $video_dir dvi-tx *.v]] { add_file $source }
+
+foreach area {registers pcie debug display} {
     foreach source [glob -nocomplain [file join $repo build $area *.sv]] {
         add_file $source
     }
