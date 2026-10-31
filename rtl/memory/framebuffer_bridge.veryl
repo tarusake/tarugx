@@ -1,0 +1,93 @@
+/// One outstanding DWORD access to a 4 MiB byte-addressed aperture.
+/// Backend: atomic 32-byte request, one completion for reads AND writes.
+/// Backend write completion must provide ordering before subsequent requests.
+/// This is a vendor-neutral interface, not the Gowin DDR command interface.
+module framebuffer_bridge (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    req_valid    : input  logic     ,
+    req_ready    : output logic     ,
+    req_write    : input  logic     ,
+    req_addr     : input  logic<32> ,
+    req_wdata    : input  logic<32> ,
+    req_wstrb    : input  logic<4>  ,
+    rsp_valid    : output logic     ,
+    rsp_ready    : input  logic     ,
+    rsp_rdata    : output logic<32> ,
+    rsp_error    : output logic     ,
+    mem_valid    : output logic     ,
+    mem_ready    : input  logic     ,
+    mem_write    : output logic     ,
+    mem_addr     : output logic<22> ,
+    mem_wdata    : output logic<256>,
+    mem_wstrb    : output logic<32> ,
+    mem_rsp_valid: input  logic     ,
+    mem_rsp_ready: output logic     ,
+    mem_rsp_data : input  logic<256>,
+    mem_rsp_error: input  logic     ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Issue,
+        Wait,
+        Reply,
+    }
+    var state: State   ;
+    var lane : logic<3>;
+    assign req_ready     = state == State::Idle;
+    assign mem_valid     = state == State::Issue;
+    assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);
+    assign rsp_valid     = state == State::Reply;
+    always_ff {
+        if_reset {
+            state     = State::Idle;
+            lane      = 0;
+            mem_write = 0;
+            mem_addr  = 0;
+            mem_wdata = 0;
+            mem_wstrb = 0;
+            rsp_rdata = 0;
+            rsp_error = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if req_valid {
+                        rsp_rdata = 0;
+                        rsp_error = 0;
+                        if (req_addr[31:22] != 0) || (req_addr[1:0] != 0) {
+                            rsp_error = 1;
+                            state     = State::Reply;
+                        } else if req_write && (req_wstrb == 0) {
+                            state = State::Reply;
+                        } else {
+                            lane      = req_addr[4:2];
+                            mem_addr  = {req_addr[21:5], 5'b0};
+                            mem_write = req_write;
+                            for i in 0..8 {
+                                mem_wdata[i * 32+:32] = if req_addr[4:2] == (i as 3) ? req_wdata : 32'b0;
+                                mem_wstrb[i * 4+:4]   = if req_write && (req_addr[4:2] == (i as 3)) ? req_wstrb : 4'b0;
+                            }
+                            state = State::Issue;
+                        }
+                    }
+                }
+                State::Issue: {
+                    if mem_ready {
+                        state = State::Wait;
+                    }
+                }
+                State::Wait: {}
+                State::Reply: {
+                    if rsp_ready {
+                        state = State::Idle;
+                    }
+                }
+            }
+            if mem_rsp_valid && mem_rsp_ready {
+                rsp_rdata = if mem_write ? 32'b0 : mem_rsp_data[lane * 32+:32];
+                rsp_error = mem_rsp_error;
+                state     = State::Reply;
+            }
+        }
+    }
+}

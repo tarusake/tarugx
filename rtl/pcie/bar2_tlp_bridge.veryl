@@ -1,0 +1,150 @@
+/// Ordered single-DWORD BAR2 path. Posted writes receive no PCIe Completion.
+/// Outer router must stall BAR0 while !rx_ready, including pending writes.
+module bar2_tlp_bridge (
+    clk           : input  clock    ,
+    rst           : input  reset    ,
+    completer_id  : input  logic<16>,
+    rx_valid      : input  logic    ,
+    rx_ready      : output logic    ,
+    rx_header_dw0 : input  logic<32>,
+    rx_header_dw1 : input  logic<32>,
+    rx_header_dw2 : input  logic<32>,
+    rx_header_dw3 : input  logic<32>,
+    rx_payload_dw0: input  logic<32>,
+    tx_valid      : output logic    ,
+    tx_ready      : input  logic    ,
+    tx_header_dw0 : output logic<32>,
+    tx_header_dw1 : output logic<32>,
+    tx_header_dw2 : output logic<32>,
+    tx_payload_dw0: output logic<32>,
+    unsupported   : output logic    ,
+    malformed     : output logic    ,
+    req_valid     : output logic    ,
+    req_ready     : input  logic    ,
+    req_write     : output logic    ,
+    req_addr      : output logic<32>,
+    req_wdata     : output logic<32>,
+    req_wstrb     : output logic<4> ,
+    rsp_valid     : input  logic    ,
+    rsp_ready     : output logic    ,
+    rsp_rdata     : input  logic<32>,
+    rsp_error     : input  logic    ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Request,
+        Response,
+        Completion,
+    }
+    var state         : State    ;
+    var decoded_valid : logic    ;
+    var decoded_write : logic    ;
+    var decoded_addr  : logic<16>;
+    var decoded_wdata : logic<32>;
+    var decoded_be    : logic<4> ;
+    var decoded_req_id: logic<16>;
+    var decoded_tag   : logic<8> ;
+    var ur_required   : logic    ;
+    inst decoder: tlp_request_decoder (
+        request_valid: rx_valid      ,
+        bar_decode   : 6'b000001     ,
+        header_dw0   : rx_header_dw0 ,
+        header_dw1   : rx_header_dw1 ,
+        header_dw2   : rx_header_dw2 ,
+        header_dw3   : rx_header_dw3 ,
+        payload_dw0  : rx_payload_dw0,
+        decoded_valid                ,
+        decoded_write                ,
+        decoded_addr                 ,
+        decoded_wdata                ,
+        decoded_be                   ,
+        requester_id : decoded_req_id,
+        request_tag  : decoded_tag   ,
+        unsupported                  ,
+        ur_required                  ,
+        malformed                    ,
+    );
+    var saved_req_id   : logic<16>;
+    var saved_tag      : logic<8> ;
+    var saved_addr     : logic<16>;
+    var saved_be       : logic<4> ;
+    var saved_data     : logic<32>;
+    var saved_status   : logic<3> ;
+    var saved_with_data: logic    ;
+    assign rx_ready  = state == State::Idle;
+    assign req_valid = state == State::Request;
+    assign rsp_ready = (state == State::Response) || ((state == State::Request) && req_ready);
+    inst completion: tlp_completion_builder (
+        completion_valid : state == State::Completion,
+        completion_status: saved_status              ,
+        with_data        : saved_with_data           ,
+        completer_id                                 ,
+        requester_id     : saved_req_id              ,
+        request_tag      : saved_tag                 ,
+        request_addr     : saved_addr                ,
+        request_be       : saved_be                  ,
+        read_data        : saved_data                ,
+        tx_valid                                     ,
+        header_dw0       : tx_header_dw0             ,
+        header_dw1       : tx_header_dw1             ,
+        header_dw2       : tx_header_dw2             ,
+        payload_dw0      : tx_payload_dw0            ,
+    );
+    always_ff {
+        if_reset {
+            state           = State::Idle;
+            req_write       = 0;
+            req_addr        = 0;
+            req_wdata       = 0;
+            req_wstrb       = 0;
+            saved_req_id    = 0;
+            saved_tag       = 0;
+            saved_addr      = 0;
+            saved_be        = 0;
+            saved_data      = 0;
+            saved_status    = 0;
+            saved_with_data = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if rx_valid {
+                        saved_req_id    = decoded_req_id;
+                        saved_tag       = decoded_tag;
+                        saved_addr      = decoded_addr;
+                        saved_be        = decoded_be;
+                        saved_data      = 0;
+                        saved_status    = 0;
+                        saved_with_data = 0;
+                        if decoded_valid {
+                            req_write = decoded_write;
+                            req_addr  = {10'b0, rx_header_dw2[21:0]};
+                            req_wdata = decoded_wdata;
+                            req_wstrb = decoded_be;
+                            state     = State::Request;
+                        } else if unsupported && ur_required {
+                            saved_status = 3'b001;
+                            state        = State::Completion;
+                        }
+                    }
+                }
+                State::Request: {
+                    if req_ready {
+                        state = State::Response;
+                    }
+                }
+                State::Response: {}
+                State::Completion: {
+                    if tx_ready {
+                        state = State::Idle;
+                    }
+                }
+            }
+            if rsp_valid && rsp_ready {
+                saved_data      = rsp_rdata;
+                saved_status    = if rsp_error ? 3'b100 : 3'b000;
+                saved_with_data = !rsp_error;
+                state           = if req_write ? State::Idle : State::Completion;
+            }
+        }
+    }
+}

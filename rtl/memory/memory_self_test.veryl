@@ -1,0 +1,101 @@
+/// Destructive bring-up test of the first 512 bytes; not enabled by the GPU top.
+/// Start only after memory calibration and while other clients are stopped.
+module memory_self_test (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    start        : input  logic     ,
+    calibrated   : input  logic     ,
+    busy         : output logic     ,
+    done         : output logic     ,
+    failed       : output logic     ,
+    fail_addr    : output logic<22> ,
+    fail_data    : output logic<256>,
+    fail_error   : output logic     ,
+    mem_valid    : output logic     ,
+    mem_ready    : input  logic     ,
+    mem_write    : output logic     ,
+    mem_addr     : output logic<22> ,
+    mem_wdata    : output logic<256>,
+    mem_wstrb    : output logic<32> ,
+    mem_rsp_valid: input  logic     ,
+    mem_rsp_ready: output logic     ,
+    mem_rsp_data : input  logic<256>,
+    mem_rsp_error: input  logic     ,
+) {
+    enum State: logic<3> {
+        Idle,
+        Write,
+        WriteWait,
+        Read,
+        ReadWait,
+        Finish,
+    }
+    var state   : State     ;
+    var index   : logic<4>  ;
+    var expected: logic<256>;
+    assign busy          = (state != State::Idle) && (state != State::Finish);
+    assign done          = state == State::Finish;
+    assign mem_valid     = (state == State::Write) || (state == State::Read);
+    assign mem_write     = state == State::Write;
+    assign mem_addr      = {13'b0, index, 5'b0};
+    assign mem_wstrb     = 32'hffff_ffff;
+    assign mem_wdata     = expected;
+    assign mem_rsp_ready = (state == State::WriteWait) || (state == State::ReadWait) || (mem_valid && mem_ready);
+    always_comb {
+        for i in 0..8 {
+            expected[i * 32+:32] = 32'ha55a_0000 ^ ((index as 32) << 8) ^ (i as 32);
+        }
+    }
+    always_ff {
+        if_reset {
+            state      = State::Idle;
+            index      = 0;
+            failed     = 0;
+            fail_addr  = 0;
+            fail_data  = 0;
+            fail_error = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if start && calibrated {
+                        state = State::Write;
+                    }
+                }
+                State::Write: {
+                    if mem_ready {
+                        state = State::WriteWait;
+                    }
+                }
+                State::Read: {
+                    if mem_ready {
+                        state = State::ReadWait;
+                    }
+                }
+                default: {}
+            }
+            if mem_rsp_valid && mem_rsp_ready {
+                if mem_rsp_error
+                    || (((state == State::Read) || (state == State::ReadWait)) && (mem_rsp_data != expected)) {
+                    failed     = 1;
+                    fail_addr  = mem_addr;
+                    fail_data  = mem_rsp_data;
+                    fail_error = mem_rsp_error;
+                    state      = State::Finish;
+                } else if (state == State::Write) || (state == State::WriteWait) {
+                    if index == 15 {
+                        index = 0;
+                        state = State::Read;
+                    } else {
+                        index = index + 1;
+                        state = State::Write;
+                    }
+                } else if index == 15 {
+                    state = State::Finish;
+                } else {
+                    index = index + 1;
+                    state = State::Read;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,63 @@
+/// Repeating D<status bits>X<snapshot> CR LF; default divider is for 50 MHz.
+module ddr_debug_uart #(
+    param CLKS_PER_BIT: u32 = 434,
+    // Pause after the final byte is accepted; default is 250 ms at 50 MHz.
+    param FRAME_GAP_CYCLES: u32 = 12_500_000,
+) (
+    clk     : input  clock     ,
+    rst_n   : input  reset     ,
+    status  : input  logic<4>  ,
+    snapshot: input  logic<288>,
+    tx      : output logic     ,
+) {
+    var pos        : logic<7>  ;
+    var held       : logic<288>;
+    var nibble     : logic<4>  ;
+    var data       : logic<8>  ;
+    var ready      : logic     ;
+    var gap        : logic<32> ;
+    var held_status: logic<4>  ;
+    inst uart: uart_tx #(
+        CLKS_PER_BIT  ,
+    ) (
+        clk               ,
+        rst_n             ,
+        in_valid: gap == 0,
+        in_ready: ready   ,
+        in_data : data    ,
+        tx                ,
+    );
+    always_comb {
+        nibble = (held >> ((77 - pos) * 4)) as 4;
+        case pos {
+            0      : data = 8'h44;
+            1      : data = if held_status[3] ? 8'h31 : 8'h30;
+            2      : data = if held_status[2] ? 8'h31 : 8'h30;
+            3      : data = if held_status[1] ? 8'h31 : 8'h30;
+            4      : data = if held_status[0] ? 8'h31 : 8'h30;
+            5      : data = 8'h58;
+            78     : data = 8'h0d;
+            79     : data = 8'h0a;
+            default: data = if nibble <: 4'd10 ? 8'h30 + (nibble as 8) : 8'h41 + (nibble as 8) - 8'd10;
+        }
+    }
+    always_ff {
+        if_reset {
+            pos         = 0;
+            held        = 0;
+            held_status = 0;
+            gap         = 0;
+        } else if gap != 0 {
+            gap = gap - 1;
+        } else if ready {
+            pos = if pos == 79 ? 7'b0 : pos + 7'd1;
+            if pos == 0 {
+                held        = snapshot;
+                held_status = status;
+            }
+            if pos == 79 {
+                gap = FRAME_GAP_CYCLES;
+            }
+        }
+    }
+}

@@ -3,6 +3,7 @@
 /dependencies/
 /tarugx.f
 /*.vcd
+__pycache__/
 /vendor/gowin/pcie_x1/*
 !/vendor/gowin/pcie_x1/README.md
 !/vendor/gowin/pcie_x1/*.mod

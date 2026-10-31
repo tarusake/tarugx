@@ -1,16 +1,18 @@
 /// Bundled-data toggle mailbox; both domains must be reset together.
 /// The source holds all payload bits until the synchronized acknowledgement.
-module display_config_cdc (
-    src_clk   : input  'src clock    ,
-    src_rst_n : input  'src reset    ,
-    dst_clk   : input  'dst clock    ,
-    dst_rst_n : input  'dst reset    ,
-    src_config: input  'src logic<26>,
-    dst_config: output 'dst logic<26>,
+module display_config_cdc #(
+    param WIDTH: u32 = 26,
+) (
+    src_clk   : input  'src clock       ,
+    src_rst_n : input  'src reset       ,
+    dst_clk   : input  'dst clock       ,
+    dst_rst_n : input  'dst reset       ,
+    src_config: input  'src logic<WIDTH>,
+    dst_config: output 'dst logic<WIDTH>,
 ) {
-    var held   : logic<26>;
-    var request: logic    ;
-    var ack    : logic    ;
+    var held   : logic<WIDTH>;
+    var request: logic       ;
+    var ack    : logic       ;
     #[sv("async_reg = \"true\", syn_preserve = 1")]
     var ack_sync: logic<2>;
     #[sv("async_reg = \"true\", syn_preserve = 1")]

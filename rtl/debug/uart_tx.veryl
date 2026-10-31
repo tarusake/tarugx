@@ -29,7 +29,7 @@ module uart_tx #(
             baud_count = 16'b0;
             bit_count  = 4'b0;
         } else if busy {
-            if baud_count == CLKS_PER_BIT - 1 {
+            if (baud_count as 32) == CLKS_PER_BIT - 1 {
                 baud_count = 16'b0;
                 shift      = {1'b1, shift[9:1]};
                 if bit_count == 4'd9 {

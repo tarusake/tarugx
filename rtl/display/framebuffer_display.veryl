@@ -1,0 +1,64 @@
+/// Fixed-mode pixel consumer. After a lost beat, black the rest of the frame
+/// and discard queued beats until index zero for a later frame boundary.
+module framebuffer_display (
+    clk      : input  clock     ,
+    rst_n    : input  reset     ,
+    settings : input  logic<26> ,
+    in_valid : input  logic     ,
+    in_ready : output logic     ,
+    in_data  : input  logic<273>,
+    de       : output logic     ,
+    hsync    : output logic     ,
+    vsync    : output logic     ,
+    rgb      : output logic<24> ,
+    underflow: output logic     ,
+) {
+    var x          : logic<10>;
+    var y          : logic<10>;
+    var frame_start: logic    ;
+    var active     : logic<26>;
+    var running    : logic    ;
+    inst timing: video_timing ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+    let current_settings: logic<26> = if frame_start ? settings : active;
+    let expected        : logic<16> = (y as 16) * 16'd80 + (x[9:3] as 16);
+    let beat_matches    : logic     = in_valid && !in_data[272] && (in_data[271:256] == expected);
+    let consuming       : logic     = if frame_start ? (in_valid && !in_data[272] && (in_data[271:256] == 0)) : running;
+    let pixel           : logic<32> = in_data[(x[2:0] as 9) * 9'd32+:32];
+    always_comb {
+        in_ready = 0;
+        if !consuming {
+            in_ready = in_valid && ((in_data[271:256] != 0) || in_data[272]);
+        } else if de && beat_matches && (x[2:0] == 7) {
+            in_ready = 1;
+        }
+        rgb = 0;
+        if de && current_settings[24] {
+            if current_settings[25] {
+                rgb = current_settings[23:0];
+            } else if consuming && beat_matches {
+                rgb = pixel[23:0];
+            }
+        }
+    }
+    always_ff {
+        if_reset {
+            active    = 0;
+            running   = 0;
+            underflow = 0;
+        } else {
+            if frame_start {
+                active  = settings;
+                running = consuming;
+            }
+            if de && (!consuming || !beat_matches) {
+                running = 0;
+                if current_settings[24] && !current_settings[25] {
+                    underflow = 1;
+                }
+            }
+            if (x == 639) && (y == 479) {
+                running = 0;
+            }
+        }
+    }
+}

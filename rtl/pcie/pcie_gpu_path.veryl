@@ -1,0 +1,173 @@
+/// BAR0/BAR2 router. A pending BAR2 write stalls later BAR0 reads.
+module pcie_gpu_path (
+    clk            : input  clock     ,
+    rst            : input  reset     ,
+    completer_id   : input  logic<16> ,
+    rx_sop         : input  logic     ,
+    rx_eop         : input  logic     ,
+    rx_valid       : input  logic<8>  ,
+    rx_data        : input  logic<256>,
+    rx_bar_decode  : input  logic<6>  ,
+    rx_error       : input  logic<8>  ,
+    rx_wait        : output logic     ,
+    rx_masknp      : output logic     ,
+    tx_wait        : input  logic     ,
+    tx_sop         : output logic     ,
+    tx_eop         : output logic     ,
+    tx_valid       : output logic<8>  ,
+    tx_data        : output logic<256>,
+    framing_error  : output logic     ,
+    unsupported    : output logic     ,
+    malformed      : output logic     ,
+    display_ctrl   : output logic<32> ,
+    display_color  : output logic<32> ,
+    display_mode   : output logic<32> ,
+    fb_base        : output logic<32> ,
+    fb_stride      : output logic<32> ,
+    fb_commit_pulse: output logic     ,
+    fb_req_valid   : output logic     ,
+    fb_req_ready   : input  logic     ,
+    fb_req_write   : output logic     ,
+    fb_req_addr    : output logic<32> ,
+    fb_req_wdata   : output logic<32> ,
+    fb_req_wstrb   : output logic<4>  ,
+    fb_rsp_valid   : input  logic     ,
+    fb_rsp_ready   : output logic     ,
+    fb_rsp_rdata   : input  logic<32> ,
+    fb_rsp_error   : input  logic     ,
+) {
+    var request_valid: logic    ;
+    var request_ready: logic    ;
+    var request_bar  : logic<6> ;
+    var header_dw0   : logic<32>;
+    var header_dw1   : logic<32>;
+    var header_dw2   : logic<32>;
+    var header_dw3   : logic<32>;
+    var payload_dw0  : logic<32>;
+
+    inst rx_adapter: tlp_rx_decoder (
+        rx_sop         ,
+        rx_eop         ,
+        rx_valid       ,
+        rx_data        ,
+        rx_bar_decode  ,
+        rx_error       ,
+        request_ready  ,
+        rx_wait        ,
+        request_valid  ,
+        request_bar    ,
+        header_dw0     ,
+        header_dw1     ,
+        header_dw2     ,
+        header_dw3     ,
+        payload_dw0    ,
+        framing_error  ,
+    );
+
+    var completion_valid  : logic    ;
+    var completion_ready  : logic    ;
+    var completion_header0: logic<32>;
+    var completion_header1: logic<32>;
+    var completion_header2: logic<32>;
+    var completion_payload: logic<32>;
+
+    var b0_ready      : logic    ;
+    var b2_ready      : logic    ;
+    var b0_valid      : logic    ;
+    var b2_valid      : logic    ;
+    var b0_unsupported: logic    ;
+    var b2_unsupported: logic    ;
+    var b0_malformed  : logic    ;
+    var b2_malformed  : logic    ;
+    var b0_h0         : logic<32>;
+    var b0_h1         : logic<32>;
+    var b0_h2         : logic<32>;
+    var b0_data       : logic<32>;
+    var b2_h0         : logic<32>;
+    var b2_h1         : logic<32>;
+    var b2_h2         : logic<32>;
+    var b2_data       : logic<32>;
+    assign request_ready      = b0_ready && b2_ready;
+    assign unsupported        = b0_unsupported || b2_unsupported;
+    assign malformed          = b0_malformed || b2_malformed;
+    assign completion_valid   = b0_valid || b2_valid;
+    assign completion_header0 = if b2_valid ? b2_h0 : b0_h0;
+    assign completion_header1 = if b2_valid ? b2_h1 : b0_h1;
+    assign completion_header2 = if b2_valid ? b2_h2 : b0_h2;
+    assign completion_payload = if b2_valid ? b2_data : b0_data;
+    inst bar2: bar2_tlp_bridge (
+        clk                                                        ,
+        rst                                                        ,
+        completer_id                                               ,
+        rx_valid      : request_valid && b0_ready && request_bar[2],
+        rx_ready      : b2_ready                                   ,
+        rx_header_dw0 : header_dw0                                 ,
+        rx_header_dw1 : header_dw1                                 ,
+        rx_header_dw2 : header_dw2                                 ,
+        rx_header_dw3 : header_dw3                                 ,
+        rx_payload_dw0: payload_dw0                                ,
+        tx_valid      : b2_valid                                   ,
+        tx_ready      : completion_ready                           ,
+        tx_header_dw0 : b2_h0                                      ,
+        tx_header_dw1 : b2_h1                                      ,
+        tx_header_dw2 : b2_h2                                      ,
+        tx_payload_dw0: b2_data                                    ,
+        unsupported   : b2_unsupported                             ,
+        malformed     : b2_malformed                               ,
+        req_valid     : fb_req_valid                               ,
+        req_ready     : fb_req_ready                               ,
+        req_write     : fb_req_write                               ,
+        req_addr      : fb_req_addr                                ,
+        req_wdata     : fb_req_wdata                               ,
+        req_wstrb     : fb_req_wstrb                               ,
+        rsp_valid     : fb_rsp_valid                               ,
+        rsp_ready     : fb_rsp_ready                               ,
+        rsp_rdata     : fb_rsp_rdata                               ,
+        rsp_error     : fb_rsp_error                               ,
+    );
+    inst bridge: bar0_tlp_bridge (
+        clk                                                          ,
+        rst                                                          ,
+        completer_id                                                 ,
+        rx_valid       : request_valid && b2_ready && !request_bar[2],
+        rx_ready       : b0_ready                                    ,
+        rx_bar_decode  : request_bar                                 ,
+        rx_header_dw0  : header_dw0                                  ,
+        rx_header_dw1  : header_dw1                                  ,
+        rx_header_dw2  : header_dw2                                  ,
+        rx_header_dw3  : header_dw3                                  ,
+        rx_payload_dw0 : payload_dw0                                 ,
+        tx_valid       : b0_valid                                    ,
+        tx_ready       : completion_ready && !b2_valid,
+        tx_header_dw0  : b0_h0                                       ,
+        tx_header_dw1  : b0_h1                                       ,
+        tx_header_dw2  : b0_h2                                       ,
+        tx_payload_dw0 : b0_data                                     ,
+        unsupported    : b0_unsupported                              ,
+        malformed      : b0_malformed                                ,
+        display_ctrl                                                 ,
+        display_color                                                ,
+        display_mode                                                 ,
+        fb_base                                                      ,
+        fb_stride                                                    ,
+        fb_commit_pulse                                              ,
+    );
+
+    inst tx_adapter: tlp_tx_completion (
+        completion_valid                        ,
+        completion_data : completion_header0[30],
+        header_dw0      : completion_header0    ,
+        header_dw1      : completion_header1    ,
+        header_dw2      : completion_header2    ,
+        payload_dw0     : completion_payload    ,
+        tx_wait                                 ,
+        completion_ready                        ,
+        tx_sop                                  ,
+        tx_eop                                  ,
+        tx_valid                                ,
+        tx_data                                 ,
+    );
+
+    // Block later Non-Posted requests from acceptance through Completion.
+    assign rx_masknp = !request_ready || (request_valid && !header_dw0[30] && (header_dw0[28:24] == 5'b00000));
+}

@@ -1,0 +1,99 @@
+/// UI-clock reader for fixed 640x480 XRGB8888 frames, eight pixels per beat.
+/// Configuration is sampled between frames. FIFO entries carry a frame index.
+module scanout_reader (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    enable       : input  logic     ,
+    fb_base      : input  logic<32> ,
+    fb_stride    : input  logic<32> ,
+    config_error : output logic     ,
+    mem_valid    : output logic     ,
+    mem_ready    : input  logic     ,
+    mem_addr     : output logic<22> ,
+    mem_rsp_valid: input  logic     ,
+    mem_rsp_ready: output logic     ,
+    mem_rsp_data : input  logic<256>,
+    mem_rsp_error: input  logic     ,
+    out_valid    : output logic     ,
+    out_ready    : input  logic     ,
+    out_index    : output logic<16> ,
+    out_data     : output logic<256>,
+    out_error    : output logic     ,
+) {
+    enum State: logic<2> {
+        Start,
+        Issue,
+        Wait,
+        Push,
+    }
+    var state       : State    ;
+    var row         : logic<9> ;
+    var column      : logic<7> ;
+    var row_base    : logic<22>;
+    var stride      : logic<22>;
+    let end_address : logic<64> = (fb_base as 64) + (fb_stride as 64) * 64'd479 + 64'd2560;
+    let valid_config: logic     = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0) && (fb_stride >= 2560)
+        && (end_address <= 64'h400000);
+    assign mem_valid     = state == State::Issue;
+    assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);
+    assign out_valid     = state == State::Push;
+    always_ff {
+        if_reset {
+            state        = State::Start;
+            row          = 0;
+            column       = 0;
+            row_base     = 0;
+            stride       = 0;
+            mem_addr     = 0;
+            out_index    = 0;
+            out_data     = 0;
+            out_error    = 0;
+            config_error = 0;
+        } else {
+            case state {
+                State::Start: {
+                    config_error = enable && !valid_config;
+                    if enable && valid_config {
+                        row       = 0;
+                        column    = 0;
+                        row_base  = fb_base[21:0];
+                        mem_addr  = fb_base[21:0];
+                        stride    = fb_stride[21:0];
+                        out_index = 0;
+                        state     = State::Issue;
+                    }
+                }
+                State::Issue: {
+                    if mem_ready {
+                        state = State::Wait;
+                    }
+                }
+                State::Wait: {}
+                State::Push: {
+                    if out_ready {
+                        if (row == 479) && (column == 79) {
+                            state = State::Start;
+                        } else {
+                            out_index = out_index + 16'd1;
+                            if column == 79 {
+                                column   = 0;
+                                row      = row + 9'd1;
+                                row_base = row_base + stride;
+                                mem_addr = row_base + stride;
+                            } else {
+                                column   = column + 7'd1;
+                                mem_addr = mem_addr + 22'd32;
+                            }
+                            state = State::Issue;
+                        }
+                    }
+                }
+            }
+            if mem_rsp_valid && mem_rsp_ready {
+                out_data  = mem_rsp_data;
+                out_error = mem_rsp_error;
+                state     = State::Push;
+            }
+        }
+    }
+}

@@ -1,0 +1,98 @@
+/// Round-robin CPU/scanout arbiter, one transaction outstanding.
+/// All ports run on the memory UI clock. The scanout client is read-only.
+module memory_arbiter (
+    clk           : input  clock     ,
+    rst_n         : input  reset     ,
+    cpu_valid     : input  logic     ,
+    cpu_ready     : output logic     ,
+    cpu_write     : input  logic     ,
+    cpu_addr      : input  logic<22> ,
+    cpu_wdata     : input  logic<256>,
+    cpu_wstrb     : input  logic<32> ,
+    cpu_rsp_valid : output logic     ,
+    cpu_rsp_ready : input  logic     ,
+    cpu_rsp_data  : output logic<256>,
+    cpu_rsp_error : output logic     ,
+    scan_valid    : input  logic     ,
+    scan_ready    : output logic     ,
+    scan_addr     : input  logic<22> ,
+    scan_rsp_valid: output logic     ,
+    scan_rsp_ready: input  logic     ,
+    scan_rsp_data : output logic<256>,
+    scan_rsp_error: output logic     ,
+    mem_valid     : output logic     ,
+    mem_ready     : input  logic     ,
+    mem_write     : output logic     ,
+    mem_addr      : output logic<22> ,
+    mem_wdata     : output logic<256>,
+    mem_wstrb     : output logic<32> ,
+    mem_rsp_valid : input  logic     ,
+    mem_rsp_ready : output logic     ,
+    mem_rsp_data  : input  logic<256>,
+    mem_rsp_error : input  logic     ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Issue,
+        Wait,
+    }
+    var state         : State;
+    var owner_scan    : logic;
+    var prefer_scan   : logic;
+    let choose_scan   : logic = scan_valid && (!cpu_valid || prefer_scan);
+    let response_phase: logic = (state == State::Wait) || ((state == State::Issue) && mem_ready);
+    assign cpu_ready      = (state == State::Idle) && !choose_scan;
+    assign scan_ready     = (state == State::Idle) && choose_scan;
+    assign mem_valid      = state == State::Issue;
+    assign cpu_rsp_valid  = response_phase && mem_rsp_valid && !owner_scan;
+    assign scan_rsp_valid = response_phase && mem_rsp_valid && owner_scan;
+    assign cpu_rsp_data   = mem_rsp_data;
+    assign scan_rsp_data  = mem_rsp_data;
+    assign cpu_rsp_error  = mem_rsp_error;
+    assign scan_rsp_error = mem_rsp_error;
+    assign mem_rsp_ready  = response_phase && (if owner_scan ? scan_rsp_ready : cpu_rsp_ready);
+    always_ff {
+        if_reset {
+            state       = State::Idle;
+            owner_scan  = 0;
+            prefer_scan = 1;
+            mem_write   = 0;
+            mem_addr    = 0;
+            mem_wdata   = 0;
+            mem_wstrb   = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if scan_valid && scan_ready {
+                        owner_scan = 1;
+                        mem_write  = 0;
+                        mem_addr   = scan_addr;
+                        mem_wdata  = 0;
+                        mem_wstrb  = 0;
+                        state      = State::Issue;
+                    } else if cpu_valid && cpu_ready {
+                        owner_scan = 0;
+                        mem_write  = cpu_write;
+                        mem_addr   = cpu_addr;
+                        mem_wdata  = cpu_wdata;
+                        mem_wstrb  = cpu_wstrb;
+                        state      = State::Issue;
+                    }
+                }
+                State::Issue: {
+                    if mem_ready {
+                        state = State::Wait;
+                    }
+                }
+                State::Wait: {}
+                default: {
+                    state = State::Idle;
+                }
+            }
+            if mem_rsp_valid && mem_rsp_ready {
+                prefer_scan = !owner_scan;
+                state       = State::Idle;
+            }
+        }
+    }
+}

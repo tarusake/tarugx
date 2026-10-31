@@ -1,0 +1,98 @@
+/// Single BL8 transfer for the Gowin 32-bit DQ / 1:4 interface.
+/// Runs on clk_out. Reset together with the memory controller.
+/// Write response means command and data accepted, not physical persistence.
+module ddr3_native_adapter (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    calibrated   : input  logic     ,
+    mem_valid    : input  logic     ,
+    mem_ready    : output logic     ,
+    mem_write    : input  logic     ,
+    mem_addr     : input  logic<22> ,
+    mem_wdata    : input  logic<256>,
+    mem_wstrb    : input  logic<32> ,
+    mem_rsp_valid: output logic     ,
+    mem_rsp_ready: input  logic     ,
+    mem_rsp_data : output logic<256>,
+    mem_rsp_error: output logic     ,
+    cmd_ready    : input  logic     ,
+    cmd          : output logic<3>  ,
+    cmd_en       : output logic     ,
+    addr         : output logic<29> ,
+    wr_data_rdy  : input  logic     ,
+    wr_data      : output logic<256>,
+    wr_data_en   : output logic     ,
+    wr_data_end  : output logic     ,
+    wr_data_mask : output logic<32> ,
+    rd_data      : input  logic<256>,
+    rd_data_valid: input  logic     ,
+    rd_data_end  : input  logic     ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Issue,
+        ReadWait,
+        Reply,
+    }
+    var state: State;
+    var write: logic;
+    assign mem_ready     = (state == State::Idle) && calibrated;
+    assign mem_rsp_valid = state == State::Reply;
+    assign cmd           = if write ? 3'b000 : 3'b001;
+    // Match the board sample's common-ready write issue policy.
+    assign cmd_en      = (state == State::Issue) && cmd_ready && (!write || wr_data_rdy);
+    assign wr_data_en  = cmd_en && write;
+    assign wr_data_end = wr_data_en;
+    always_ff {
+        if_reset {
+            state         = State::Idle;
+            write         = 0;
+            addr          = 0;
+            wr_data       = 0;
+            wr_data_mask  = '1;
+            mem_rsp_data  = 0;
+            mem_rsp_error = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if mem_valid && mem_ready {
+                        write         = mem_write;
+                        addr          = {9'b0, mem_addr[21:2]};
+                        wr_data       = mem_wdata;
+                        wr_data_mask  = ~mem_wstrb;
+                        mem_rsp_data  = 0;
+                        mem_rsp_error = 0;
+                        if mem_addr[4:0] != 0 {
+                            mem_rsp_error = 1;
+                            state         = State::Reply;
+                        } else {
+                            state = State::Issue;
+                        }
+                    }
+                }
+                State::Issue: {
+                    if cmd_en {
+                        state = if write ? State::Reply : State::ReadWait;
+                    }
+                    if !write && cmd_en && rd_data_valid {
+                        mem_rsp_data  = rd_data;
+                        mem_rsp_error = !rd_data_end;
+                        state         = State::Reply;
+                    }
+                }
+                State::ReadWait: {
+                    if rd_data_valid {
+                        mem_rsp_data  = rd_data;
+                        mem_rsp_error = !rd_data_end;
+                        state         = State::Reply;
+                    }
+                }
+                State::Reply: {
+                    if mem_rsp_ready {
+                        state = State::Idle;
+                    }
+                }
+            }
+        }
+    }
+}

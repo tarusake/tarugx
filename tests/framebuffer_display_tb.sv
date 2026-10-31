@@ -1,0 +1,38 @@
+`timescale 1ns/1ps
+module framebuffer_display_tb;
+ logic clk=0,rst_n=0;always #5 clk=~clk;
+ logic [25:0] settings=26'h1000000;
+ logic in_valid,in_ready,de,hsync,vsync,underflow;
+ logic [272:0] in_data;logic [23:0] rgb;
+ int beat=0,frame=0,checked=0;bit inject=0;
+ tarugx_framebuffer_display dut(.*);
+ always_comb begin
+  in_data=0;in_data[271:256]=16'(beat);
+  for(int i=0;i<8;i++) in_data[i*32+:32]=32'hff000000 | 32'(beat*8+i);
+  in_valid=!(inject && beat==100);
+ end
+ always @(posedge clk) if(rst_n) begin
+  if(dut.frame_start) frame=frame+1;
+  if(de) begin
+   if(frame==1 || frame==3) begin
+    assert(rgb==24'(int'(dut.y)*640+int'(dut.x))) else $fatal(1,"pixel f%0d %0d,%0d = %h",frame,dut.x,dut.y,rgb);
+    checked++;
+   end
+   if(frame==2 && (int'(dut.y)*640+int'(dut.x))>=800)
+    assert(rgb==0) else $fatal(1,"underflow frame must stay black");
+  end else assert(rgb==0) else $fatal(1,"blanking");
+  if(in_valid && in_ready) beat <= (beat==38399)?0:beat+1;
+ end
+ initial begin
+  #2;rst_n=0;@(negedge clk);rst_n=1;
+  wait(frame==1 && dut.y==480);@(negedge clk);inject=1;
+  wait(frame==2 && dut.y==2);@(negedge clk);inject=0;
+  wait(frame==3 && dut.y==480);@(negedge clk);
+  assert(underflow && checked==614400) else $fatal(1,"count/underflow %0d",checked);
+  settings=26'h3123456;
+  wait(frame==4);@(negedge clk);assert(rgb==24'h123456) else $fatal(1,"solid mode");
+  rst_n=0;#1;assert(!underflow) else $fatal;
+  $display("Framebuffer display: 614400 exact pixels, underflow blacking, frame recovery, solid mode and reset PASS");$finish;
+ end
+ initial begin #18000000;$fatal(1,"timeout");end
+endmodule

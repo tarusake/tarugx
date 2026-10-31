@@ -1,0 +1,85 @@
+/// One outstanding request/reply mailbox. Both domains must reset together.
+/// Payloads remain held across two-stage toggle synchronizers.
+module memory_request_cdc (
+    src_clk      : input  'src clock    ,
+    src_rst_n    : input  'src reset    ,
+    src_valid    : input  'src logic    ,
+    src_ready    : output 'src logic    ,
+    src_request  : input  'src logic<69>,
+    src_rsp_valid: output 'src logic    ,
+    src_rsp_ready: input  'src logic    ,
+    src_response : output 'src logic<33>,
+    dst_clk      : input  'dst clock    ,
+    dst_rst_n    : input  'dst reset    ,
+    dst_valid    : output 'dst logic    ,
+    dst_ready    : input  'dst logic    ,
+    dst_request  : output 'dst logic<69>,
+    dst_rsp_valid: input  'dst logic    ,
+    dst_rsp_ready: output 'dst logic    ,
+    dst_response : input  'dst logic<33>,
+) {
+    var held_request   : 'src logic<69>;
+    var held_response  : 'dst logic<33>;
+    var request_toggle : 'src logic    ;
+    var response_toggle: 'dst logic    ;
+    var busy           : 'src logic    ;
+    var waiting        : 'dst logic    ;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var request_sync: 'dst logic<2>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var response_sync: 'src logic<2>;
+    assign src_ready     = !busy && !src_rsp_valid;
+    assign dst_rsp_ready = waiting || (dst_valid && dst_ready);
+    unsafe (cdc) {
+        always_ff (src_clk, src_rst_n) {
+            if_reset {
+                held_request   = 0;
+                request_toggle = 0;
+                response_sync  = 0;
+                busy           = 0;
+                src_rsp_valid  = 0;
+                src_response   = 0;
+            } else {
+                response_sync = {response_sync[0], response_toggle};
+                if src_valid && src_ready {
+                    held_request   = src_request;
+                    request_toggle = !request_toggle;
+                    busy           = 1;
+                }
+                if busy && (response_sync[1] == request_toggle) {
+                    src_response  = held_response;
+                    src_rsp_valid = 1;
+                    busy          = 0;
+                }
+                if src_rsp_valid && src_rsp_ready {
+                    src_rsp_valid = 0;
+                }
+            }
+        }
+        always_ff (dst_clk, dst_rst_n) {
+            if_reset {
+                held_response   = 0;
+                response_toggle = 0;
+                request_sync    = 0;
+                dst_valid       = 0;
+                dst_request     = 0;
+                waiting         = 0;
+            } else {
+                request_sync = {request_sync[0], request_toggle};
+                if !dst_valid && !waiting && (request_sync[1] != response_toggle) {
+                    dst_request = held_request;
+                    dst_valid   = 1;
+                }
+                if dst_valid && dst_ready {
+                    dst_valid = 0;
+                    waiting   = 1;
+                }
+                if dst_rsp_valid && dst_rsp_ready {
+                    held_response   = dst_response;
+                    response_toggle = request_sync[1];
+                    waiting         = 0;
+                }
+            }
+        }
+    }
+}
