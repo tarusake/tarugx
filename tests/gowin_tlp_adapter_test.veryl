@@ -1,0 +1,134 @@
+#[test(gowin_rx_single_beat_unpack)]
+module gowin_rx_single_beat_unpack {
+    inst clk: $tb::clock_gen;
+
+    var rx_sop       : logic     ;
+    var rx_eop       : logic     ;
+    var rx_valid     : logic<8>  ;
+    var rx_data      : logic<256>;
+    var rx_bar_decode: logic<6>  ;
+    var rx_error     : logic<8>  ;
+    var request_ready: logic     ;
+    var rx_wait      : logic     ;
+    var request_valid: logic     ;
+    var request_bar  : logic<6>  ;
+    var header_dw0   : logic<32> ;
+    var header_dw1   : logic<32> ;
+    var header_dw2   : logic<32> ;
+    var header_dw3   : logic<32> ;
+    var payload_dw0  : logic<32> ;
+    var framing_error: logic     ;
+
+    inst dut: tlp_rx_decoder (
+        rx_sop         ,
+        rx_eop         ,
+        rx_valid       ,
+        rx_data        ,
+        rx_bar_decode  ,
+        rx_error       ,
+        request_ready  ,
+        rx_wait        ,
+        request_valid  ,
+        request_bar    ,
+        header_dw0     ,
+        header_dw1     ,
+        header_dw2     ,
+        header_dw3     ,
+        payload_dw0    ,
+        framing_error  ,
+    );
+
+    initial {
+        rx_sop        = 1;
+        rx_eop        = 1;
+        rx_valid      = 8'hf0;
+        rx_data       = {32'h4000_0001, 32'h1234_5a0f, 32'h0000_0014, 32'h4433_2211, 128'b0};
+        rx_bar_decode = 6'b000001;
+        rx_error      = 0;
+        request_ready = 1;
+        clk.next(1);
+        $assert(request_valid);
+        $assert(!rx_wait);
+        $assert(!framing_error);
+        $assert(request_bar == 6'b000001);
+        $assert(header_dw0 == 32'h4000_0001);
+        $assert(header_dw1 == 32'h1234_5a0f);
+        $assert(header_dw2 == 32'h0000_0014);
+        $assert(payload_dw0 == 32'h1122_3344);
+
+        // Actual first RX beat captured from a host BAR0 DWORD read.
+        // Invalid lower lanes contain arbitrary data and must be ignored.
+        rx_valid = 8'he0;
+        rx_data  = 256'h000000010000230F8020000012449E2D0CA9C87B514CB6AB14FC5BC76D8B761F;
+        clk.next(1);
+        $assert(request_valid && !framing_error);
+        $assert(header_dw0 == 32'h00000001);
+        $assert(header_dw1 == 32'h0000230f);
+        $assert(header_dw2 == 32'h80200000);
+
+        request_ready = 0;
+        clk.next(1);
+        $assert(rx_wait);
+        rx_error = 8'h02;
+        clk.next(1);
+        $assert(framing_error);
+        $assert(!request_valid);
+        $finish();
+    }
+}
+
+#[test(gowin_tx_completion_pack_and_wait)]
+module gowin_tx_completion_pack_and_wait {
+    inst clk: $tb::clock_gen;
+
+    var completion_valid: logic     ;
+    var completion_data : logic     ;
+    var header_dw0      : logic<32> ;
+    var header_dw1      : logic<32> ;
+    var header_dw2      : logic<32> ;
+    var payload_dw0     : logic<32> ;
+    var tx_wait         : logic     ;
+    var completion_ready: logic     ;
+    var tx_sop          : logic     ;
+    var tx_eop          : logic     ;
+    var tx_valid        : logic<8>  ;
+    var tx_data         : logic<256>;
+
+    inst dut: tlp_tx_completion (
+        completion_valid  ,
+        completion_data   ,
+        header_dw0        ,
+        header_dw1        ,
+        header_dw2        ,
+        payload_dw0       ,
+        tx_wait           ,
+        completion_ready  ,
+        tx_sop            ,
+        tx_eop            ,
+        tx_valid          ,
+        tx_data           ,
+    );
+
+    initial {
+        completion_valid = 1;
+        completion_data  = 1;
+        header_dw0       = 32'h4a00_0001;
+        header_dw1       = 32'h0100_0004;
+        header_dw2       = 32'h1234_5a10;
+        payload_dw0      = 32'h5447_5055;
+        tx_wait          = 1;
+        clk.next(1);
+        $assert(!completion_ready);
+        $assert(tx_sop && tx_eop);
+        $assert(tx_valid == 8'hf0);
+        $assert(tx_data[255:224] == header_dw0);
+        $assert(tx_data[159:128] == 32'h5550_4754);
+
+        tx_wait         = 0;
+        completion_data = 0;
+        clk.next(1);
+        $assert(completion_ready);
+        $assert(tx_valid == 8'he0);
+        $finish();
+    }
+}

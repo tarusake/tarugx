@@ -1,0 +1,26 @@
+/// Pack one normalized Completion into a single Gowin 256-bit TX transfer.
+module tlp_tx_completion (
+    completion_valid: input  logic     ,
+    completion_data : input  logic     ,
+    header_dw0      : input  logic<32> ,
+    header_dw1      : input  logic<32> ,
+    header_dw2      : input  logic<32> ,
+    payload_dw0     : input  logic<32> ,
+    tx_wait         : input  logic     ,
+    completion_ready: output logic     ,
+    tx_sop          : output logic     ,
+    tx_eop          : output logic     ,
+    tx_valid        : output logic<8>  ,
+    tx_data         : output logic<256>,
+) {
+    assign completion_ready = !tx_wait;
+    assign tx_sop           = completion_valid;
+    assign tx_eop           = completion_valid;
+    assign tx_valid         = if completion_valid ? (if completion_data ? 8'b1111_0000 : 8'b1110_0000) : 8'b0;
+    // Header fields use PCIe bit numbering; payload bytes are serialized in
+    // address order. Convert the little-endian register word to wire order.
+    assign tx_data = {
+        header_dw0, header_dw1, header_dw2, payload_dw0[7:0], payload_dw0[15:8], payload_dw0[23:16], payload_dw0[31:24],
+        128'b0
+    };
+}

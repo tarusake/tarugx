@@ -1,0 +1,156 @@
+#[test(gpu_registers_reset_and_read)]
+module gpu_registers_reset_and_read {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var req_valid      : logic    ;
+    var req_write      : logic    ;
+    var req_addr       : logic<16>;
+    var req_wdata      : logic<32>;
+    var req_wstrb      : logic<4> ;
+    var req_ready      : logic    ;
+    var rsp_valid      : logic    ;
+    var rsp_rdata      : logic<32>;
+    var rsp_error      : logic    ;
+    var display_ctrl   : logic<32>;
+    var display_color  : logic<32>;
+    var display_mode   : logic<32>;
+    var fb_base        : logic<32>;
+    var fb_stride      : logic<32>;
+    var fb_commit_pulse: logic    ;
+
+    inst dut: gpu_registers (
+        clk              ,
+        rst              ,
+        req_valid        ,
+        req_write        ,
+        req_addr         ,
+        req_wdata        ,
+        req_wstrb        ,
+        req_ready        ,
+        rsp_valid        ,
+        rsp_rdata        ,
+        rsp_error        ,
+        display_ctrl     ,
+        display_color    ,
+        display_mode     ,
+        fb_base          ,
+        fb_stride        ,
+        fb_commit_pulse  ,
+    );
+
+    initial {
+        req_valid = 0;
+        req_write = 0;
+        req_addr  = 0;
+        req_wdata = 0;
+        req_wstrb = 0;
+        rst.assert();
+        clk.next(1);
+        $assert(display_ctrl == 0);
+        $assert(display_color == 0);
+        $assert(fb_stride == 32'd2560);
+        $assert(fb_commit_pulse == 0);
+        clk.next(1);
+
+        req_valid = 1;
+        req_addr  = 16'h0000;
+        clk.next(1);
+        $assert(rsp_valid);
+        $assert(rsp_rdata == 32'h5447_5055);
+        $assert(!rsp_error);
+        req_addr = 16'h0004;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0001_0000);
+        req_addr = 16'h0008;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0001);
+        req_addr = 16'h0001;
+        clk.next(1);
+        $assert(rsp_error);
+        req_addr = 16'h0040;
+        clk.next(1);
+        $assert(rsp_error);
+        $finish();
+    }
+}
+
+#[test(gpu_registers_write_byte_enable_and_commit)]
+module gpu_registers_write_byte_enable_and_commit {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var req_valid      : logic    ;
+    var req_write      : logic    ;
+    var req_addr       : logic<16>;
+    var req_wdata      : logic<32>;
+    var req_wstrb      : logic<4> ;
+    var req_ready      : logic    ;
+    var rsp_valid      : logic    ;
+    var rsp_rdata      : logic<32>;
+    var rsp_error      : logic    ;
+    var display_ctrl   : logic<32>;
+    var display_color  : logic<32>;
+    var display_mode   : logic<32>;
+    var fb_base        : logic<32>;
+    var fb_stride      : logic<32>;
+    var fb_commit_pulse: logic    ;
+
+    inst dut: gpu_registers (
+        clk              ,
+        rst              ,
+        req_valid        ,
+        req_write        ,
+        req_addr         ,
+        req_wdata        ,
+        req_wstrb        ,
+        req_ready        ,
+        rsp_valid        ,
+        rsp_rdata        ,
+        rsp_error        ,
+        display_ctrl     ,
+        display_color    ,
+        display_mode     ,
+        fb_base          ,
+        fb_stride        ,
+        fb_commit_pulse  ,
+    );
+
+    initial {
+        req_valid = 0;
+        req_write = 0;
+        req_addr  = 0;
+        req_wdata = 0;
+        req_wstrb = 0;
+        rst.assert();
+        clk.next(1);
+        clk.next(1);
+
+        req_valid = 1;
+        req_write = 1;
+        req_addr  = 16'h0014;
+        req_wdata = 32'h1122_3344;
+        req_wstrb = 4'b0101;
+        clk.next(1);
+        $assert(display_color == 32'h0022_0044);
+        req_wdata = 32'haabb_ccdd;
+        req_wstrb = 4'b1010;
+        clk.next(1);
+        $assert(display_color == 32'haa22_cc44);
+
+        req_addr  = 16'h0000;
+        req_wdata = 0;
+        req_wstrb = 4'b1111;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h5447_5055);
+
+        req_addr  = 16'h0024;
+        req_wstrb = 4'b0001;
+        clk.next(1);
+        $assert(fb_commit_pulse);
+        req_valid = 0;
+        clk.next(1);
+        $assert(!fb_commit_pulse);
+        $finish();
+    }
+}

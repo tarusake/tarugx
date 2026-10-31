@@ -1,0 +1,230 @@
+#[test(tlp_request_decode_read_write)]
+module tlp_request_decode_read_write {
+    inst clk: $tb::clock_gen;
+
+    var request_valid: logic    ;
+    var bar_decode   : logic<6> ;
+    var header_dw0   : logic<32>;
+    var header_dw1   : logic<32>;
+    var header_dw2   : logic<32>;
+    var header_dw3   : logic<32>;
+    var payload_dw0  : logic<32>;
+    var decoded_valid: logic    ;
+    var decoded_write: logic    ;
+    var decoded_addr : logic<16>;
+    var decoded_wdata: logic<32>;
+    var decoded_be   : logic<4> ;
+    var requester_id : logic<16>;
+    var request_tag  : logic<8> ;
+    var unsupported  : logic    ;
+    var ur_required  : logic    ;
+    var malformed    : logic    ;
+
+    inst dut: tlp_request_decoder (
+        request_valid  ,
+        bar_decode     ,
+        header_dw0     ,
+        header_dw1     ,
+        header_dw2     ,
+        header_dw3     ,
+        payload_dw0    ,
+        decoded_valid  ,
+        decoded_write  ,
+        decoded_addr   ,
+        decoded_wdata  ,
+        decoded_be     ,
+        requester_id   ,
+        request_tag    ,
+        unsupported    ,
+        ur_required    ,
+        malformed      ,
+    );
+
+    initial {
+        request_valid = 1;
+        bar_decode    = 6'b000001;
+        header_dw0    = 32'h0000_0001;
+        header_dw1    = 32'h1234_5a0f;
+        header_dw2    = 32'h0000_0014;
+        header_dw3    = 0;
+        payload_dw0   = 32'hdead_beef;
+        clk.next(1);
+        $assert(decoded_valid);
+        $assert(!decoded_write);
+        $assert(decoded_addr == 16'h0014);
+        $assert(decoded_be == 4'hf);
+        $assert(requester_id == 16'h1234);
+        $assert(request_tag == 8'h5a);
+        $assert(!unsupported);
+        $assert(!ur_required);
+        $assert(!malformed);
+
+        header_dw0  = 32'h4000_0001;
+        header_dw1  = 32'habcd_3305;
+        header_dw2  = 32'h0000_0010;
+        payload_dw0 = 32'h1122_3344;
+        clk.next(1);
+        $assert(decoded_valid);
+        $assert(decoded_write);
+        $assert(decoded_wdata == 32'h1122_3344);
+        $assert(decoded_be == 4'h5);
+        $finish();
+    }
+}
+
+#[test(tlp_request_rejects_unsupported_and_malformed)]
+module tlp_request_rejects_unsupported_and_malformed {
+    inst clk: $tb::clock_gen;
+
+    var request_valid: logic    ;
+    var bar_decode   : logic<6> ;
+    var header_dw0   : logic<32>;
+    var header_dw1   : logic<32>;
+    var header_dw2   : logic<32>;
+    var header_dw3   : logic<32>;
+    var payload_dw0  : logic<32>;
+    var decoded_valid: logic    ;
+    var decoded_write: logic    ;
+    var decoded_addr : logic<16>;
+    var decoded_wdata: logic<32>;
+    var decoded_be   : logic<4> ;
+    var requester_id : logic<16>;
+    var request_tag  : logic<8> ;
+    var unsupported  : logic    ;
+    var ur_required  : logic    ;
+    var malformed    : logic    ;
+
+    inst dut: tlp_request_decoder (
+        request_valid  ,
+        bar_decode     ,
+        header_dw0     ,
+        header_dw1     ,
+        header_dw2     ,
+        header_dw3     ,
+        payload_dw0    ,
+        decoded_valid  ,
+        decoded_write  ,
+        decoded_addr   ,
+        decoded_wdata  ,
+        decoded_be     ,
+        requester_id   ,
+        request_tag    ,
+        unsupported    ,
+        ur_required    ,
+        malformed      ,
+    );
+
+    initial {
+        request_valid = 1;
+        bar_decode    = 6'b000001;
+        header_dw1    = 32'h0000_000f;
+        header_dw2    = 0;
+        header_dw3    = 0;
+        payload_dw0   = 0;
+
+        // 4-DW Memory Read is recognized as currently unsupported.
+        header_dw0 = 32'h2000_0001;
+        clk.next(1);
+        $assert(!decoded_valid);
+        $assert(unsupported);
+        $assert(ur_required);
+        $assert(!malformed);
+
+        // A valid multi-DWORD read is unsupported and requires a UR Completion.
+        header_dw0 = 32'h0000_0002;
+        clk.next(1);
+        $assert(!decoded_valid);
+        $assert(unsupported);
+        $assert(ur_required);
+        $assert(!malformed);
+
+        // One-DW request requires Last DW BE=0 and a nonzero First DW BE.
+        header_dw0 = 32'h0000_0001;
+        header_dw1 = 32'h0000_00f0;
+        clk.next(1);
+        $assert(malformed);
+        header_dw1 = 32'h0000_000f;
+        header_dw2 = 32'h0000_0002;
+        clk.next(1);
+        $assert(malformed);
+
+        // Requests decoded for another BAR are ignored by this decoder.
+        bar_decode = 6'b000100;
+        header_dw2 = 0;
+        clk.next(1);
+        $assert(!decoded_valid);
+        $assert(!unsupported);
+        $assert(!ur_required);
+        $assert(!malformed);
+        $finish();
+    }
+}
+
+#[test(tlp_completion_fields)]
+module tlp_completion_fields {
+    inst clk: $tb::clock_gen;
+
+    var completion_valid : logic    ;
+    var completion_status: logic<3> ;
+    var with_data        : logic    ;
+    var completer_id     : logic<16>;
+    var requester_id     : logic<16>;
+    var request_tag      : logic<8> ;
+    var request_addr     : logic<16>;
+    var request_be       : logic<4> ;
+    var read_data        : logic<32>;
+    var tx_valid         : logic    ;
+    var header_dw0       : logic<32>;
+    var header_dw1       : logic<32>;
+    var header_dw2       : logic<32>;
+    var payload_dw0      : logic<32>;
+
+    inst dut: tlp_completion_builder (
+        completion_valid   ,
+        completion_status  ,
+        with_data          ,
+        completer_id       ,
+        requester_id       ,
+        request_tag        ,
+        request_addr       ,
+        request_be         ,
+        read_data          ,
+        tx_valid           ,
+        header_dw0         ,
+        header_dw1         ,
+        header_dw2         ,
+        payload_dw0        ,
+    );
+
+    initial {
+        completion_valid  = 1;
+        completion_status = 3'b000;
+        with_data         = 1;
+        completer_id      = 16'h0100;
+        requester_id      = 16'h1234;
+        request_tag       = 8'h5a;
+        request_addr      = 16'h0010;
+        request_be        = 4'b1111;
+        read_data         = 32'h5447_5055;
+        clk.next(1);
+        $assert(tx_valid);
+        $assert(header_dw0 == 32'h4a00_0001);
+        $assert(header_dw1 == 32'h0100_0004);
+        $assert(header_dw2 == 32'h1234_5a10);
+        $assert(payload_dw0 == 32'h5447_5055);
+
+        request_addr = 16'h0010;
+        request_be   = 4'b1100;
+        clk.next(1);
+        $assert(header_dw1[11:0] == 12'd2);
+        $assert(header_dw2[6:0] == 7'h12);
+
+        // Unsupported Request Completion has no payload and status 001b.
+        completion_status = 3'b001;
+        with_data         = 0;
+        clk.next(1);
+        $assert(header_dw0 == 32'h0a00_0000);
+        $assert(header_dw1 == 32'h0100_2000);
+        $finish();
+    }
+}

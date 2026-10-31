@@ -1,0 +1,94 @@
+/// TaruGX/100 BAR0 register block.
+///
+/// The request interface accepts one 32-bit, naturally aligned transaction per
+/// cycle. `req_wstrb` is a byte write enable in little-endian lane order.
+module gpu_registers (
+    clk            : input  clock    ,
+    rst            : input  reset    ,
+    req_valid      : input  logic    ,
+    req_write      : input  logic    ,
+    req_addr       : input  logic<16>,
+    req_wdata      : input  logic<32>,
+    req_wstrb      : input  logic<4> ,
+    req_ready      : output logic    ,
+    rsp_valid      : output logic    ,
+    rsp_rdata      : output logic<32>,
+    rsp_error      : output logic    ,
+    display_ctrl   : output logic<32>,
+    display_color  : output logic<32>,
+    display_mode   : output logic<32>,
+    fb_base        : output logic<32>,
+    fb_stride      : output logic<32>,
+    fb_commit_pulse: output logic    ,
+) {
+    const GPU_ID     : logic<32> = 32'h5447_5055;
+    const GPU_VERSION: logic<32> = 32'h0001_0000;
+    const GPU_STATUS : logic<32> = 32'h0000_0001;
+
+    function merge_bytes (
+        old_value: input logic<32>,
+        new_value: input logic<32>,
+        strobe   : input logic<4> ,
+    ) -> logic<32> {
+        var result: logic<32>;
+        result = old_value;
+        for i in 0..4 {
+            if strobe[i] {
+                result[i * 8+:8] = new_value[i * 8+:8];
+            }
+        }
+        return result;
+    }
+
+    assign req_ready = 1'b1;
+    assign rsp_valid = req_valid;
+
+    always_comb {
+        rsp_rdata = 32'b0;
+        rsp_error = 1'b0;
+        if req_valid {
+            case req_addr[15:2] {
+                14'h0000: rsp_rdata = GPU_ID;
+                14'h0001: rsp_rdata = GPU_VERSION;
+                14'h0002: rsp_rdata = GPU_STATUS;
+                14'h0004: rsp_rdata = display_ctrl;
+                14'h0005: rsp_rdata = display_color;
+                14'h0006: rsp_rdata = display_mode;
+                14'h0007: rsp_rdata = fb_base;
+                14'h0008: rsp_rdata = fb_stride;
+                14'h0009: rsp_rdata = 32'b0;
+                default : {
+                    rsp_rdata = 32'b0;
+                    rsp_error = 1'b1;
+                }
+            }
+            if req_addr[1:0] != 2'b00 {
+                rsp_error = 1'b1;
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            display_ctrl    = 32'b0;
+            display_color   = 32'b0;
+            display_mode    = 32'b0;
+            fb_base         = 32'b0;
+            fb_stride       = 32'd2560;
+            fb_commit_pulse = 1'b0;
+        } else {
+            fb_commit_pulse = 1'b0;
+            if req_valid && req_ready && req_write && (req_addr[1:0] == 2'b00) {
+                case req_addr[15:2] {
+                    14'h0004: display_ctrl    = merge_bytes(display_ctrl, req_wdata, req_wstrb);
+                    14'h0005: display_color   = merge_bytes(display_color, req_wdata, req_wstrb);
+                    14'h0006: display_mode    = merge_bytes(display_mode, req_wdata, req_wstrb);
+                    14'h0007: fb_base         = merge_bytes(fb_base, req_wdata, req_wstrb);
+                    14'h0008: fb_stride       = merge_bytes(fb_stride, req_wdata, req_wstrb);
+                    14'h0009: fb_commit_pulse = |req_wstrb;
+                    default : {}
+                }
+            }
+        }
+    }
+}

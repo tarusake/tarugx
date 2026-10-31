@@ -1,0 +1,45 @@
+/// Minimal 8-N-1 UART transmitter with ready/valid flow control.
+module uart_tx #(
+    param CLKS_PER_BIT: u32 = 868,
+) (
+    clk     : input  clock   ,
+    rst_n   : input  reset   ,
+    in_valid: input  logic   ,
+    in_ready: output logic   ,
+    in_data : input  logic<8>,
+    tx      : output logic   ,
+) {
+    var busy      : logic    ;
+    var shift     : logic<10>;
+    var baud_count: logic<16>;
+    var bit_count : logic<4> ;
+
+    assign in_ready = !busy;
+    assign tx       = if busy ? shift[0] : 1'b1;
+
+    always_ff (clk, rst_n) {
+        if_reset {
+            busy       = 1'b0;
+            shift      = 10'h3ff;
+            baud_count = 16'b0;
+            bit_count  = 4'b0;
+        } else if in_valid && in_ready {
+            busy       = 1'b1;
+            shift      = {1'b1, in_data, 1'b0};
+            baud_count = 16'b0;
+            bit_count  = 4'b0;
+        } else if busy {
+            if baud_count == CLKS_PER_BIT - 1 {
+                baud_count = 16'b0;
+                shift      = {1'b1, shift[9:1]};
+                if bit_count == 4'd9 {
+                    busy = 1'b0;
+                } else {
+                    bit_count = bit_count + 4'd1;
+                }
+            } else {
+                baud_count = baud_count + 16'd1;
+            }
+        }
+    }
+}

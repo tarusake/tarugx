@@ -1,0 +1,9 @@
+/// Decoded BAR request router contract; implementation follows TLP decoding.
+module bar_router (
+    bar_decode : input  logic<6>,
+    select_bar0: output logic   ,
+    select_bar2: output logic   ,
+) {
+    assign select_bar0 = bar_decode[0];
+    assign select_bar2 = bar_decode[2];
+}

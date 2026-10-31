@@ -1,0 +1,186 @@
+/// Phase-1 TaruGX application core at the vendor-neutral PCIe TLP boundary.
+module tarugx_top (
+    tlp_clk      : input  clock     ,
+    tlp_rst_n    : input  reset     ,
+    completer_id : input  logic<16> ,
+    link_up      : input  logic     ,
+    perst_n      : input  logic     ,
+    clock_ready  : input  logic<2>  ,
+    lane_status  : input  logic<2>  ,
+    ltssm        : input  logic<5>  ,
+    rx_sop       : input  logic     ,
+    rx_eop       : input  logic     ,
+    rx_valid     : input  logic<8>  ,
+    rx_data      : input  logic<256>,
+    rx_bar_decode: input  logic<6>  ,
+    rx_error     : input  logic<8>  ,
+    rx_wait      : output logic     ,
+    rx_masknp    : output logic     ,
+    tx_wait      : input  logic     ,
+    tx_sop       : output logic     ,
+    tx_eop       : output logic     ,
+    tx_valid     : output logic<8>  ,
+    tx_data      : output logic<256>,
+    led_status   : output logic<4>  ,
+    uart_tx_o    : output logic     ,
+) {
+    var framing_error: logic    ;
+    var unsupported  : logic    ;
+    var malformed    : logic    ;
+    var display_ctrl : logic<32>;
+    var display_color: logic<32>;
+    var display_mode : logic<32>;
+    var fb_base      : logic<32>;
+    var fb_stride    : logic<32>;
+    var fb_commit    : logic    ;
+
+    inst app: pcie_bar0_path (
+        clk            : tlp_clk  ,
+        rst            : tlp_rst_n,
+        completer_id              ,
+        rx_sop                    ,
+        rx_eop                    ,
+        rx_valid                  ,
+        rx_data                   ,
+        rx_bar_decode             ,
+        rx_error                  ,
+        rx_wait                   ,
+        rx_masknp                 ,
+        tx_wait                   ,
+        tx_sop                    ,
+        tx_eop                    ,
+        tx_valid                  ,
+        tx_data                   ,
+        framing_error             ,
+        unsupported               ,
+        malformed                 ,
+        display_ctrl              ,
+        display_color             ,
+        display_mode              ,
+        fb_base                   ,
+        fb_stride                 ,
+        fb_commit_pulse: fb_commit,
+    );
+
+    assign led_status[0] = !tlp_rst_n;
+    assign led_status[1] = !link_up;
+    assign led_status[2] = !ltssm[0];
+    assign led_status[3] = !(framing_error || malformed);
+
+    var uart_period   : logic<24>;
+    var uart_index    : logic<7> ;
+    var uart_valid    : logic    ;
+    var uart_ready    : logic    ;
+    var uart_data     : logic<8> ;
+    var seen_active   : logic    ;
+    var seen_nondetect: logic    ;
+    var seen_refclk   : logic<2> ;
+    var seen_lane     : logic<2> ;
+    // Sticky application-path observations survive a stalled host MMIO read.
+    var seen_rx         : logic;
+    var seen_tx         : logic;
+    var seen_framing    : logic;
+    var seen_unsupported: logic;
+    var seen_malformed  : logic;
+    // First valid RX beat, retained until application reset. High to low:
+    // padding[7:0], SOP, EOP, valid[7:0], error[7:0], BAR[5:0], data[255:0].
+    var first_rx      : logic<288>;
+    var capture_nibble: logic<4>  ;
+
+    always_comb {
+        capture_nibble = 4'b0;
+        if (uart_index >= 7'd27) && (uart_index <= 7'd98) {
+            capture_nibble = first_rx >> ((7'd98 - uart_index) * 9'd4);
+        }
+        uart_valid = (uart_index != 5'd0) || (&uart_period);
+        case uart_index {
+            5'd0   : uart_data = 8'h4c;
+            5'd1   : uart_data = if ltssm[4] ? 8'h31 : 8'h30;
+            5'd2   : uart_data = if (ltssm[3:0] <: 4'd10) ? (8'h30 + ltssm[3:0]) : (8'h41 + ltssm[3:0] - 4'd10);
+            5'd3   : uart_data = 8'h50;
+            5'd4   : uart_data = if perst_n ? 8'h31 : 8'h30;
+            5'd5   : uart_data = 8'h41;
+            5'd6   : uart_data = if seen_active ? 8'h31 : 8'h30;
+            5'd7   : uart_data = 8'h4e;
+            5'd8   : uart_data = if seen_nondetect ? 8'h31 : 8'h30;
+            5'd9   : uart_data = 8'h43;
+            5'd10  : uart_data = if seen_refclk[1] ? 8'h31 : 8'h30;
+            5'd11  : uart_data = if seen_refclk[0] ? 8'h31 : 8'h30;
+            5'd12  : uart_data = 8'h44;
+            5'd13  : uart_data = if seen_lane[0] ? 8'h31 : 8'h30;
+            5'd14  : uart_data = 8'h4b;
+            5'd15  : uart_data = if seen_lane[1] ? 8'h31 : 8'h30;
+            5'd16  : uart_data = 8'h52;
+            5'd17  : uart_data = if seen_rx ? 8'h31 : 8'h30;
+            5'd18  : uart_data = 8'h54;
+            5'd19  : uart_data = if seen_tx ? 8'h31 : 8'h30;
+            5'd20  : uart_data = 8'h46;
+            5'd21  : uart_data = if seen_framing ? 8'h31 : 8'h30;
+            5'd22  : uart_data = 8'h55;
+            5'd23  : uart_data = if seen_unsupported ? 8'h31 : 8'h30;
+            5'd24  : uart_data = 8'h4d;
+            5'd25  : uart_data = if seen_malformed ? 8'h31 : 8'h30;
+            7'd26  : uart_data = 8'h58;
+            7'd99  : uart_data = 8'h0d;
+            7'd100 : uart_data = 8'h0a;
+            default: uart_data = if (capture_nibble <: 4'd10) ?
+                (8'h30 + capture_nibble)
+            :
+                (8'h41 + capture_nibble - 4'd10)
+            ;
+        }
+    }
+
+    always_ff (tlp_clk, tlp_rst_n) {
+        if_reset {
+            uart_period      = 24'b0;
+            uart_index       = 5'b0;
+            seen_active      = 1'b0;
+            seen_nondetect   = 1'b0;
+            seen_refclk      = 2'b0;
+            seen_lane        = 2'b0;
+            seen_rx          = 1'b0;
+            seen_tx          = 1'b0;
+            seen_framing     = 1'b0;
+            seen_unsupported = 1'b0;
+            seen_malformed   = 1'b0;
+            first_rx         = 288'b0;
+        } else {
+            if !seen_rx && (|rx_valid) {
+                first_rx = {8'b0, rx_sop, rx_eop, rx_valid, rx_error, rx_bar_decode, rx_data};
+            }
+            seen_rx          = seen_rx || (|rx_valid);
+            seen_tx          = seen_tx || ((|tx_valid) && !tx_wait);
+            seen_framing     = seen_framing || framing_error;
+            seen_unsupported = seen_unsupported || unsupported;
+            seen_malformed   = seen_malformed || malformed;
+            seen_refclk      = seen_refclk | clock_ready;
+            seen_lane        = seen_lane | lane_status;
+            if ltssm == 5'h01 {
+                seen_active = 1'b1;
+            }
+            if ltssm >: 5'h01 {
+                seen_nondetect = 1'b1;
+            }
+            if uart_valid && uart_ready {
+                uart_period = 24'b0;
+                if uart_index == 7'd100 {
+                    uart_index = 5'b0;
+                } else {
+                    uart_index = uart_index + 5'd1;
+                }
+            } else if uart_index == 5'd0 {
+                uart_period = uart_period + 24'd1;
+            }
+        }
+    }
+
+    inst debug_uart: uart_tx (
+        clk     : tlp_clk   ,
+        rst_n   : tlp_rst_n ,
+        in_valid: uart_valid,
+        in_ready: uart_ready,
+        in_data : uart_data ,
+        tx      : uart_tx_o ,
+    );
+}

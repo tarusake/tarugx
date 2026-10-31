@@ -1,0 +1,35 @@
+/// Vendor-neutral boundary for the generated Gowin PCIe endpoint.
+///
+/// This module intentionally contains no generated-IP instance yet. Exact
+/// generated module/port names are project-configuration dependent and must be
+/// copied from the selected Gowin IP configuration before hardware integration.
+module pcie_endpoint_wrapper (
+    tlp_clk      : input  clock     ,
+    tlp_rst      : input  reset     ,
+    rx_sop       : output logic     ,
+    rx_eop       : output logic     ,
+    rx_valid     : output logic<8>  ,
+    rx_data      : output logic<256>,
+    rx_bar_decode: output logic<6>  ,
+    rx_error     : output logic<8>  ,
+    rx_wait      : input  logic     ,
+    rx_masknp    : input  logic     ,
+    tx_sop       : input  logic     ,
+    tx_eop       : input  logic     ,
+    tx_valid     : input  logic<8>  ,
+    tx_data      : input  logic<256>,
+    tx_wait      : output logic     ,
+    requester_id : output logic<16> ,
+    link_up      : output logic     ,
+) {
+    // Safe simulation stub until the generated Gowin IP is imported.
+    assign rx_sop        = 1'b0;
+    assign rx_eop        = 1'b0;
+    assign rx_valid      = 8'b0;
+    assign rx_data       = 256'b0;
+    assign rx_bar_decode = 6'b0;
+    assign rx_error      = 8'b0;
+    assign tx_wait       = 1'b0;
+    assign requester_id  = 16'b0;
+    assign link_up       = 1'b0;
+}

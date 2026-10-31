@@ -1,0 +1,121 @@
+#[test(bar0_tlp_bridge_end_to_end)]
+module bar0_tlp_bridge_end_to_end {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var completer_id   : logic<16>;
+    var rx_valid       : logic    ;
+    var rx_ready       : logic    ;
+    var rx_bar_decode  : logic<6> ;
+    var rx_header_dw0  : logic<32>;
+    var rx_header_dw1  : logic<32>;
+    var rx_header_dw2  : logic<32>;
+    var rx_header_dw3  : logic<32>;
+    var rx_payload_dw0 : logic<32>;
+    var tx_valid       : logic    ;
+    var tx_ready       : logic    ;
+    var tx_header_dw0  : logic<32>;
+    var tx_header_dw1  : logic<32>;
+    var tx_header_dw2  : logic<32>;
+    var tx_payload_dw0 : logic<32>;
+    var unsupported    : logic    ;
+    var malformed      : logic    ;
+    var display_ctrl   : logic<32>;
+    var display_color  : logic<32>;
+    var display_mode   : logic<32>;
+    var fb_base        : logic<32>;
+    var fb_stride      : logic<32>;
+    var fb_commit_pulse: logic    ;
+
+    inst dut: bar0_tlp_bridge (
+        clk              ,
+        rst              ,
+        completer_id     ,
+        rx_valid         ,
+        rx_ready         ,
+        rx_bar_decode    ,
+        rx_header_dw0    ,
+        rx_header_dw1    ,
+        rx_header_dw2    ,
+        rx_header_dw3    ,
+        rx_payload_dw0   ,
+        tx_valid         ,
+        tx_ready         ,
+        tx_header_dw0    ,
+        tx_header_dw1    ,
+        tx_header_dw2    ,
+        tx_payload_dw0   ,
+        unsupported      ,
+        malformed        ,
+        display_ctrl     ,
+        display_color    ,
+        display_mode     ,
+        fb_base          ,
+        fb_stride        ,
+        fb_commit_pulse  ,
+    );
+
+    initial {
+        completer_id   = 16'h0100;
+        rx_valid       = 0;
+        rx_bar_decode  = 6'b000001;
+        rx_header_dw0  = 0;
+        rx_header_dw1  = 0;
+        rx_header_dw2  = 0;
+        rx_header_dw3  = 0;
+        rx_payload_dw0 = 0;
+        tx_ready       = 0;
+        rst.assert();
+        clk.next(1);
+        clk.next(1);
+
+        // Posted partial write to DISPLAY_COLOR.
+        rx_valid       = 1;
+        rx_header_dw0  = 32'h4000_0001;
+        rx_header_dw1  = 32'h1234_1105;
+        rx_header_dw2  = 32'h0000_0014;
+        rx_payload_dw0 = 32'h1122_3344;
+        clk.next(1);
+        $assert(display_color == 32'h0022_0044);
+        $assert(!tx_valid);
+
+        // Read the same register; metadata and value are captured for CplD.
+        rx_header_dw0  = 32'h0000_0001;
+        rx_header_dw1  = 32'h1234_220f;
+        rx_payload_dw0 = 0;
+        clk.next(1);
+        rx_valid = 0;
+        clk.next(1);
+        $assert(tx_valid);
+        $assert(!rx_ready);
+        $assert(tx_header_dw0 == 32'h4a00_0001);
+        $assert(tx_header_dw1 == 32'h0100_0004);
+        $assert(tx_header_dw2 == 32'h1234_2214);
+        $assert(tx_payload_dw0 == 32'h0022_0044);
+
+        // Backpressure must retain the Completion until accepted.
+        clk.next(2);
+        $assert(tx_valid);
+        $assert(tx_payload_dw0 == 32'h0022_0044);
+        tx_ready = 1;
+        clk.next(1);
+        tx_ready = 0;
+        clk.next(1);
+        $assert(!tx_valid);
+        $assert(rx_ready);
+
+        // Unsupported non-posted requests receive a UR Completion without data.
+        rx_valid      = 1;
+        rx_header_dw0 = 32'h2000_0001;
+        rx_header_dw1 = 32'h5678_440f;
+        rx_header_dw2 = 0;
+        clk.next(1);
+        rx_valid = 0;
+        clk.next(1);
+        $assert(tx_valid);
+        $assert(tx_header_dw0 == 32'h0a00_0000);
+        $assert(tx_header_dw1 == 32'h0100_2000);
+        $assert(tx_header_dw2 == 32'h5678_4400);
+        $finish();
+    }
+}

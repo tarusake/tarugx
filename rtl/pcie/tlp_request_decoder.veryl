@@ -1,0 +1,67 @@
+/// Decode a normalized PCIe Memory Request header.
+///
+/// Inputs are PCIe header DWORDs in host bit significance, after any
+/// vendor-specific lane/byte normalization. Phase 1 accepts only one-DWORD,
+/// 3-DW-address Memory Read and Memory Write requests targeting BAR0.
+module tlp_request_decoder (
+    request_valid: input  logic    ,
+    bar_decode   : input  logic<6> ,
+    header_dw0   : input  logic<32>,
+    header_dw1   : input  logic<32>,
+    header_dw2   : input  logic<32>,
+    header_dw3   : input  logic<32>,
+    payload_dw0  : input  logic<32>,
+    decoded_valid: output logic    ,
+    decoded_write: output logic    ,
+    decoded_addr : output logic<16>,
+    decoded_wdata: output logic<32>,
+    decoded_be   : output logic<4> ,
+    requester_id : output logic<16>,
+    request_tag  : output logic<8> ,
+    unsupported  : output logic    ,
+    ur_required  : output logic    ,
+    malformed    : output logic    ,
+) {
+    let fmt       : logic<3>  = header_dw0[31:29];
+    let tlp_type  : logic<5>  = header_dw0[28:24];
+    let length    : logic<10> = header_dw0[9:0];
+    let last_be   : logic<4>  = header_dw1[7:4];
+    let first_be  : logic<4>  = header_dw1[3:0];
+    let is_mem    : logic     = tlp_type == 5'b00000;
+    let is_mrd32  : logic     = is_mem && (fmt == 3'b000);
+    let is_mwr32  : logic     = is_mem && (fmt == 3'b010);
+    let is_known  : logic     = is_mrd32 || is_mwr32;
+    let has_data  : logic     = fmt[1];
+    let is_one_dw : logic     = length == 10'd1;
+    let valid_be  : logic     = first_be != 4'b0000;
+    let valid_last: logic     = last_be == 4'b0000;
+    let aligned   : logic     = header_dw2[1:0] == 2'b00;
+
+    assign requester_id  = header_dw1[31:16];
+    assign request_tag   = header_dw1[15:8];
+    assign decoded_addr  = header_dw2[15:0];
+    assign decoded_wdata = payload_dw0;
+    assign decoded_be    = first_be;
+    assign decoded_write = is_mwr32;
+
+    always_comb {
+        decoded_valid = 1'b0;
+        unsupported   = 1'b0;
+        ur_required   = 1'b0;
+        malformed     = 1'b0;
+
+        if request_valid && bar_decode[0] {
+            if !is_known {
+                unsupported = 1'b1;
+                ur_required = !has_data;
+            } else if !is_one_dw {
+                unsupported = 1'b1;
+                ur_required = is_mrd32;
+            } else if !valid_be || !valid_last || !aligned {
+                malformed = 1'b1;
+            } else {
+                decoded_valid = 1'b1;
+            }
+        }
+    }
+}

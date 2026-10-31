@@ -1,0 +1,14 @@
+/build/
+/.build/
+/dependencies/
+/tarugx.f
+/*.vcd
+/vendor/gowin/pcie_x1/*
+!/vendor/gowin/pcie_x1/README.md
+!/vendor/gowin/pcie_x1/*.mod
+!/vendor/gowin/pcie_x1/*.ipc
+!/vendor/gowin/pcie_x1/define.vh
+
+
+# Private development records live only on develop.
+/docs/

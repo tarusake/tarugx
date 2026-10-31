@@ -1,0 +1,59 @@
+/// Build a normalized one-DWORD Completion with Data packet.
+///
+/// The output DWORDs still require vendor-specific lane packing before they are
+/// presented to the Gowin 256-bit TX interface.
+module tlp_completion_builder (
+    completion_valid : input  logic    ,
+    completion_status: input  logic<3> ,
+    with_data        : input  logic    ,
+    completer_id     : input  logic<16>,
+    requester_id     : input  logic<16>,
+    request_tag      : input  logic<8> ,
+    request_addr     : input  logic<16>,
+    request_be       : input  logic<4> ,
+    read_data        : input  logic<32>,
+    tx_valid         : output logic    ,
+    header_dw0       : output logic<32>,
+    header_dw1       : output logic<32>,
+    header_dw2       : output logic<32>,
+    payload_dw0      : output logic<32>,
+) {
+    function count_bytes (
+        be: input logic<4>,
+    ) -> logic<3> {
+        var count: logic<3>;
+        count = 3'b0;
+        for i in 0..4 {
+            count += be[i] as 3;
+        }
+        return count;
+    }
+
+    function first_byte (
+        be: input logic<4>,
+    ) -> logic<2> {
+        var offset: logic<2>;
+        offset = 2'd0;
+        if be[0] {
+            offset = 2'd0;
+        } else if be[1] {
+            offset = 2'd1;
+        } else if be[2] {
+            offset = 2'd2;
+        } else if be[3] {
+            offset = 2'd3;
+        }
+        return offset;
+    }
+
+    let byte_count : logic<3> = if with_data ? count_bytes(request_be) : 3'b0;
+    let byte_offset: logic<2> = first_byte(request_be);
+    let lower_addr : logic<7> = request_addr[6:0] + (byte_offset as 7);
+
+    assign tx_valid = completion_valid;
+    // Type=Completion; successful reads carry one DWORD, UR carries no data.
+    assign header_dw0  = if with_data ? 32'h4a00_0001 : 32'h0a00_0000;
+    assign header_dw1  = {completer_id, completion_status, 1'b0, 9'b0, byte_count};
+    assign header_dw2  = {requester_id, request_tag, 1'b0, lower_addr};
+    assign payload_dw0 = read_data;
+}
