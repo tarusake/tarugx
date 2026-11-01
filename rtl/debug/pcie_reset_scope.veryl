@@ -1,0 +1,70 @@
+/// Observe one pulse and raw reset levels; never drive the observed signals.
+/// bits: [5] pulse, [4] core_n, [3] pmac_n, [2] lane_n, [1] ahb_n, [0] upar_rst.
+module pcie_reset_scope (
+    clk     : input  'dbg      clock    ,
+    rst_n   : input  'dbg      reset    ,
+    raw     : input  'external logic<6> ,
+    snapshot: output 'dbg      logic<56>,
+) {
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var inputs_meta: 'dbg logic<6>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var inputs_sync: 'dbg logic<6>;
+    var prior      : 'dbg logic<5>;
+    var pre_trigger: 'dbg logic<5>;
+    var during_high: 'dbg logic<5>;
+    var during_low : 'dbg logic<5>;
+    var after_high : 'dbg logic<5>;
+    var after_low  : 'dbg logic<5>;
+    var started    : 'dbg logic   ;
+    var finished   : 'dbg logic   ;
+    assign snapshot = {
+        6'b0, finished, started, 3'b0, pre_trigger, 3'b0, during_high, 3'b0, during_low, 3'b0, after_high, 3'b0,
+        after_low, 2'b0, inputs_sync
+    };
+    unsafe (cdc) {
+        always_ff (clk, rst_n) {
+            if_reset {
+                inputs_meta = 0;
+                inputs_sync = 0;
+            } else {
+                inputs_meta = raw;
+                inputs_sync = inputs_meta;
+            }
+        }
+    }
+    always_ff (clk, rst_n) {
+        if_reset {
+            prior       = 0;
+            pre_trigger = 0;
+            during_high = 0;
+            during_low  = 0;
+            after_high  = 0;
+            after_low   = 0;
+            started     = 0;
+            finished    = 0;
+        } else {
+            prior = inputs_sync[4:0];
+            if !started {
+                if inputs_sync[5] {
+                    started     = 1;
+                    pre_trigger = prior;
+                    during_high = inputs_sync[4:0];
+                    during_low  = ~inputs_sync[4:0];
+                }
+            } else if !finished {
+                if inputs_sync[5] {
+                    during_high = during_high | inputs_sync[4:0];
+                    during_low  = during_low | ~inputs_sync[4:0];
+                } else {
+                    finished   = 1;
+                    after_high = inputs_sync[4:0];
+                    after_low  = ~inputs_sync[4:0];
+                }
+            } else {
+                after_high = after_high | inputs_sync[4:0];
+                after_low  = after_low | ~inputs_sync[4:0];
+            }
+        }
+    }
+}

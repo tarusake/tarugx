@@ -5,6 +5,7 @@ type=Serdes
 version=1.2
 
 [Config]
+global_reset_enable=false
 LANG=0
 Synthesis_tool=GowinSynthesis
 file=serdes
@@ -25,6 +26,9 @@ Bit64_3=false
 Bit64_4=false
 Bit64_5=false
 Device_ID=1100
+ERE_Enable=false
+ERE_SIZE=
+ERE_value=00000000
 Enable_MSI_Capability=false
 LANG=0
 Lane_Width=X1
@@ -53,7 +57,7 @@ Vendor_ID=22C2
 file=pcie_controller
 module=PCIE_Controller_Top
 recordlanes=Q0 Lane0
-target_device=gw5ast138b-002
+target_device=gw5ast138b-010
 type=pcie
 value0=FFFF0000
 value1=00000000

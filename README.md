@@ -18,3 +18,5 @@ Gowin実機ビルドには、ライセンス認証済みのEDAと対象ボード
 生成物や接続情報はGit管理外です。
 
 Linuxドライバー: `make -C drivers/tarugx`（対象カーネルのヘッダーが必要）。
+
+UEFI: `make -C uefi all test`（X64 GCC/binutils、GNU-EFI、Python 3が必要）。

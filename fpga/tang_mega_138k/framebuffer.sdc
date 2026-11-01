@@ -21,6 +21,10 @@ set_false_path -to [get_pins {u_scanout/display_active_sync_0_s0/D}]
 set_max_delay 10 -from [get_cells {u_scanout/display/fault_snapshot*}] -to [get_cells {debug_fault*}]
 set_false_path -to [get_pins {status_meta*/D}]
 set_false_path -to [get_pins {debug_aux_meta*/D sys_toggle_sync_0_s0/D}]
+set_false_path -to [get_pins {u_pcie_debug/flags_meta*/D u_pcie_debug/beat_sync_0_s0/D}]
+set_false_path -to [get_pins {u_pcie_debug/snapshot_cdc/ack_sync_0_s0/D u_pcie_debug/snapshot_cdc/request_sync_0_s0/D}]
+set_max_delay 10 -from [get_cells {u_pcie_debug/snapshot_cdc/held*}] -to [get_cells {u_pcie_debug/snapshot_cdc/dst_config*}]
+set_false_path -to [get_pins {pcie_debug_reset*/CLEAR}]
 # These registers implement asynchronous assertion / synchronous release.
 # The final release register to functional RESET/CLEAR pins remains timed.
 set_false_path -to [get_pins {cpu_reset*/CLEAR mem_reset*/CLEAR pixel_reset*/CLEAR}]

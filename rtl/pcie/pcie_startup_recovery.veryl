@@ -1,0 +1,63 @@
+/// Experimental one-shot reset, not a vendor-specified initialization sequence.
+/// rst_n is configuration POR, never the reset driven by this module.
+module pcie_startup_recovery #(
+    param WAIT_CYCLES : u32 = 1_000_000,
+    param PULSE_CYCLES: u32 = 100_000  ,
+) (
+    clk          : input  'core clock,
+    rst_n        : input  'core reset,
+    ready_async  : input  'raw  logic,
+    perst_async  : input  'raw  logic,
+    link_up      : input  'core logic,
+    reset_request: output 'core logic,
+    fired        : output 'core logic,
+    inhibited    : output 'core logic,
+) {
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var ready_sync: 'core logic<2>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var perst_sync : 'core logic<2> ;
+    var wait_count : 'core logic<32>;
+    var pulse_count: 'core logic<32>;
+    unsafe (cdc) {
+        always_ff (clk, rst_n) {
+            if_reset {
+                ready_sync = 0;
+                perst_sync = 0;
+            } else {
+                ready_sync = {ready_sync[0], ready_async};
+                perst_sync = {perst_sync[0], perst_async};
+            }
+        }
+    }
+    always_ff (clk, rst_n) {
+        if_reset {
+            wait_count    = 0;
+            pulse_count   = 0;
+            reset_request = 0;
+            fired         = 0;
+            inhibited     = 0;
+        } else {
+            if link_up {
+                inhibited = 1;
+            }
+            if reset_request {
+                if pulse_count == PULSE_CYCLES - 1 {
+                    reset_request = 0;
+                } else {
+                    pulse_count = pulse_count + 32'd1;
+                }
+            } else if !fired && !inhibited && !link_up {
+                if !ready_sync[1] || !perst_sync[1] {
+                    wait_count = 0;
+                } else if wait_count == WAIT_CYCLES - 1 {
+                    reset_request = 1;
+                    fired         = 1;
+                    pulse_count   = 0;
+                } else {
+                    wait_count = wait_count + 32'd1;
+                }
+            }
+        }
+    }
+}

@@ -1,4 +1,4 @@
-module tarugx_framebuffer_gowin_top (
+module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1'b0) (
     input  logic       sys_clk_p,
     input  logic       pcie_rstn,
     input  logic       rst_n,
@@ -37,7 +37,9 @@ module tarugx_framebuffer_gowin_top (
     // Match Sipeed's standard-Dock reference: the hard PCIe block is released
     // by the board reset. PERST# remains observable at the package pin but is
     // not inserted into the hard-IP reset path.
-    wire core_rst_n = rst_n;
+    wire recovery_reset, recovery_fired, recovery_inhibited;
+    wire [55:0] reset_scope;
+    wire core_rst_n = rst_n & ~recovery_reset;
 
     logic rx_sop, rx_eop, rx_wait, rx_masknp, tx_sop, tx_eop, tx_wait, link_up;
     logic [7:0] rx_valid, rx_error, tx_valid;
@@ -48,6 +50,15 @@ module tarugx_framebuffer_gowin_top (
     wire [31:0] display_ctrl, display_color;
 
     SerDes_Top u_pcie (
+`ifdef TARUGX_PCIE_PHY_RECOVERY
+        // The independent, one-shot Veryl controller also resets the PHY.
+        // Its timer continues even when this reset deasserts CMU ready.
+        .por_n_i(~recovery_reset),
+`elsif TARUGX_PCIE_POR_RELEASE_TEST
+        // Warm-reference diagnostic only: test the generated PHY reset input.
+        // This is not the late-REFCLK startup sequence or a cold-boot fix.
+        .por_n_i(1'b1),
+`endif
         .PCIE_Controller_Top_pcie_tl_rx_sop_o(rx_sop),
         .PCIE_Controller_Top_pcie_tl_rx_eop_o(rx_eop),
         .PCIE_Controller_Top_pcie_tl_rx_data_o(rx_data),
@@ -70,11 +81,13 @@ module tarugx_framebuffer_gowin_top (
         .PCIE_Controller_Top_pcie_tl_drp_wrdata_i(32'b0),
         .PCIE_Controller_Top_pcie_tl_drp_strb_i(8'b0),
         .PCIE_Controller_Top_pcie_tl_drp_wr_i(1'b0),
-        .PCIE_Controller_Top_pcie_tl_drp_rd_i(1'b0),
-        .PCIE_Controller_Top_pcie_tl_int_status_i(1'b0),
+        .PCIE_Controller_Top_pcie_tl_drp_rd_i(1'b0)
+`ifndef TARUGX_PCIE_NO_MSI
+        ,.PCIE_Controller_Top_pcie_tl_int_status_i(1'b0),
         .PCIE_Controller_Top_pcie_tl_int_req_i(1'b0),
         .PCIE_Controller_Top_pcie_tl_int_msinum_i(5'b0),
         .PCIE_Controller_Top_pcie_tl_int_ack_o()
+`endif
     );
 
     // These generated SerDes status nets are intentionally observed only in
@@ -93,7 +106,7 @@ module tarugx_framebuffer_gowin_top (
 
     wire ui_clk, ddr_pll_lock, calibrated;
     wire pixel_clk, serial_clk, video_lock;
-    wire common_reset_n = rst_n & pll_lock & video_lock & calibrated;
+    wire common_reset_n = core_rst_n & pll_lock & video_lock & calibrated;
     (* async_reg = "true" *) reg [1:0] cpu_reset=0, mem_reset=0, pixel_reset=0;
     always @(posedge tlp_clk or negedge common_reset_n)
         if (!common_reset_n) cpu_reset<=0; else cpu_reset<={cpu_reset[0],1'b1};
@@ -250,7 +263,7 @@ module tarugx_framebuffer_gowin_top (
             end else if(!(&clock_idle)) clock_idle<=clock_idle+10'd1;
         end
     wire system_clock_present=clock_toggled && !(&clock_idle);
-    // D<DDR PLL><calibration><link><underflow>; FR03 low byte:
+    // D<DDR PLL><calibration><link><underflow>; FR04 preserves the FR03 low byte:
     // [7] video PLL, [6] PCIe PLL, [5] rst_n, [4:2] CPU/UI/pixel reset release,
     // [1] invalid scanout config, [0] external system-clock activity.
     (* async_reg="true" *) reg [3:0] status_meta=0, status_sync=0;
@@ -271,9 +284,51 @@ module tarugx_framebuffer_gowin_top (
                             pixel_reset[1],config_error,system_clock_present};
             debug_aux_sync<=debug_aux_meta;
         end
+    (* async_reg="true" *) reg [1:0] pcie_debug_reset=0;
+    always @(posedge tlp_clk or negedge debug_reset_n)
+        if (!debug_reset_n) pcie_debug_reset<=0;
+        else pcie_debug_reset<={pcie_debug_reset[0],1'b1};
+    generate if (PCIE_RECOVERY_EXPERIMENT) begin : recovery_experiment
+        tarugx_pcie_reset_scope u_reset_scope (
+            .clk(debug_clk), .rst_n(debug_reset_n),
+            .raw({recovery_reset, core_rst_n, u_pcie.PCIE_Controller_Top_pcie_pmac_rstn_o,
+                  u_pcie.q0_pmac_ln_rstn, u_pcie.q0_ahb_rstn, u_pcie.upar_rst}),
+            .snapshot(reset_scope)
+        );
+        tarugx_pcie_startup_recovery u_recovery (
+            .clk(tlp_clk), .rst_n(pcie_debug_reset[1]),
+            .ready_async(clock_ready[1]), .perst_async(pcie_rstn), .link_up(link_up),
+            .reset_request(recovery_reset), .fired(recovery_fired),
+            .inhibited(recovery_inhibited)
+        );
+    end else begin : recovery_disabled
+        assign reset_scope=56'b0;
+        assign recovery_reset=1'b0;
+        assign recovery_fired=1'b0;
+        assign recovery_inhibited=1'b0;
+    end endgenerate
+    wire [95:0] pcie_diagnostic;
+    tarugx_pcie_debug_monitor u_pcie_debug (
+        .src_clk(tlp_clk), .src_rst_n(pcie_debug_reset[1]),
+        .dbg_clk(debug_clk), .dbg_rst_n(debug_reset_n), .ltssm(ltssm),
+        .raw_flags({core_rst_n,pcie_rstn,clock_ready,lane_status,link_up}),
+        .snapshot(pcie_diagnostic)
+    );
+    (* async_reg="true" *) reg [2:0] recovery_meta=0, recovery_sync=0;
+    always @(posedge debug_clk or negedge debug_reset_n)
+        if (!debug_reset_n) begin recovery_meta<=0; recovery_sync<=0; end
+        else begin
+            recovery_meta<={recovery_reset,recovery_inhibited,recovery_fired};
+            recovery_sync<=recovery_meta;
+        end
+`ifdef TARUGX_PCIE_PHY_RECOVERY
+    localparam [31:0] UART_VERSION = 32'h46523037; // FR07: PHY + core reset
+`else
+    localparam [31:0] UART_VERSION = PCIE_RECOVERY_EXPERIMENT ? 32'h46523036 : 32'h46523034;
+`endif
     tarugx_ddr_debug_uart #(.CLKS_PER_BIT(91), .FRAME_GAP_CYCLES(2625000)) u_status_uart (
         .clk(debug_clk), .rst_n(debug_reset_n), .status(status_sync),
-        .snapshot({32'h46523033,184'b0,debug_fault,debug_aux_sync}), .tx(uart_tx)
+        .snapshot({UART_VERSION,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync}), .tx(uart_tx)
     );
     dvi_tx_top u_dvi (
         .pixel_clock(pixel_clk), .ddr_bit_clock(serial_clk), .reset(!pixel_reset[1]),

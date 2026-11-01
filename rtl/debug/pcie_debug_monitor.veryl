@@ -1,0 +1,113 @@
+/// Observation only: never drives resets or PCIe control signals.
+/// Resets assert together at FPGA configuration; release in each clock domain.
+module pcie_debug_monitor (
+    src_clk  : input 'src clock   ,
+    src_rst_n: input 'src reset   ,
+    dbg_clk  : input 'dbg clock   ,
+    dbg_rst_n: input 'dbg reset   ,
+    ltssm    : input 'src logic<5>,
+    // [6] core reset_n, [5] PERST#, [4:3] CMU1/0 ready,
+    // [2] lane K lock, [1] vendor DR_REFCLK_DET, [0] link.
+    raw_flags: input  'raw logic<7> ,
+    snapshot : output 'dbg logic<96>,
+) {
+    var visited    : 'src logic<32>;
+    var transitions: 'src logic<8> ;
+    var previous   : 'src logic<5> ;
+    var current    : 'src logic<5> ;
+    var initialized: 'src logic    ;
+    var heartbeat  : 'src logic<8> ;
+    var source_data: 'src logic<64>;
+    var transferred: 'dbg logic<64>;
+    always_ff (src_clk, src_rst_n) {
+        if_reset {
+            visited     = 0;
+            transitions = 0;
+            previous    = 0;
+            current     = 0;
+            initialized = 0;
+            heartbeat   = 0;
+        } else {
+            heartbeat = heartbeat + 8'd1;
+            visited   = visited | (32'd1 << ltssm);
+            if !initialized {
+                current     = ltssm;
+                previous    = ltssm;
+                initialized = 1;
+            } else if current != ltssm {
+                previous = current;
+                current  = ltssm;
+                if transitions != 8'hff {
+                    transitions = transitions + 8'd1;
+                }
+            }
+        }
+    }
+    assign source_data = {visited, transitions, 3'b0, previous, 3'b0, current, 8'b0};
+    inst snapshot_cdc: display_config_cdc #(
+        WIDTH: 64,
+    ) (
+        src_clk                ,
+        src_rst_n              ,
+        dst_clk   : dbg_clk    ,
+        dst_rst_n : dbg_rst_n  ,
+        src_config: source_data,
+        dst_config: transferred,
+    );
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var flags_meta: 'dbg logic<7>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var flags_sync: 'dbg logic<7>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var beat_sync  : 'dbg logic<2> ;
+    var last_beat  : 'dbg logic    ;
+    var toggled    : 'dbg logic    ;
+    var idle       : 'dbg logic<10>;
+    var last_flags : 'dbg logic<7> ;
+    var seen       : 'dbg logic<8> ;
+    var live       : 'dbg logic<8> ;
+    var perst_falls: 'dbg logic<8> ;
+    var cmu_falls  : 'dbg logic<8> ;
+    var link_falls : 'dbg logic<8> ;
+    assign live     = {toggled && (idle != 10'h3ff), flags_sync};
+    assign snapshot = {transferred[63:24], perst_falls, cmu_falls, link_falls, transferred[23:8], live, seen};
+    unsafe (cdc) {
+        always_ff (dbg_clk, dbg_rst_n) {
+            if_reset {
+                flags_meta  = 0;
+                flags_sync  = 0;
+                beat_sync   = 0;
+                last_beat   = 0;
+                toggled     = 0;
+                idle        = 0;
+                last_flags  = 0;
+                seen        = 0;
+                perst_falls = 0;
+                cmu_falls   = 0;
+                link_falls  = 0;
+            } else {
+                flags_meta = raw_flags;
+                flags_sync = flags_meta;
+                beat_sync  = {beat_sync[0], heartbeat[7]};
+                last_beat  = beat_sync[1];
+                last_flags = flags_sync;
+                seen       = seen | live;
+                if beat_sync[1] != last_beat {
+                    toggled = 1;
+                    idle    = 0;
+                } else if idle != 10'h3ff {
+                    idle = idle + 10'd1;
+                }
+                if last_flags[5] && !flags_sync[5] && (perst_falls != 8'hff) {
+                    perst_falls = perst_falls + 8'd1;
+                }
+                if ((last_flags[4:3] & ~flags_sync[4:3]) != 0) && (cmu_falls != 8'hff) {
+                    cmu_falls = cmu_falls + 8'd1;
+                }
+                if last_flags[0] && !flags_sync[0] && (link_falls != 8'hff) {
+                    link_falls = link_falls + 8'd1;
+                }
+            }
+        }
+    }
+}
