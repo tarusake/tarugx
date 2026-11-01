@@ -23,6 +23,36 @@ def stop():
             run(["systemctl", "stop", unit])
 
 
+def make_primary(user, host_dir):
+    env = ["runuser", "-u", user, "--", "env", "DISPLAY=:1",
+           f"XAUTHORITY={host_dir / 'Xauthority'}"]
+    output = subprocess.check_output([*env, "xrandr", "--current"], text=True)
+    connected = [line.split()[0] for line in output.splitlines()
+                 if len(line.split()) > 1 and line.split()[1] == "connected"]
+    if len(connected) != 1:
+        raise RuntimeError("expected exactly one connected output on the dedicated TaruGX Xorg")
+    run([*env, "xrandr", "--output", connected[0], "--primary"])
+
+
+def wait_for_xorg(user, env_args, timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            ready = subprocess.run(["runuser", "-u", user, "--", "env", *env_args,
+                                    "xrandr", "--current"], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL,
+                                   timeout=min(5, max(0.1, deadline - time.monotonic())))
+            if ready.returncode == 0:
+                break
+        except subprocess.TimeoutExpired:
+            # Cold boot can spend several seconds loading software GL.
+            # A probe timeout is not a failed X server: retry to the deadline.
+            pass
+        time.sleep(0.2)
+    else:
+        raise RuntimeError("Xorg did not become ready before the deadline; inspect Xorg.1.log")
+
+
 def start(user, terminal):
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:
@@ -53,15 +83,8 @@ def start(user, terminal):
              "-auth", str(authority), "-nolisten", "tcp", "-noreset",
              "-logfile", str(host_dir / "Xorg.1.log")])
         env_args = [f"DISPLAY=:1", f"XAUTHORITY={authority}"]
-        for _ in range(30):
-            ready = subprocess.run(["runuser", "-u", user, "--", "env", *env_args,
-                                    "xrandr", "--current"], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=5)
-            if ready.returncode == 0:
-                break
-            time.sleep(0.2)
-        else:
-            raise RuntimeError("Xorg did not become ready; inspect Xorg.1.log")
+        wait_for_xorg(user, env_args)
+        make_primary(user, host_dir)
         common = ["--collect", f"--uid={user}", f"--working-directory={account.pw_dir}",
                   f"--setenv=HOME={account.pw_dir}", f"--setenv=XDG_RUNTIME_DIR={runtime}"]
         run(["systemd-run", "--unit=tarugx-desktop", *common,

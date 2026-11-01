@@ -1,0 +1,15 @@
+[Unit]
+Description=TaruGX primary Xfce desktop
+Requires=user@@USER_UID@.service
+After=user@@USER_UID@.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 "@HOST_DIR@/boot-desktop.py" --user @USER@
+ExecStop=/usr/bin/python3 "@HOST_DIR@/desktop.py" stop
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
