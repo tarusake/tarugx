@@ -14,6 +14,18 @@ static UINT64 attrs;
 static int allocations, opened, reject_install, fail_read, child_open, reject_child, reject_remove;
 static EFI_HANDLE output_handle=(EFI_HANDLE)(UINTN)123;
 static UINT32 pci_id=0x110022c2;
+#ifdef TARUGX_BOOT_SPLASH
+static unsigned splash_stalls;
+static EFI_STATUS EFIAPI splash_stall(UINTN microseconds)
+{
+    assert(microseconds==1000000);
+    unsigned colored=0;
+    for (unsigned i=0;i<640*480;i++) colored+=pixels[i]!=0;
+    assert(colored>10000 && !installed); /* Hold after drawing, before publishing GOP. */
+    splash_stalls++;
+    return EFI_SUCCESS;
+}
+#endif
 VOID InitializeLib(EFI_HANDLE h, EFI_SYSTEM_TABLE *s) { (void)h; (void)s; }
 VOID SetMem(VOID *p, UINTN n, UINT8 v) { memset(p,v,n); }
 
@@ -161,6 +173,9 @@ static EFI_STATUS EFIAPI event_signal(EFI_EVENT event)
 int main(void)
 {
     BS=&services;
+#ifdef TARUGX_BOOT_SPLASH
+    services.Stall=splash_stall;
+#endif
 #ifdef TARUGX_EARLY_TEXT_INIT
     services.CreateEvent=event_create;services.RegisterProtocolNotify=event_register;
     services.CloseEvent=event_close;services.SignalEvent=event_signal;
@@ -182,6 +197,16 @@ int main(void)
     assert(installed->trace.entries[0].status==EFI_SUCCESS);
     assert(installed && instances==1 && opened && allocations==2 && child_open);
     assert(attrs==EFI_PCI_IO_ATTRIBUTE_MEMORY && registers[4]==1);
+#ifdef TARUGX_BOOT_SPLASH
+    unsigned colored=0;
+    for (unsigned i=0;i<640*480;i++) colored+=pixels[i]!=0;
+    assert(colored>10000); /* Logo was drawn during child creation. */
+    assert(splash_stalls==1);
+    UINT32 saved_pixels[640*480];memcpy(saved_pixels,pixels,sizeof(pixels));
+    assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
+    assert(!memcmp(saved_pixels,pixels,sizeof(pixels))); /* No repeated draw. */
+    assert(splash_stalls==1); /* No repeated wait. */
+#endif
     assert(installed->mode.FrameBufferBase==0 && installed->mode.FrameBufferSize==0);
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info;UINTN size;
     assert(query(&installed->gop,0,&size,&info)==EFI_SUCCESS);
@@ -205,6 +230,11 @@ int main(void)
     assert(installed->trace.first_failure.dx==640 && installed->trace.first_failure.dy==480);
     assert(blt(&installed->gop,&white,EfiBltVideoFill,0,0,999,999,1,1,0)==EFI_INVALID_PARAMETER);
     assert(installed->trace.first_failure.dx==640 && installed->trace.blt_errors==2);
+#ifdef TARUGX_BOOT_SPLASH
+    assert(set_mode(&installed->gop,0)==EFI_SUCCESS);
+    for (unsigned i=0;i<640*480;i++) assert(pixels[i]==0); /* Public SetMode remains black. */
+    assert(splash_stalls==1); /* Public SetMode and BLT must not pause. */
+#endif
     assert(unload(NULL)==EFI_ACCESS_DENIED);
     assert(stop(&binding,NULL,0,NULL)==EFI_DEVICE_ERROR);
     reject_remove=1;

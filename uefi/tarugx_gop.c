@@ -4,6 +4,9 @@
 #include "blt.h"
 #include "dxe_memory.h"
 #include "gop_trace.h"
+#ifdef TARUGX_BOOT_SPLASH
+#include "splash.h"
+#endif
 #ifdef TARUGX_EARLY_TEXT_INIT
 #include "text_init.h"
 #endif
@@ -255,6 +258,13 @@ static EFI_STATUS create_child(EFI_DRIVER_BINDING_PROTOCOL *self,TGX *t)
     t->path=AppendDevicePathNode(parent,&output_adr.Header);
     if (!t->path) return EFI_OUT_OF_RESOURCES;
     s=set_mode(&t->gop,0);
+#ifdef TARUGX_BOOT_SPLASH
+    /* Initial child creation only. GOP SetMode must still clear to black.
+     * Hold the completed logo before publishing GOP, never during public BLT
+     * or SetMode calls. No timer or repaint after firmware takes ownership. */
+    if (!EFI_ERROR(s) && tgx_boot_splash(&t->io)) s=EFI_DEVICE_ERROR;
+    if (!EFI_ERROR(s)) s=BS->Stall(1000000); /* One second, in microseconds. */
+#endif
     if (!EFI_ERROR(s)) s=child_protocols(t,TRUE);
     if (EFI_ERROR(s)) { BS->FreePool(t->path);t->path=NULL;t->child=NULL;return s; }
     EFI_PCI_IO_PROTOCOL *pci=NULL;
