@@ -3,6 +3,10 @@
 #include <efipciio.h>
 #include "blt.h"
 #include "dxe_memory.h"
+#include "gop_trace.h"
+#ifdef TARUGX_EARLY_TEXT_INIT
+#include "text_init.h"
+#endif
 
 static EFI_GUID pci_guid = EFI_PCI_IO_PROTOCOL_GUID;
 static EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -11,8 +15,9 @@ static EFI_GUID loaded_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 static EFI_GUID discovered_guid = EFI_EDID_DISCOVERED_PROTOCOL_GUID;
 static EFI_GUID active_guid = EFI_EDID_ACTIVE_PROTOCOL_GUID;
 static UINTN instances;
+static EFI_GUID trace_guid=TGX_TRACE_GUID;
 
-typedef struct {
+typedef struct tgx {
     EFI_GRAPHICS_OUTPUT_PROTOCOL gop; /* First: GOP pointer is the context. */
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE mode;
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION info;
@@ -24,8 +29,35 @@ typedef struct {
     TGX_DXE_PREFIX *dxe;
     UINT64 fb_address, fb_attributes;
     BOOLEAN cache_changed;
+    TGX_TRACE trace;
+#ifdef TARUGX_EARLY_TEXT_INIT
+    TGX_TEXT_INIT text_init;
+#endif
+    EFI_HANDLE controller, child;
+    BOOLEAN child_open;
+    EFI_DEVICE_PATH *path;
+    struct tgx *next;
 } TGX;
 
+static EFI_GUID path_guid=EFI_DEVICE_PATH_PROTOCOL_GUID;
+static TGX *contexts;
+/* ACPI display ID scheme, non-VGA, external digital, port/index 0.
+ * No hotplug/EDID detection is advertised (BiosCanDetect=0). */
+static ACPI_ADR_DEVICE_PATH output_adr={{ACPI_DEVICE_PATH,ACPI_ADR_DP,{8,0}},0x80020300};
+static TGX *find_context(EFI_HANDLE controller)
+{
+    for (TGX *t=contexts;t;t=t->next) if (t->controller==controller) return t;
+    return NULL;
+}
+static BOOLEAN valid_remaining(EFI_DEVICE_PATH *p)
+{
+    if (!p || IsDevicePathEnd(p)) return TRUE;
+    if (p->Type!=ACPI_DEVICE_PATH || p->SubType!=ACPI_ADR_DP || DevicePathNodeLength(p)!=8)
+        return FALSE;
+    UINT8 *bytes=(UINT8 *)p;
+    UINT32 adr=(UINT32)bytes[4]|(UINT32)bytes[5]<<8|(UINT32)bytes[6]<<16|(UINT32)bytes[7]<<24;
+    return adr==output_adr.ADR && IsDevicePathEnd(NextDevicePathNode(p));
+}
 static EFI_STATUS reg_write(TGX *t, UINT64 offset, UINT32 value)
 {
     return t->pci->Mem.Write(t->pci, EfiPciIoWidthUint32, 0, offset, 1, &value);
@@ -40,7 +72,7 @@ static int fb_write(void *ctx, size_t offset, uint32_t value)
     TGX *t = ctx;
     return EFI_ERROR(t->pci->Mem.Write(t->pci, EfiPciIoWidthUint32, 2, offset, 1, &value));
 }
-static EFI_STATUS EFIAPI query(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode,
+static EFI_STATUS query_impl(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode,
                                UINTN *size, EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **info)
 {
     EFI_STATUS status;
@@ -52,7 +84,7 @@ static EFI_STATUS EFIAPI query(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode,
     *size = sizeof(**info);
     return EFI_SUCCESS;
 }
-static EFI_STATUS EFIAPI set_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode)
+static EFI_STATUS set_mode_impl(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode)
 {
     TGX *t = (TGX *)g;
     UINT32 black = 0;
@@ -71,15 +103,48 @@ static EFI_STATUS EFIAPI set_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode)
     if (!EFI_ERROR(status)) t->mode.Mode = 0;
     return status;
 }
+static VOID trace_call(TGX *t, UINT32 operation, UINT32 mode, EFI_STATUS status)
+{
+    if (t->trace.count<TGX_TRACE_CAPACITY)
+        t->trace.entries[t->trace.count++]=(TGX_TRACE_ENTRY){operation,mode,status};
+    else if (t->trace.dropped!=0xffffffff) t->trace.dropped++;
+}
+static EFI_STATUS EFIAPI query(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode,
+                               UINTN *size, EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **info)
+{
+    EFI_STATUS s=query_impl(g,mode,size,info);
+    if (g) trace_call((TGX *)g,TGX_TRACE_QUERY,mode,s);
+    return s;
+}
+static EFI_STATUS EFIAPI set_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode)
+{
+    EFI_STATUS s=set_mode_impl(g,mode);
+    if (g) trace_call((TGX *)g,TGX_TRACE_SET,mode,s);
+    return s;
+}
 static EFI_STATUS EFIAPI blt(EFI_GRAPHICS_OUTPUT_PROTOCOL *g,
     EFI_GRAPHICS_OUTPUT_BLT_PIXEL *b, EFI_GRAPHICS_OUTPUT_BLT_OPERATION op,
     UINTN sx, UINTN sy, UINTN dx, UINTN dy, UINTN w, UINTN h, UINTN delta)
 {
-    int rc;
     if (!g) return EFI_INVALID_PARAMETER;
-    if (g->Mode->Mode != 0) return EFI_NOT_STARTED;
-    rc = tgx_blt(&((TGX *)g)->io, b, op, sx, sy, dx, dy, w, h, delta);
-    return rc == 0 ? EFI_SUCCESS : rc == -1 ? EFI_INVALID_PARAMETER : EFI_DEVICE_ERROR;
+    TGX *t=(TGX *)g;
+    EFI_STATUS status;
+    if (g->Mode->Mode!=0) status=EFI_NOT_STARTED;
+    else {
+        int rc=tgx_blt(&t->io,b,op,sx,sy,dx,dy,w,h,delta);
+        status=rc==0 ? EFI_SUCCESS : rc==-1 ? EFI_INVALID_PARAMETER : EFI_DEVICE_ERROR;
+    }
+    TGX_BLT_TRACE_ENTRY entry={op,status,sx,sy,dx,dy,w,h,delta};
+    if (t->trace.blt_count<TGX_BLT_TRACE_CAPACITY)
+        t->trace.blt_entries[t->trace.blt_count++]=entry;
+    else if (t->trace.blt_dropped!=0xffffffff) t->trace.blt_dropped++;
+    if (EFI_ERROR(status)) {
+        if (t->trace.blt_errors!=0xffffffff) t->trace.blt_errors++;
+        if (!t->trace.failure_valid) {
+            t->trace.first_failure=entry;t->trace.failure_valid=1;
+        }
+    }
+    return status;
 }
 
 static EFI_STATUS identify(EFI_PCI_IO_PROTOCOL *pci)
@@ -157,12 +222,62 @@ static EFI_STATUS restore_framebuffer_cache(TGX *t)
     return s;
 }
 
+static EFI_STATUS child_protocols(TGX *t, BOOLEAN install)
+{
+    if (install) return BS->InstallMultipleProtocolInterfaces(&t->child,
+        &gop_guid,&t->gop,&discovered_guid,&t->discovered,&active_guid,&t->active,
+        &trace_guid,&t->trace,&path_guid,t->path,NULL);
+    return BS->UninstallMultipleProtocolInterfaces(t->child,
+        &gop_guid,&t->gop,&discovered_guid,&t->discovered,&active_guid,&t->active,
+        &trace_guid,&t->trace,&path_guid,t->path,NULL);
+}
+static EFI_STATUS create_child(EFI_DRIVER_BINDING_PROTOCOL *self,TGX *t)
+{
+    if (t->child) {
+        if (t->child_open) {
+#ifdef TARUGX_EARLY_TEXT_INIT
+            if (!t->text_init.event) return tgx_text_arm(&t->text_init,t->child);
+#endif
+            return EFI_SUCCESS;
+        }
+        EFI_PCI_IO_PROTOCOL *pci=NULL;
+        EFI_STATUS retry=BS->OpenProtocol(t->controller,&pci_guid,(VOID **)&pci,
+            self->DriverBindingHandle,t->child,EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER);
+        if (!EFI_ERROR(retry)) t->child_open=TRUE;
+#ifdef TARUGX_EARLY_TEXT_INIT
+        if (!EFI_ERROR(retry) && !t->text_init.event) retry=tgx_text_arm(&t->text_init,t->child);
+#endif
+        return retry;
+    }
+    EFI_DEVICE_PATH *parent=NULL;
+    EFI_STATUS s=BS->HandleProtocol(t->controller,&path_guid,(VOID **)&parent);
+    if (EFI_ERROR(s)) return s;
+    t->path=AppendDevicePathNode(parent,&output_adr.Header);
+    if (!t->path) return EFI_OUT_OF_RESOURCES;
+    s=set_mode(&t->gop,0);
+    if (!EFI_ERROR(s)) s=child_protocols(t,TRUE);
+    if (EFI_ERROR(s)) { BS->FreePool(t->path);t->path=NULL;t->child=NULL;return s; }
+    EFI_PCI_IO_PROTOCOL *pci=NULL;
+    s=BS->OpenProtocol(t->controller,&pci_guid,(VOID **)&pci,self->DriverBindingHandle,
+                       t->child,EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER);
+    if (EFI_ERROR(s)) {
+        EFI_STATUS removed=child_protocols(t,FALSE);
+        if (EFI_ERROR(removed)) return removed; /* Keep live interfaces allocated. */
+        BS->FreePool(t->path);t->path=NULL;t->child=NULL;
+    }
+    if (!EFI_ERROR(s)) t->child_open=TRUE;
+#ifdef TARUGX_EARLY_TEXT_INIT
+    if (!EFI_ERROR(s)) s=tgx_text_arm(&t->text_init,t->child);
+#endif
+    return s;
+}
 static EFI_STATUS EFIAPI supported(EFI_DRIVER_BINDING_PROTOCOL *self,
                                    EFI_HANDLE controller, EFI_DEVICE_PATH *remaining)
 {
     EFI_PCI_IO_PROTOCOL *pci;
     EFI_STATUS s;
-    if (remaining && !IsDevicePathEnd(remaining)) return EFI_UNSUPPORTED;
+    if (!valid_remaining(remaining)) return EFI_UNSUPPORTED;
+    if (find_context(controller)) return EFI_SUCCESS;
     s = BS->OpenProtocol(controller, &pci_guid, (VOID **)&pci, self->DriverBindingHandle,
                          controller, EFI_OPEN_PROTOCOL_BY_DRIVER);
     if (EFI_ERROR(s)) return s;
@@ -178,7 +293,9 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     EFI_STATUS s;
     UINT32 id;
     BOOLEAN saved = FALSE;
-    if (remaining && !IsDevicePathEnd(remaining)) return EFI_UNSUPPORTED;
+    if (!valid_remaining(remaining)) return EFI_UNSUPPORTED;
+    t=find_context(controller);
+    if (t) return remaining && IsDevicePathEnd(remaining) ? EFI_SUCCESS : create_child(self,t);
     s = BS->OpenProtocol(controller, &pci_guid, (VOID **)&pci, self->DriverBindingHandle,
                          controller, EFI_OPEN_PROTOCOL_BY_DRIVER);
     if (EFI_ERROR(s)) return s;
@@ -186,6 +303,8 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     if (EFI_ERROR(s)) goto close;
     SetMem(t, sizeof(*t), 0);
     t->pci = pci;
+    t->controller=controller;
+    t->trace.version=2;
     t->io = (struct tgx_io){t, fb_read, fb_write};
     s = identify(pci);
     if (EFI_ERROR(s)) goto free;
@@ -211,14 +330,14 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     t->info.PixelsPerScanLine = TGX_WIDTH;
     t->mode.MaxMode = 1; t->mode.Mode = 0xffffffff;
     t->mode.Info = &t->info; t->mode.SizeOfInfo = sizeof(t->info);
-    /* Do not expose BAR2 as a directly writable linear framebuffer. */
-    s = set_mode(&t->gop, 0);
-    if (EFI_ERROR(s)) goto blank;
-    s = BS->InstallMultipleProtocolInterfaces(&controller,
-        &gop_guid, &t->gop, &discovered_guid, &t->discovered, &active_guid, &t->active, NULL);
-    if (EFI_ERROR(s)) goto blank;
+    /* Parent-only requests must not create or initialize an output. */
+    if (!remaining || !IsDevicePathEnd(remaining)) {
+        s=create_child(self,t);
+        if (EFI_ERROR(s) && !t->child) goto blank;
+    }
+    t->next=contexts;contexts=t;
     instances++;
-    return EFI_SUCCESS;
+    return s;
 blank:
     reg_write(t, 0x10, 0);
 free:
@@ -233,25 +352,45 @@ close:
 static EFI_STATUS EFIAPI stop(EFI_DRIVER_BINDING_PROTOCOL *self, EFI_HANDLE controller,
                               UINTN children, EFI_HANDLE *child_buffer)
 {
-    TGX *t;
+    TGX *t=find_context(controller);
+    if (!t) return EFI_NOT_STARTED;
     EFI_STATUS s;
-    (void)child_buffer;
-    if (children) return EFI_UNSUPPORTED;
-    s = BS->OpenProtocol(controller, &gop_guid, (VOID **)&t, self->DriverBindingHandle,
-                         controller, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-    if (EFI_ERROR(s)) return s;
-    if (t->gop.Blt != blt) return EFI_UNSUPPORTED;
-    s = BS->UninstallMultipleProtocolInterfaces(controller,
-        &gop_guid, &t->gop, &discovered_guid, &t->discovered, &active_guid, &t->active, NULL);
-    if (EFI_ERROR(s)) return s;
-    reg_write(t, 0x10, 0);
+    if (children) {
+        if (children!=1 || !child_buffer || !t->child || child_buffer[0]!=t->child)
+            return EFI_INVALID_PARAMETER;
+        BOOLEAN was_open=t->child_open;
+        if (was_open) {
+            s=BS->CloseProtocol(controller,&pci_guid,self->DriverBindingHandle,t->child);
+            if (EFI_ERROR(s)) return s;
+            t->child_open=FALSE;
+        }
+        s=child_protocols(t,FALSE);
+        if (EFI_ERROR(s)) {
+            EFI_PCI_IO_PROTOCOL *pci=NULL;
+            if (was_open) t->child_open=!EFI_ERROR(BS->OpenProtocol(controller,&pci_guid,
+                (VOID **)&pci,self->DriverBindingHandle,t->child,EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER));
+            return s;
+        }
+#ifdef TARUGX_EARLY_TEXT_INIT
+        tgx_text_disarm(&t->text_init);
+#endif
+        BS->FreePool(t->path);t->path=NULL;t->child=NULL;
+        return reg_write(t,0x10,0);
+    }
+    if (t->child) return EFI_DEVICE_ERROR;
     s=restore_framebuffer_cache(t);
-    t->pci->Attributes(t->pci, EfiPciIoAttributeOperationSet, t->attributes, NULL);
-    BS->CloseProtocol(controller, &pci_guid, self->DriverBindingHandle, controller);
-    BS->FreePool(t);
-    instances--;
-    return s;
+    if (EFI_ERROR(s)) return s;
+    s=t->pci->Attributes(t->pci,EfiPciIoAttributeOperationSet,t->attributes,NULL);
+    if (EFI_ERROR(s)) return s;
+    s=BS->CloseProtocol(controller,&pci_guid,self->DriverBindingHandle,controller);
+    if (EFI_ERROR(s)) return s;
+    TGX **link=&contexts;
+    while (*link!=t) link=&(*link)->next;
+    *link=t->next;
+    BS->FreePool(t);instances--;
+    return EFI_SUCCESS;
 }
+
 static EFI_DRIVER_BINDING_PROTOCOL binding = {supported, start, stop, 0x10, NULL, NULL};
 static EFI_STATUS EFIAPI unload(EFI_HANDLE image)
 {

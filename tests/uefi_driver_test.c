@@ -11,7 +11,8 @@ static EFI_PCI_IO_PROTOCOL mock_pci;
 static TGX *installed;
 static UINT32 registers[16], pixels[640*480];
 static UINT64 attrs;
-static int allocations, opened, reject_install, fail_read;
+static int allocations, opened, reject_install, fail_read, child_open, reject_child, reject_remove;
+static EFI_HANDLE output_handle=(EFI_HANDLE)(UINTN)123;
 static UINT32 pci_id=0x110022c2;
 VOID InitializeLib(EFI_HANDLE h, EFI_SYSTEM_TABLE *s) { (void)h; (void)s; }
 VOID SetMem(VOID *p, UINTN n, UINT8 v) { memset(p,v,n); }
@@ -48,6 +49,11 @@ static EFI_STATUS EFIAPI open_proto(EFI_HANDLE h, EFI_GUID *guid, VOID **p,
 {
     (void)h;(void)a;(void)c;
     if (!memcmp(guid,&pci_guid,sizeof(*guid))) {
+        if(attr==EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER) {
+            assert(opened && c==output_handle);
+            if(reject_child)return EFI_ACCESS_DENIED;
+            assert(!child_open);child_open=1;*p=&mock_pci;return EFI_SUCCESS;
+        }
         assert(attr==EFI_OPEN_PROTOCOL_BY_DRIVER);
         if(opened) return EFI_ALREADY_STARTED;
         opened=1; *p=&mock_pci;
@@ -60,7 +66,19 @@ static EFI_STATUS EFIAPI open_proto(EFI_HANDLE h, EFI_GUID *guid, VOID **p,
     return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI close_proto(EFI_HANDLE h, EFI_GUID *g, EFI_HANDLE a, EFI_HANDLE c)
-{ (void)h;(void)g;(void)a;(void)c; assert(opened); opened=0; return EFI_SUCCESS; }
+{ (void)h;(void)g;(void)a; assert(opened);
+  if(c==output_handle){assert(child_open);child_open=0;}else {assert(!child_open);opened=0;}
+  return EFI_SUCCESS; }
+static EFI_DEVICE_PATH parent_path={0x7f,0xff,{4,0}};
+static EFI_STATUS EFIAPI handle_proto(EFI_HANDLE h, EFI_GUID *g, VOID **p)
+{ (void)h;assert(!memcmp(g,&path_guid,sizeof(*g)));*p=&parent_path;return EFI_SUCCESS; }
+EFI_DEVICE_PATH *AppendDevicePathNode(EFI_DEVICE_PATH *p, EFI_DEVICE_PATH *node)
+{
+    assert(p==&parent_path && DevicePathNodeLength(node)==8);
+    EFI_DEVICE_PATH *result=NULL;
+    if(EFI_ERROR(allocate(EfiBootServicesData,12,(VOID **)&result)))return NULL;
+    memcpy(result,node,8);memcpy((char *)result+8,p,4);return result;
+}
 static EFI_STATUS EFIAPI config_read(EFI_PCI_IO_PROTOCOL *p, EFI_PCI_IO_PROTOCOL_WIDTH w,
                                      UINT32 off, UINTN n, VOID *v)
 {
@@ -109,19 +127,45 @@ static EFI_STATUS EFIAPI bars(EFI_PCI_IO_PROTOCOL *p, UINT8 bar, UINT64 *support
 static EFI_STATUS EFIAPI install(EFI_HANDLE *h, ...)
 {
     __builtin_ms_va_list args;
-    (void)h;
+    assert(!*h);
     if(reject_install)return EFI_ACCESS_DENIED;
     __builtin_ms_va_start(args,h);
     assert(__builtin_va_arg(args,EFI_GUID *)==&gop_guid);
     installed=__builtin_va_arg(args,TGX *);
+    assert(__builtin_va_arg(args,EFI_GUID *)==&discovered_guid);
+    assert(__builtin_va_arg(args,VOID *)==&installed->discovered);
+    assert(__builtin_va_arg(args,EFI_GUID *)==&active_guid);
+    assert(__builtin_va_arg(args,VOID *)==&installed->active);
+    assert(__builtin_va_arg(args,EFI_GUID *)==&trace_guid);
+    assert(__builtin_va_arg(args,VOID *)==&installed->trace);
+    assert(__builtin_va_arg(args,EFI_GUID *)==&path_guid);
+    assert(__builtin_va_arg(args,VOID *)==installed->path);
+    assert(__builtin_va_arg(args,VOID *)==NULL);
+    *h=output_handle;
     __builtin_ms_va_end(args);
     return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI uninstall(EFI_HANDLE h, ...)
-{ (void)h;assert(installed);installed=NULL;return EFI_SUCCESS; }
+{ assert(h==output_handle && installed);if(reject_remove)return EFI_ACCESS_DENIED;installed=NULL;return EFI_SUCCESS; }
+#ifdef TARUGX_EARLY_TEXT_INIT
+static unsigned live_events;
+static EFI_STATUS EFIAPI event_create(UINT32 type,EFI_TPL tpl,EFI_EVENT_NOTIFY fn,VOID *ctx,EFI_EVENT *event)
+{ (void)fn;(void)ctx;assert(type==EVT_NOTIFY_SIGNAL && tpl==TPL_CALLBACK);live_events++;*event=(EFI_EVENT)1;return EFI_SUCCESS; }
+static EFI_STATUS EFIAPI event_register(EFI_GUID *guid,EFI_EVENT event,VOID **key)
+{ (void)guid;assert(event==(EFI_EVENT)1);*key=(VOID *)2;return EFI_SUCCESS; }
+static EFI_STATUS EFIAPI event_close(EFI_EVENT event)
+{ assert(event==(EFI_EVENT)1 && live_events);live_events--;return EFI_SUCCESS; }
+static EFI_STATUS EFIAPI event_signal(EFI_EVENT event)
+{ assert(event==(EFI_EVENT)1);return EFI_SUCCESS; }
+#endif
 int main(void)
 {
     BS=&services;
+#ifdef TARUGX_EARLY_TEXT_INIT
+    services.CreateEvent=event_create;services.RegisterProtocolNotify=event_register;
+    services.CloseEvent=event_close;services.SignalEvent=event_signal;
+#endif
+    services.HandleProtocol=handle_proto;
     services.AllocatePool=allocate;services.FreePool=release;
     services.OpenProtocol=open_proto;services.CloseProtocol=close_proto;
     services.InstallMultipleProtocolInterfaces=install;
@@ -133,7 +177,10 @@ int main(void)
     pci_id=0;assert(supported(&binding,NULL,NULL)==EFI_UNSUPPORTED && !opened);pci_id=0x110022c2;
     assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
     assert(cache_attrs==EFI_MEMORY_UC);
-    assert(installed && instances==1 && opened && allocations==1);
+    assert(installed->trace.version==2 && installed->trace.count==1);
+    assert(installed->trace.entries[0].operation==TGX_TRACE_SET);
+    assert(installed->trace.entries[0].status==EFI_SUCCESS);
+    assert(installed && instances==1 && opened && allocations==2 && child_open);
     assert(attrs==EFI_PCI_IO_ATTRIBUTE_MEMORY && registers[4]==1);
     assert(installed->mode.FrameBufferBase==0 && installed->mode.FrameBufferSize==0);
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info;UINTN size;
@@ -141,7 +188,29 @@ int main(void)
     assert(info->PixelFormat==PixelBltOnly && info->HorizontalResolution==640);
     release(info);
     assert(set_mode(&installed->gop,1)==EFI_UNSUPPORTED);
+    assert(installed->trace.entries[2].operation==TGX_TRACE_SET);
+    assert(installed->trace.entries[2].mode==1);
+    assert(installed->trace.entries[2].status==EFI_UNSUPPORTED);
+    assert(installed->mode.Mode==0); /* Unsupported modes preserve working display. */
+    for(unsigned i=0;i<TGX_TRACE_CAPACITY+2;i++)
+        assert(query(&installed->gop,7,&size,&info)==EFI_INVALID_PARAMETER);
+    assert(installed->trace.count==TGX_TRACE_CAPACITY && installed->trace.dropped==5);
+    assert(installed->trace.entries[0].status==EFI_SUCCESS);
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL white={255,255,255,0};
+    for(unsigned i=0;i<TGX_BLT_TRACE_CAPACITY+2;i++)
+        assert(blt(&installed->gop,&white,EfiBltVideoFill,0,0,0,0,1,1,0)==EFI_SUCCESS);
+    assert(installed->trace.blt_count==TGX_BLT_TRACE_CAPACITY && installed->trace.blt_dropped==2);
+    assert(blt(&installed->gop,&white,EfiBltVideoFill,0,0,640,480,1,1,0)==EFI_INVALID_PARAMETER);
+    assert(installed->trace.blt_errors==1 && installed->trace.failure_valid);
+    assert(installed->trace.first_failure.dx==640 && installed->trace.first_failure.dy==480);
+    assert(blt(&installed->gop,&white,EfiBltVideoFill,0,0,999,999,1,1,0)==EFI_INVALID_PARAMETER);
+    assert(installed->trace.first_failure.dx==640 && installed->trace.blt_errors==2);
     assert(unload(NULL)==EFI_ACCESS_DENIED);
+    assert(stop(&binding,NULL,0,NULL)==EFI_DEVICE_ERROR);
+    reject_remove=1;
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_ACCESS_DENIED && child_open);
+    reject_remove=0;
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS && !child_open);
     assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS);
     assert(!allocations && !instances && !opened && !attrs && !registers[4]);
     assert(cache_attrs==EFI_MEMORY_WT);
@@ -158,6 +227,33 @@ int main(void)
     assert(!allocations && !instances && !opened && !attrs && cache_attrs==EFI_MEMORY_WT);
     reject_uc=0;cache_attrs=EFI_MEMORY_UC;
     assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS);
     assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS && cache_attrs==EFI_MEMORY_UC);
+    reject_child=1;
+    assert(start(&binding,NULL,NULL)==EFI_ACCESS_DENIED);
+    assert(!allocations && !instances && !opened && !child_open);
+    reject_remove=1;
+    assert(start(&binding,NULL,NULL)==EFI_ACCESS_DENIED);
+    assert(installed && instances==1 && allocations==2 && !child_open);
+    reject_remove=0;
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS);
+    assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS);
+    reject_child=0;
+    assert(start(&binding,NULL,&parent_path)==EFI_SUCCESS);
+    assert(!installed && opened && allocations==1);
+    assert(start(&binding,NULL,NULL)==EFI_SUCCESS && installed);
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS);
+    assert(start(&binding,NULL,NULL)==EFI_SUCCESS && installed);
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS);
+    assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS);
+    struct { ACPI_ADR_DEVICE_PATH adr; EFI_DEVICE_PATH end; } rem={output_adr,parent_path};
+    assert(supported(&binding,NULL,&rem.adr.Header)==EFI_SUCCESS);
+    rem.adr.ADR++;
+    assert(supported(&binding,NULL,&rem.adr.Header)==EFI_UNSUPPORTED);
+    assert(start(&binding,NULL,&rem.adr.Header)==EFI_UNSUPPORTED);
+    assert(!allocations && !instances && !opened && !contexts);
+#ifdef TARUGX_EARLY_TEXT_INIT
+    assert(!live_events);
+#endif
     puts("GOP driver: binding, mode, memory-only access, cleanup and failure rollback passed");
 }

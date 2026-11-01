@@ -168,6 +168,10 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
     if {$rom_probe} { set top_text "`define TARUGX_PCIE_ROM_PROBE\n$top_text" }
     if {$rom_diagnostic} {
         set rom_image [file join $repo build uefi TaruGxGop.rom]
+        if {[info exists ::env(TARUGX_PCIE_ROM_FILE)]} {
+            set rom_image [file normalize $::env(TARUGX_PCIE_ROM_FILE)]
+        }
+        puts "PCIe ROM input: $rom_image"
         set rom_memory [file join $output_dir TaruGxGop.mem]
         puts [exec python3 [file join $repo tools make_rom_mem.py] $rom_image $rom_memory]
         set top_text [string map [list __TARUGX_ROM_MEM__ $rom_memory] $top_text]

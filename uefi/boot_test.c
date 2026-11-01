@@ -3,6 +3,7 @@
 #include <efi.h>
 #include <efilib.h>
 #include <efipciio.h>
+#include "gop_trace.h"
 
 static EFI_GUID pci_guid = EFI_PCI_IO_PROTOCOL_GUID;
 static EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -22,6 +23,99 @@ static VOID record(CHAR8 *stage, EFI_STATUS status)
         log_file->Write(log_file, &len, line);
         log_file->Flush(log_file);
     }
+}
+/* Legacy ConsoleControl ABI: Intel header maintained by OpenCorePkg,
+ * Include/Intel/Protocol/ConsoleControl.h. Only the first, read-only method
+ * is used; absence is supported. */
+typedef struct tgx_console_control TGX_CONSOLE_CONTROL;
+struct tgx_console_control {
+    EFI_STATUS (EFIAPI *get_mode)(TGX_CONSOLE_CONTROL *, UINT32 *, BOOLEAN *, BOOLEAN *);
+};
+static VOID record_system_console(EFI_SYSTEM_TABLE *system)
+{
+    EFI_GUID text_guid=EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID;
+    EFI_GUID control_guid={0xf42f7782,0x012e,0x4c12,{0x99,0x56,0x49,0xf9,0x43,0x04,0xf7,0x21}};
+    EFI_SIMPLE_TEXT_OUT_PROTOCOL *text=system->ConOut, *handle_text=NULL;
+    record((CHAR8 *)"SYSTEM_TEXT_PRESENT",text!=NULL);
+    if (text && text->Mode) {
+        record((CHAR8 *)"SYSTEM_TEXT_MODE",text->Mode->Mode);
+        record((CHAR8 *)"SYSTEM_TEXT_MAX_MODE",text->Mode->MaxMode);
+        record((CHAR8 *)"SYSTEM_TEXT_ATTRIBUTE",text->Mode->Attribute);
+        record((CHAR8 *)"SYSTEM_TEXT_CURSOR_COLUMN",text->Mode->CursorColumn);
+        record((CHAR8 *)"SYSTEM_TEXT_CURSOR_ROW",text->Mode->CursorRow);
+        for (INT32 i=0;i<text->Mode->MaxMode && i<32;i++) {
+            UINTN columns=0,rows=0;
+            record((CHAR8 *)"SYSTEM_QUERY_MODE_BEGIN",i);
+            EFI_STATUS s=text->QueryMode(text,i,&columns,&rows);
+            record((CHAR8 *)"SYSTEM_QUERY_MODE_END",s);
+            if (!EFI_ERROR(s)) {
+                record((CHAR8 *)"SYSTEM_TEXT_COLUMNS",columns);
+                record((CHAR8 *)"SYSTEM_TEXT_ROWS",rows);
+            }
+        }
+    }
+    EFI_STATUS s=BS->HandleProtocol(system->ConsoleOutHandle,&text_guid,(VOID **)&handle_text);
+    record((CHAR8 *)"SYSTEM_HANDLE_TEXT_STATUS",s);
+    if (!EFI_ERROR(s)) record((CHAR8 *)"SYSTEM_HANDLE_TEXT_MATCH",handle_text==text);
+    TGX_CONSOLE_CONTROL *control=NULL;
+    s=BS->LocateProtocol(&control_guid,NULL,(VOID **)&control);
+    record((CHAR8 *)"CONSOLE_CONTROL_STATUS",s);
+    if (!EFI_ERROR(s) && control && control->get_mode) {
+        UINT32 mode=0;BOOLEAN graphics=FALSE,locked=FALSE;
+        record((CHAR8 *)"CONSOLE_CONTROL_GET_BEGIN",EFI_SUCCESS);
+        s=control->get_mode(control,&mode,&graphics,&locked);
+        record((CHAR8 *)"CONSOLE_CONTROL_GET_END",s);
+        if (!EFI_ERROR(s)) {
+            record((CHAR8 *)"CONSOLE_CONTROL_MODE",mode);
+            record((CHAR8 *)"CONSOLE_CONTROL_GRAPHICS_EXISTS",graphics);
+            record((CHAR8 *)"CONSOLE_CONTROL_INPUT_LOCKED",locked);
+        }
+    }
+}
+/* Observe console attachment without invoking OutputString, reconnecting drivers,
+ * or changing ConOut. Handle addresses are deliberately not logged. */
+static VOID record_console(EFI_SYSTEM_TABLE *system, EFI_HANDLE controller)
+{
+    EFI_GUID text_guid=EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID;
+    EFI_GUID path_guid=EFI_DEVICE_PATH_PROTOCOL_GUID;
+    EFI_HANDLE *list=NULL;
+    UINTN count=0;
+    EFI_STATUS status=BS->LocateHandleBuffer(ByProtocol,&gop_guid,NULL,&count,&list);
+    record((CHAR8 *)"CONSOLE_ENUM_GOP",status);
+    if (EFI_ERROR(status)) return;
+    record((CHAR8 *)"CONSOLE_GOP_COUNT",count);
+    for (UINTN i=0;i<count;i++) {
+        VOID *text=NULL;
+        EFI_DEVICE_PATH *path=NULL;
+        record((CHAR8 *)"CONSOLE_GOP_INDEX",i);
+        record((CHAR8 *)"CONSOLE_IS_TARUGX_PARENT",list[i]==controller);
+        record((CHAR8 *)"CONSOLE_IS_SYSTEM_OUTPUT",list[i]==system->ConsoleOutHandle);
+        status=BS->HandleProtocol(list[i],&text_guid,&text);
+        record((CHAR8 *)"CONSOLE_SIMPLE_TEXT_STATUS",status);
+        if (!EFI_ERROR(status) && text)
+            record((CHAR8 *)"CONSOLE_TEXT_MODE",((EFI_SIMPLE_TEXT_OUT_PROTOCOL *)text)->Mode->Mode);
+        status=BS->HandleProtocol(list[i],&path_guid,(VOID **)&path);
+        record((CHAR8 *)"CONSOLE_PATH_STATUS",status);
+        if (!EFI_ERROR(status)) {
+            for (UINTN n=0;path && n<32;n++) {
+                UINTN len=DevicePathNodeLength(path);
+                record((CHAR8 *)"CONSOLE_PATH_NODE",
+                    ((UINTN)path->Type<<24)|((UINTN)path->SubType<<16)|len);
+                if (IsDevicePathEnd(path) || len<4 || len>1024) break;
+                path=NextDevicePathNode(path);
+            }
+        }
+        EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *entries=NULL;
+        UINTN n=0;
+        status=BS->OpenProtocolInformation(list[i],&gop_guid,&entries,&n);
+        record((CHAR8 *)"CONSOLE_GOP_OPEN_INFO",status);
+        if (!EFI_ERROR(status)) {
+            for (UINTN j=0;j<n;j++)
+                record((CHAR8 *)"CONSOLE_GOP_OPEN_ATTRIBUTES",entries[j].Attributes);
+            if (entries) BS->FreePool(entries);
+        }
+    }
+    BS->FreePool(list);
 }
 /* Read-only configuration snapshot: do not guess or rewrite bridge windows. */
 static VOID record_pci(EFI_PCI_IO_PROTOCOL *pci)
@@ -92,6 +186,47 @@ static VOID record_gcd(EFI_PCI_IO_PROTOCOL *pci)
 #ifdef TARUGX_AUTO_ROM_TEST
 /* Observe firmware-discovered ROM and the driver managing this controller.
  * This variant never loads TaruGxGop.efi from the ESP. */
+static VOID record_blt_entry(TGX_BLT_TRACE_ENTRY *e)
+{
+    record((CHAR8 *)"BLT_TRACE_OPERATION",e->operation);
+    record((CHAR8 *)"BLT_TRACE_STATUS",e->status);
+    record((CHAR8 *)"BLT_TRACE_SOURCE_X",e->sx);
+    record((CHAR8 *)"BLT_TRACE_SOURCE_Y",e->sy);
+    record((CHAR8 *)"BLT_TRACE_DEST_X",e->dx);
+    record((CHAR8 *)"BLT_TRACE_DEST_Y",e->dy);
+    record((CHAR8 *)"BLT_TRACE_WIDTH",e->width);
+    record((CHAR8 *)"BLT_TRACE_HEIGHT",e->height);
+    record((CHAR8 *)"BLT_TRACE_DELTA",e->delta);
+}
+static VOID record_gop_trace(EFI_HANDLE controller)
+{
+    EFI_GUID guid=TGX_TRACE_GUID;
+    TGX_TRACE *trace=NULL;
+    EFI_STATUS s=BS->HandleProtocol(controller,&guid,(VOID **)&trace);
+    record((CHAR8 *)"GOP_TRACE_PROTOCOL",s);
+    if (EFI_ERROR(s) || !trace) return;
+    record((CHAR8 *)"GOP_TRACE_VERSION",trace->version);
+    if ((trace->version!=1 && trace->version!=2) || trace->count>TGX_TRACE_CAPACITY) return;
+    record((CHAR8 *)"GOP_TRACE_COUNT",trace->count);
+    record((CHAR8 *)"GOP_TRACE_DROPPED",trace->dropped);
+    for (UINTN i=0;i<trace->count;i++) {
+        record((CHAR8 *)"GOP_TRACE_OPERATION",trace->entries[i].operation);
+        record((CHAR8 *)"GOP_TRACE_MODE",trace->entries[i].mode);
+        record((CHAR8 *)"GOP_TRACE_STATUS",trace->entries[i].status);
+    }
+    if (trace->version<2 || trace->blt_count>TGX_BLT_TRACE_CAPACITY) return;
+    record((CHAR8 *)"BLT_TRACE_COUNT",trace->blt_count);
+    record((CHAR8 *)"BLT_TRACE_DROPPED",trace->blt_dropped);
+    record((CHAR8 *)"BLT_TRACE_ERRORS",trace->blt_errors);
+    if (trace->failure_valid) {
+        record((CHAR8 *)"BLT_TRACE_FIRST_FAILURE",EFI_SUCCESS);
+        record_blt_entry(&trace->first_failure);
+    }
+    for (UINTN i=0;i<trace->blt_count;i++) {
+        record((CHAR8 *)"BLT_TRACE_INDEX",i);
+        record_blt_entry(&trace->blt_entries[i]);
+    }
+}
 static VOID record_auto_rom(EFI_HANDLE controller, EFI_PCI_IO_PROTOCOL *pci)
 {
     record((CHAR8 *)"AUTO_ROM_SIZE",(EFI_STATUS)pci->RomSize);
@@ -125,6 +260,86 @@ static VOID record_auto_rom(EFI_HANDLE controller, EFI_PCI_IO_PROTOCOL *pci)
     BS->FreePool(entries);
 }
 #endif
+#ifdef TARUGX_CONSOLE_TEST
+/* Opt-in test: exercise firmware text rendering rather than drawing our font. */
+static EFI_STATUS test_console(EFI_SYSTEM_TABLE *system, EFI_HANDLE controller,
+                               EFI_GRAPHICS_OUTPUT_PROTOCOL *gop)
+{
+    EFI_GUID guid=EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID;
+    EFI_SIMPLE_TEXT_OUT_PROTOCOL *text=NULL;
+    EFI_STATUS s=BS->HandleProtocol(controller,&guid,(VOID **)&text);
+    record((CHAR8 *)"TEXT_GET_PROTOCOL",s);
+    if (EFI_ERROR(s)) return s;
+    record((CHAR8 *)"TEXT_MAX_MODE",text->Mode->MaxMode);
+    record((CHAR8 *)"TEXT_CURRENT_MODE",text->Mode->Mode);
+    for (INT32 i=0;i<text->Mode->MaxMode && i<32;i++) {
+        UINTN columns=0,rows=0;
+        s=text->QueryMode(text,i,&columns,&rows);
+        record((CHAR8 *)"TEXT_MODE_INDEX",i);
+        record((CHAR8 *)"TEXT_QUERY_STATUS",s);
+        if (!EFI_ERROR(s)) {
+            record((CHAR8 *)"TEXT_COLUMNS",columns);
+            record((CHAR8 *)"TEXT_ROWS",rows);
+        }
+    }
+    record((CHAR8 *)"TEXT_SET_MODE_BEGIN",EFI_SUCCESS);
+    s=text->SetMode(text,0);
+    record((CHAR8 *)"TEXT_SET_MODE_END",s);
+    if (EFI_ERROR(s)) return s;
+    record((CHAR8 *)"TEXT_CLEAR_BEGIN",EFI_SUCCESS);
+    s=text->SetAttribute(text,EFI_WHITE|EFI_BACKGROUND_BLACK);
+    if (!EFI_ERROR(s)) s=text->ClearScreen(text);
+    if (!EFI_ERROR(s)) s=text->SetCursorPosition(text,0,0);
+    record((CHAR8 *)"TEXT_CLEAR_END",s);
+    if (EFI_ERROR(s)) return s;
+    record((CHAR8 *)"TEXT_DIRECT_BEGIN",EFI_SUCCESS);
+    s=text->OutputString(text,L"TaruGX UEFI direct text test\r\n");
+    record((CHAR8 *)"TEXT_DIRECT_END",s);
+    if (EFI_ERROR(s)) return s;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL line[640];
+    UINTN lit=0;
+    for (UINTN y=0;y<32;y++) {
+        s=gop->Blt(gop,line,EfiBltVideoToBltBuffer,0,y,0,0,640,1,0);
+        if (EFI_ERROR(s)) return s;
+        for (UINTN x=0;x<640;x++)
+            if (line[x].Red || line[x].Green || line[x].Blue) lit++;
+    }
+    record((CHAR8 *)"TEXT_DIRECT_NONBLACK_PIXELS",lit);
+    if (!lit) return EFI_DEVICE_ERROR;
+    if (!system->ConOut) return EFI_NOT_FOUND;
+    record((CHAR8 *)"TEXT_SYSTEM_SET_MODE_BEGIN",EFI_SUCCESS);
+    s=system->ConOut->SetMode(system->ConOut,0);
+    record((CHAR8 *)"TEXT_SYSTEM_SET_MODE_END",s);
+    if (EFI_ERROR(s)) return s;
+    record((CHAR8 *)"TEXT_SYSTEM_BEGIN",EFI_SUCCESS);
+    s=system->ConOut->OutputString(system->ConOut,L"TaruGX UEFI system console test\r\n");
+    record((CHAR8 *)"TEXT_SYSTEM_END",s);
+    return s;
+}
+#endif
+/* Follow PCI child-controller relationships; never select an unrelated GPU. */
+static EFI_STATUS find_gop(EFI_HANDLE controller,EFI_HANDLE *output,
+                           EFI_GRAPHICS_OUTPUT_PROTOCOL **gop)
+{
+    *output=NULL;*gop=NULL;
+    EFI_STATUS s=BS->HandleProtocol(controller,&gop_guid,(VOID **)gop);
+    if (!EFI_ERROR(s)) { *output=controller;return s; } /* Older ROM. */
+    EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *entries=NULL;
+    UINTN count=0;
+    s=BS->OpenProtocolInformation(controller,&pci_guid,&entries,&count);
+    if (EFI_ERROR(s)) return s;
+    for (UINTN i=0;i<count;i++) {
+        if (!(entries[i].Attributes&EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER)) continue;
+        EFI_GRAPHICS_OUTPUT_PROTOCOL *candidate=NULL;
+        if (EFI_ERROR(BS->HandleProtocol(entries[i].ControllerHandle,&gop_guid,(VOID **)&candidate))) continue;
+        if (*output && *output!=entries[i].ControllerHandle) {
+            BS->FreePool(entries);*output=NULL;*gop=NULL;return EFI_UNSUPPORTED;
+        }
+        *output=entries[i].ControllerHandle;*gop=candidate;
+    }
+    if (entries) BS->FreePool(entries);
+    return *output ? EFI_SUCCESS : EFI_NOT_FOUND;
+}
 static EFI_STATUS load(EFI_HANDLE image, EFI_HANDLE device, CHAR16 *name, EFI_HANDLE *loaded)
 {
     EFI_DEVICE_PATH *path=FileDevicePath(device,name);
@@ -189,7 +404,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     EFI_LOADED_IMAGE *self;
     EFI_FILE_IO_INTERFACE *fs;
     EFI_FILE_HANDLE root=NULL;
-    EFI_HANDLE driver=NULL, os=NULL, *handles=NULL, controller=NULL;
+    EFI_HANDLE driver=NULL, os=NULL, *handles=NULL, controller=NULL, output=NULL;
 #ifndef TARUGX_AUTO_ROM_TEST
     EFI_HANDLE driver_list[2];
 #endif
@@ -213,6 +428,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     }
     record((CHAR8 *)"TEST_START",EFI_SUCCESS);
     BS->SetWatchdogTimer(120,0,0,NULL);
+    record_system_console(system);
 #ifndef TARUGX_AUTO_ROM_TEST
     s=load(image,self->DeviceHandle,L"\\EFI\\TaruGX\\TaruGxGop.efi",&driver);
     record((CHAR8 *)"LOAD_DRIVER",s);
@@ -241,7 +457,8 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     if (EFI_ERROR(s)) { record((CHAR8 *)"GET_PCI_IO",s); goto boot; }
 #ifdef TARUGX_AUTO_ROM_TEST
     record_auto_rom(controller,pci);
-    s=BS->HandleProtocol(controller,&gop_guid,(VOID **)&gop);
+    record_console(system,controller);
+    s=find_gop(controller,&output,&gop);
     record((CHAR8 *)"AUTO_GOP_BEFORE_CONNECT",s);
     if (EFI_ERROR(s)) {
         s=BS->ConnectController(controller,NULL,NULL,FALSE);
@@ -255,8 +472,12 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     record((CHAR8 *)"CONNECT_DRIVER",s);
     if (EFI_ERROR(s)) goto boot;
 #endif
-    s=BS->HandleProtocol(controller,&gop_guid,(VOID **)&gop);
+    s=find_gop(controller,&output,&gop);
     record((CHAR8 *)"GET_GOP",s);
+#ifdef TARUGX_AUTO_ROM_TEST
+    if (!EFI_ERROR(s)) record_gop_trace(output);
+#endif
+    record_console(system,controller);
     if (EFI_ERROR(s)) goto boot;
     record_bar(pci,0); record_bar(pci,2); record_gcd(pci);
     UINT64 attrs=0;
@@ -276,6 +497,10 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     }
     s=pattern(gop);
     record((CHAR8 *)"BLT_PATTERN_AND_READBACK",s);
+#ifdef TARUGX_CONSOLE_TEST
+    if (!EFI_ERROR(s)) s=test_console(system,output,gop);
+    record((CHAR8 *)"TEXT_TEST_RESULT",s);
+#endif
     if (!EFI_ERROR(s)) {
         UINT32 ctrl, base, stride;
         s=pci->Mem.Read(pci,EfiPciIoWidthUint32,0,0x10,1,&ctrl);
