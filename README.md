@@ -139,3 +139,11 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 公開対象は`main`です。開発記録の`docs/`は公開履歴に含めません。
 接続先・認証情報は`.local/`、生成物は`build/`で管理し、どちらもGit管理外です。
 接続設定の雛形は`host/connection.env.example`を参照してください。
+
+## ライセンス
+
+自作コード・設計の基本ライセンスはSolderpad Hardware License 2.1
+（`Apache-2.0 WITH SHL-2.1`）です。LinuxドライバーはGPL-2.0-only、
+ロゴは保有する権利の範囲でCC BY 4.0とします。
+Gowin IPとその他の第三者由来部分には、それぞれの元の条件が適用されます。
+適用範囲とライセンス本文は[LICENSE.md](LICENSE.md)を参照してください。
