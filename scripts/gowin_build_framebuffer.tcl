@@ -16,6 +16,8 @@ set por_release_test 0
 set phy_recovery_experiment 0
 set rom_probe 0
 set rom_diagnostic 0
+set raw_bar_probe 0
+set auto_rom 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
     set por_release_test 1
@@ -37,6 +39,14 @@ if {[info exists ::env(TARUGX_PCIE_ROM_PROBE)] && $::env(TARUGX_PCIE_ROM_PROBE) 
 if {[info exists ::env(TARUGX_PCIE_ROM_DIAGNOSTIC)] && $::env(TARUGX_PCIE_ROM_DIAGNOSTIC) eq "1"} {
     if {!$rom_probe} { error "ROM diagnostic requires ROM probe mode" }
     set rom_diagnostic 1
+}
+if {[info exists ::env(TARUGX_PCIE_RAW_BAR_PROBE)] && $::env(TARUGX_PCIE_RAW_BAR_PROBE) eq "1"} {
+    if {!$rom_diagnostic} { error "Raw BAR probe requires ROM diagnostic mode" }
+    set raw_bar_probe 1
+}
+if {[info exists ::env(TARUGX_PCIE_AUTO_ROM)] && $::env(TARUGX_PCIE_AUTO_ROM) eq "1"} {
+    if {!$raw_bar_probe} { error "Auto ROM requires raw BAR probe and ROM diagnostic mode" }
+    set auto_rom 1
 }
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
@@ -78,6 +88,14 @@ if {[info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} {
 
 if {$rom_probe} { set output_dir [file join $repo build gowin_framebuffer_rom_probe] }
 if {$rom_diagnostic} { set output_dir [file join $repo build gowin_framebuffer_rom_diagnostic] }
+if {$raw_bar_probe} { set output_dir [file join $repo build gowin_framebuffer_raw_bar_probe] }
+if {$auto_rom} {
+    set output_dir [file join $repo build gowin_framebuffer_auto_rom]
+    set f [open [file join $pcie_dir serdes.csr] r]; set rom_csr [read $f]; close $f
+    if {![regexp -nocase {upar_write_driver\(0xb00060,0xFFFF0001\)} $rom_csr]} {
+        error "Auto ROM requires the measured 64 KiB Expansion ROM CSR setting"
+    }
+}
 
 foreach source [list \
     $serdes_v \
@@ -149,6 +167,8 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
         set top_text "`define TARUGX_PCIE_ROM_DIAGNOSTIC\n$top_text"
         add_file [file join $repo fpga tang_mega_138k tarugx_option_rom_storage.sv]
     }
+    if {$raw_bar_probe} { set top_text "`define TARUGX_PCIE_RAW_BAR_PROBE\n$top_text" }
+    if {$auto_rom} { set top_text "`define TARUGX_PCIE_AUTO_ROM\n$top_text" }
     set top_source [file join $output_dir tarugx_framebuffer_gowin_top.sv]
     set f [open $top_source w]; puts $f $top_text; close $f
 }

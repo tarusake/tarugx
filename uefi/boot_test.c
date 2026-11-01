@@ -89,6 +89,42 @@ static VOID record_gcd(EFI_PCI_IO_PROTOCOL *pci)
         }
     }
 }
+#ifdef TARUGX_AUTO_ROM_TEST
+/* Observe firmware-discovered ROM and the driver managing this controller.
+ * This variant never loads TaruGxGop.efi from the ESP. */
+static VOID record_auto_rom(EFI_HANDLE controller, EFI_PCI_IO_PROTOCOL *pci)
+{
+    record((CHAR8 *)"AUTO_ROM_SIZE",(EFI_STATUS)pci->RomSize);
+    record((CHAR8 *)"AUTO_ROM_PRESENT",pci->RomImage ? EFI_SUCCESS : EFI_NOT_FOUND);
+    if (pci->RomImage && pci->RomSize && pci->RomSize<=65536) {
+        UINT32 crc=0;
+        EFI_STATUS st=BS->CalculateCrc32(pci->RomImage,(UINTN)pci->RomSize,&crc);
+        record((CHAR8 *)"AUTO_ROM_CRC_STATUS",st);
+        if (!EFI_ERROR(st)) record((CHAR8 *)"AUTO_ROM_CRC32",crc);
+    }
+    EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *entries=NULL;
+    UINTN n=0;
+    EFI_STATUS st=BS->OpenProtocolInformation(controller,&pci_guid,&entries,&n);
+    record((CHAR8 *)"AUTO_OPEN_PROTOCOL_INFO",st);
+    if (EFI_ERROR(st)) return;
+    for (UINTN i=0;i<n;i++) {
+        if (!(entries[i].Attributes&EFI_OPEN_PROTOCOL_BY_DRIVER)) continue;
+        EFI_LOADED_IMAGE *loaded=NULL;
+        st=BS->HandleProtocol(entries[i].AgentHandle,&loaded_guid,(VOID **)&loaded);
+        record((CHAR8 *)"AUTO_MANAGING_IMAGE",st);
+        if (EFI_ERROR(st) || !loaded) continue;
+        EFI_DEVICE_PATH *path=loaded->FilePath;
+        for (UINTN node=0;path && node<32;node++) {
+            UINTN length=DevicePathNodeLength(path);
+            record((CHAR8 *)"AUTO_IMAGE_PATH_NODE",
+                   ((UINTN)path->Type<<24)|((UINTN)path->SubType<<16)|length);
+            if (IsDevicePathEnd(path) || length<4 || length>1024) break;
+            path=NextDevicePathNode(path);
+        }
+    }
+    BS->FreePool(entries);
+}
+#endif
 static EFI_STATUS load(EFI_HANDLE image, EFI_HANDLE device, CHAR16 *name, EFI_HANDLE *loaded)
 {
     EFI_DEVICE_PATH *path=FileDevicePath(device,name);
@@ -154,7 +190,9 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     EFI_FILE_IO_INTERFACE *fs;
     EFI_FILE_HANDLE root=NULL;
     EFI_HANDLE driver=NULL, os=NULL, *handles=NULL, controller=NULL;
+#ifndef TARUGX_AUTO_ROM_TEST
     EFI_HANDLE driver_list[2];
+#endif
     EFI_PCI_IO_PROTOCOL *pci;
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
     EFI_STATUS s;
@@ -166,17 +204,25 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     if (!EFI_ERROR(BS->HandleProtocol(self->DeviceHandle,&fs_guid,(VOID **)&fs)) &&
         !EFI_ERROR(fs->OpenVolume(fs,&root))) {
         /* Installer removes the previous log before each test. */
+#ifdef TARUGX_AUTO_ROM_TEST
+        root->Open(root,&log_file,L"\\EFI\\TaruGX\\auto-rom-test.log",
+#else
         root->Open(root,&log_file,L"\\EFI\\TaruGX\\gop-test.log",
+#endif
                    EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
     }
     record((CHAR8 *)"TEST_START",EFI_SUCCESS);
     BS->SetWatchdogTimer(120,0,0,NULL);
+#ifndef TARUGX_AUTO_ROM_TEST
     s=load(image,self->DeviceHandle,L"\\EFI\\TaruGX\\TaruGxGop.efi",&driver);
     record((CHAR8 *)"LOAD_DRIVER",s);
     if (EFI_ERROR(s)) goto boot;
     s=BS->StartImage(driver,NULL,NULL);
     record((CHAR8 *)"START_DRIVER",s);
     if (EFI_ERROR(s)) { driver=NULL; goto boot; }
+#else
+    record((CHAR8 *)"AUTO_ROM_TEST_NO_ESP_DRIVER_LOAD",EFI_SUCCESS);
+#endif
     s=BS->LocateHandleBuffer(ByProtocol,&pci_guid,NULL,&count,&handles);
     if (EFI_ERROR(s)) { record((CHAR8 *)"ENUMERATE_PCI",s); goto boot; }
     for (UINTN i=0;i<count;i++) {
@@ -193,11 +239,22 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system)
     if (!controller) goto boot;
     s=BS->HandleProtocol(controller,&pci_guid,(VOID **)&pci);
     if (EFI_ERROR(s)) { record((CHAR8 *)"GET_PCI_IO",s); goto boot; }
+#ifdef TARUGX_AUTO_ROM_TEST
+    record_auto_rom(controller,pci);
+    s=BS->HandleProtocol(controller,&gop_guid,(VOID **)&gop);
+    record((CHAR8 *)"AUTO_GOP_BEFORE_CONNECT",s);
+    if (EFI_ERROR(s)) {
+        s=BS->ConnectController(controller,NULL,NULL,FALSE);
+        record((CHAR8 *)"AUTO_CONNECT_EXISTING_DRIVERS",s);
+        record_auto_rom(controller,pci);
+    }
+#else
     driver_list[0]=driver; driver_list[1]=NULL;
     record((CHAR8 *)"CONNECT_DRIVER_BEGIN",EFI_SUCCESS);
     s=BS->ConnectController(controller,driver_list,NULL,FALSE);
     record((CHAR8 *)"CONNECT_DRIVER",s);
     if (EFI_ERROR(s)) goto boot;
+#endif
     s=BS->HandleProtocol(controller,&gop_guid,(VOID **)&gop);
     record((CHAR8 *)"GET_GOP",s);
     if (EFI_ERROR(s)) goto boot;

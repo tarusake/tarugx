@@ -9,13 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BuildModes(unittest.TestCase):
-    def run_mode(self, *, por=False, generated=True, **flags):
+    def run_mode(self, *, por=False, generated=True, rom=False, **flags):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
             for name in ("pcie_controller", "upar_arbiter", "src/gowin_pll"):
                 (tmp / name).mkdir(parents=True)
             (tmp / "serdes.v").write_text("input por_n_i;\n" if por else "// no POR input\n")
-            (tmp / "serdes.csr").write_text("upar_write_driver(0x1,0x0)\n")
+            (tmp / "serdes.csr").write_text("upar_write_driver(0xb00060,0xFFFF0001)\n" if rom else "upar_write_driver(0x1,0x0)\n")
             for name in ("pcie_controller/pcie_controller.v", "upar_arbiter/upar_arbiter.v",
                          "src/gowin_pll/gowin_pll.v"):
                 (tmp / name).write_text("// mock IP\n")
@@ -37,9 +37,21 @@ class BuildModes(unittest.TestCase):
         for flags, por in (({}, False), ({"POR_RELEASE_TEST": 1}, True),
                            ({"PHY_RECOVERY_EXPERIMENT": 1}, True),
                            ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1}, True),
-                           ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1, "ROM_DIAGNOSTIC": 1}, True)):
+                           ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1, "ROM_DIAGNOSTIC": 1}, True),
+                           ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1, "ROM_DIAGNOSTIC": 1, "RAW_BAR_PROBE": 1}, True)):
             with self.subTest(flags=flags):
                 self.assertIn("VALIDATED_TOOL_BOUNDARY", self.run_mode(por=por, **flags))
+
+    def test_auto_rom_measured_csr(self):
+        flags=dict(PHY_RECOVERY_EXPERIMENT=1,ROM_PROBE=1,ROM_DIAGNOSTIC=1,RAW_BAR_PROBE=1,AUTO_ROM=1)
+        self.assertIn("measured 64 KiB",self.run_mode(por=True,**flags))
+        self.assertIn("VALIDATED_TOOL_BOUNDARY",self.run_mode(por=True,rom=True,**flags))
+
+    def test_auto_rom_requires_raw_probe(self):
+        self.assertIn("Auto ROM requires raw BAR probe", self.run_mode(AUTO_ROM=1))
+
+    def test_raw_bar_requires_diagnostic(self):
+        self.assertIn("Raw BAR probe requires ROM diagnostic", self.run_mode(RAW_BAR_PROBE=1))
 
     def test_rom_diagnostic_requires_probe(self):
         self.assertIn("ROM diagnostic requires ROM probe", self.run_mode(ROM_DIAGNOSTIC=1))

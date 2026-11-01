@@ -1,9 +1,14 @@
 /// FR09-only overlay. BAR0 0x40/0x44 hold software-verified ROM enable/base.
-/// Reset disables ROM. This is NOT automatic PCI configuration discovery.
+/// In manual mode reset disables ROM. AUTO_ROM uses a wrapper-qualified,
+/// experimentally verified hardware ROM hit aligned with this RX beat.
+/// BAR0 0x48 reports AUTO_ROM. No polling or guessed configuration address.
 /// Core RX payload wires are shared; only its valid is gated. All outstanding
 /// core work drains before accepting ROM/config accesses; no TLP interleaving.
-module option_rom_diagnostic (
+module option_rom_diagnostic #(
+    param AUTO_ROM: u32 = 0,
+) (
     clk: input clock, rst_n: input reset, completer_id: input logic<16>,
+    rom_hit: input logic,
     rx_sop: input logic, rx_eop: input logic, rx_valid: input logic<8>,
     rx_data: input logic<256>, rx_bar: input logic<6>, rx_error: input logic<8>,
     rx_wait: output logic, rx_masknp: output logic,
@@ -29,7 +34,7 @@ module option_rom_diagnostic (
     let framed: logic = rx_sop && rx_eop && (rx_valid[7:5] == 3'b111)
         && !(|rx_error) && (!(fmt[0] || fmt[1]) || rx_valid[4]);
     let cfg_select: logic = rx_bar[0] && !rx_bar[2] && ((fmt == 0) || (fmt == 2))
-        && (h0[28:24] == 0) && ((h2[15:2] == 14'h10) || (h2[15:2] == 14'h11));
+        && (h0[28:24] == 0) && ((h2[15:2] == 14'h10) || (h2[15:2] == 14'h11) || (h2[15:2] == 14'h12));
     let rom_select: logic = (rx_bar == 0) && memory_read;
     let selected: logic = framed && (cfg_select || rom_select);
     let core_pending: logic = core_rx_masknp || (|core_tx_valid);
@@ -41,6 +46,7 @@ module option_rom_diagnostic (
     var packet_idle: logic; var packet_bad: logic;
     var rom_tx_valid: logic<8>; var rom_tx_sop: logic; var rom_tx_eop: logic;
     var rom_tx_data: logic<256>;
+    let request_address: logic<32> = if fmt[0] ? h3 : h2;
     let accept: logic = selected && (state == State::Idle) && !core_pending && stream_ready;
     assign core_rx_valid = if (state == State::Idle) && !selected ? rx_valid : 8'b0;
     assign core_tx_wait = tx_wait || (state != State::Idle);
@@ -49,7 +55,9 @@ module option_rom_diagnostic (
     assign rx_masknp = (state != State::Idle) || core_rx_masknp || (selected && memory_read);
     inst stream: option_rom_completion_stream (
         clk, rst_n, req_valid: accept && rom_select, req_ready: stream_ready,
-        h0, h1, h2, h3, rom_enabled: enabled[0], rom_base: base[31:16],
+        h0, h1, h2, h3,
+        rom_enabled: if AUTO_ROM != 0 ? rom_hit : enabled[0],
+        rom_base: if AUTO_ROM != 0 ? request_address[31:16] : base[31:16],
         completer_id, tx_valid: stream_valid, tx_ready: stream_accept,
         tx_sop: stream_sop, tx_eop: stream_eop, tx_data: stream_data,
         rom_en, rom_addr, rom_data, malformed: rom_bad, unsupported: rom_unsupported,
@@ -109,14 +117,14 @@ module option_rom_diagnostic (
                 if rom_select { state = State::Rom; }
                 else if memory_write {
                     if cfg_ok {
-                        if h2[2] { base = merge(base,payload,h1[3:0]) & 32'hffff0000; }
-                        else { enabled = merge(enabled,payload,h1[3:0]) & 32'd1; }
+                        if h2[15:2] == 14'h11 { base = merge(base,payload,h1[3:0]) & 32'hffff0000; }
+                        else if h2[15:2] == 14'h10 { enabled = merge(enabled,payload,h1[3:0]) & 32'd1; }
                     }
                 } else {
                     cfg_reqid = h1[31:16]; cfg_tag = h1[15:8]; cfg_addr = h2[15:0];
                     cfg_be = if cfg_ok ? h1[3:0] : 4'b0;
                     cfg_status = if cfg_ok ? 3'b0 : 3'd1;
-                    cfg_data = if h2[2] ? base : enabled;
+                    cfg_data = if h2[15:2] == 14'h12 ? (AUTO_ROM as 32) : (if h2[2] ? base : enabled);
                     state = State::Config;
                 }
             }

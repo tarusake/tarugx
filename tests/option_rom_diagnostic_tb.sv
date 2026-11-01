@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module option_rom_diagnostic_tb;
+module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic [15:0] completer_id=16'h0100;
  logic rx_sop=1,rx_eop=1;logic [7:0] rx_valid=0,rx_error=0;logic [5:0] rx_bar=0;
@@ -16,14 +16,18 @@ module option_rom_diagnostic_tb;
  logic [31:0] fb_req_addr,fb_req_wdata,fb_rsp_rdata=0;logic [3:0] fb_req_wstrb;
  int packets=0,rom_reads=0;
  logic staged_sop,staged_eop,staged_wait,staged_mask,busy;
+ logic [19:0] rx_tag=0,staged_tag,force_tag=0;
+ logic hw_enabled=0;
+ logic [31:0] hw_base=32'h80210000;
+ wire rom_hit=staged_tag==20'h00040;
  logic [7:0] staged_valid,staged_error;
  logic [5:0] staged_bar;logic [255:0] staged_data;
  tarugx_tlp_rx_buffer rx_buffer(.clk,.rst_n,.in_sop(rx_sop),.in_eop(rx_eop),.in_valid(rx_valid),
-  .in_data(rx_data),.in_bar(rx_bar),.in_error(rx_error),.in_wait(rx_wait),.out_sop(staged_sop),
+  .in_data(rx_data),.in_bar(rx_bar),.in_error(rx_error),.in_wait(rx_wait),.in_tag(rx_tag),.out_tag(staged_tag),.out_sop(staged_sop),
   .out_eop(staged_eop),.out_valid(staged_valid),.out_data(staged_data),.out_bar(staged_bar),
   .out_error(staged_error),.out_wait(staged_wait),.busy);
  assign rx_masknp=staged_mask|busy;
- tarugx_option_rom_diagnostic overlay(.rx_sop(staged_sop),.rx_eop(staged_eop),
+ tarugx_option_rom_diagnostic #(.AUTO_ROM(32'(AUTO_MODE))) overlay(.rx_sop(staged_sop),.rx_eop(staged_eop),
   .rx_valid(staged_valid),.rx_data(staged_data),.rx_bar(staged_bar),.rx_error(staged_error),
   .rx_wait(staged_wait),.rx_masknp(staged_mask),.*);
  tarugx_pcie_gpu_path core(
@@ -39,6 +43,7 @@ module option_rom_diagnostic_tb;
  function automatic logic[31:0] swap(input logic[31:0] a);return {a[7:0],a[15:8],a[23:16],a[31:24]};endfunction
  task offer(input bit wr,input logic[5:0] bar,input int addr,input int n,input logic[7:0] be,input int data=0);
   @(negedge clk);rx_valid=wr?8'hf0:8'he0;rx_bar=bar;
+  rx_tag=bar!=0?20'(bar):(force_tag!=0?force_tag:((hw_enabled && (32'(addr)&32'hffff0000)==hw_base)?20'h40:20'h0));
   rx_data={((wr?32'h40000000:0)|(32'(n)&1023)),16'h1234,8'h5a,be,32'(addr),swap(32'(data)),128'b0};
   #1;
  endtask
@@ -74,7 +79,7 @@ module option_rom_diagnostic_tb;
  endtask
  task rom_read(input int offset,input int n,input int lead,input int tail);
   int pos,left,part,bc,skip;
-  submit(0,0,'h80210000+offset,n,n==1?8'(15<<lead):{4'(15>>(3-tail)),4'(15<<lead)});
+  submit(0,0,int'(hw_base)+offset,n,n==1?8'(15<<lead):{4'(15>>(3-tail)),4'(15<<lead)});
   pos=offset;left=n;bc=n*4-lead-(3-tail);skip=lead;
   while(left>0) begin
    part=left<(128-pos%128)/4?left:(128-pos%128)/4;
@@ -87,14 +92,22 @@ module option_rom_diagnostic_tb;
   $readmemh("build/uefi/TaruGxGop.mem",mem);tick();@(negedge clk);rst_n=1;
   unsupported_read('h80210000);assert(rom_reads==0) else $fatal;
   reg_read('h80200040,0);reg_read('h80200044,0);
-  submit(1,1,'h80200044,1,8'h0c,'h80210000);reg_read('h80200044,'h80210000);
-  submit(1,1,'h80200040,1,8'h01,1);reg_read('h80200040,1);
+  reg_read('h80200048,int'(AUTO_MODE));
+  if(AUTO_MODE==0) begin
+   submit(1,1,'h80200044,1,8'h0c,'h80210000);reg_read('h80200044,'h80210000);
+   submit(1,1,'h80200040,1,8'h01,1);reg_read('h80200040,1);
+  end
+  hw_enabled=1;
   reg_read('h80200000,'h54475055);
   for(int p=0;p<65536;p+=4096) rom_read(p,1024,0,3);
   // Every payload size and final-beat lane count.
   for(int n=1;n<=32;n++) rom_read(0,n,0,3);
   rom_read(124,35,2,1);
   unsupported_read('h80220000);
+  if(AUTO_MODE!=0) begin
+   hw_base=32'ha1400000;rom_read(0,32,0,3);hw_base=32'h80210000;
+   force_tag=20'h80;unsupported_read('h80210000);force_tag=0;
+  end
   // A pending posted DDR write must block a ROM read.
   submit(1,4,'h80400000,1,8'h0f,'h12345678);
   submit(0,0,'h80210000,1,8'h0f);
@@ -105,11 +118,13 @@ module option_rom_diagnostic_tb;
   while(rx_wait) tick();
   expected[0]=32'h4a000001;expected[1]=32'h01000004;expected[2]=32'h12345a00;expected[3]=swap(mem[0]);receive(4);
   // Disable, flush via read, then verify no ROM access.
-  submit(1,1,'h80200040,1,8'h01,0);reg_read('h80200040,0);
+  if(AUTO_MODE!=0) hw_enabled=0;
+  else submit(1,1,'h80200040,1,8'h01,0);
+  reg_read('h80200040,0);
   begin int before_reads;before_reads=rom_reads;unsupported_read('h80210000);assert(rom_reads==before_reads) else $fatal;end
   reg_read('h80200000,'h54475055);
   assert(!diagnostic_error && !framing_error) else $fatal;
-  $display("ROM diagnostic + real GPU core: %0d packets, full 64KiB, all beat sizes, stalls, posted-write fence PASS",packets);$finish;
+  $display("ROM diagnostic + real GPU core: AUTO=%0d %0d packets, full 64KiB, all beat sizes, stalls, posted-write fence PASS",AUTO_MODE,packets);$finish;
  end
  initial begin #30000000;$fatal(1,"timeout");end
 endmodule

@@ -1,6 +1,8 @@
 /// Passive first accepted SOP capture; the first non-BAR0/2 SOP replaces it.
 /// No inference that an unmatched packet is an Expansion ROM access.
-module pcie_rx_probe (
+module pcie_rx_probe #(
+    param REPLACE_UNMATCHED: u32 = 0,
+) (
     clk: input clock, rst_n: input reset,
     rx_sop: input logic, rx_eop: input logic, rx_wait: input logic,
     rx_valid: input logic<8>, rx_error: input logic<8>,
@@ -23,7 +25,7 @@ module pcie_rx_probe (
             if unmatched && (unmatched_count != 32'hffffffff) {
                 unmatched_count = unmatched_count + 32'd1;
             }
-            if !captured || (unmatched && !unmatched_captured) {
+            if !captured || (unmatched && (!unmatched_captured || (REPLACE_UNMATCHED != 0))) {
                 captured = 1;
                 if unmatched { unmatched_captured = 1; }
                 held = {4'b0, unmatched, rx_eop, rx_sop, 1'b1,

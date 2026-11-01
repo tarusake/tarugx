@@ -17,6 +17,7 @@ def main():
     ap.add_argument("--bdf", required=True)
     ap.add_argument("--expected-sha256", required=True)
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--auto", action="store_true", help="require FR11 hardware ROM decode; do not write diagnostic registers")
     args = ap.parse_args()
     if not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", args.bdf):
         ap.error("invalid PCI BDF")
@@ -51,26 +52,32 @@ def main():
             old_enable, old_base = rd(0x40), rd(0x44)
             if old_enable not in (0, 1) or old_base & 65535:
                 raise RuntimeError("FR09 diagnostic registers not present")
+            if args.auto and (rd(0x48) != 1 or old_enable != 0 or old_base != 0):
+                raise RuntimeError("expected automatic ROM mode with untouched diagnostic registers")
             try:
-                wr(0x40, 0)
-                wr(0x44, start)
-                wr(0x40, 1)
+                if not args.auto:
+                    wr(0x40, 0)
+                    wr(0x44, start)
+                    wr(0x40, 1)
                 (p / "rom").write_text("1")
                 data = (p / "rom").read_bytes()
             finally:
                 try:
                     (p / "rom").write_text("0")
                 finally:
-                    wr(0x40, 0)
-                    wr(0x44, old_base)
-                    wr(0x40, old_enable)
+                    if not args.auto:
+                        wr(0x40, 0)
+                        wr(0x44, old_base)
+                        wr(0x40, old_enable)
+                    elif rd(0x40) != old_enable or rd(0x44) != old_base:
+                        raise RuntimeError("diagnostic registers changed unexpectedly")
     digest = hashlib.sha256(data).hexdigest()
     args.output.write_bytes(data)
     print(f"ROM resource: {start:#x}..{end:#x}")
     print(f"ROM bytes: {len(data)}, SHA256: {digest}")
     if len(data) != 65536 or digest.lower() != args.expected_sha256.lower():
         raise RuntimeError("ROM contents differ from the FPGA build image")
-    print("ROM full-image match PASS; diagnostic registers restored")
+    print("ROM full-image match PASS; " + ("automatic mode, diagnostic registers untouched" if args.auto else "diagnostic registers restored"))
 
 
 if __name__ == "__main__":

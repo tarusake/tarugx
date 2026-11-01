@@ -125,10 +125,19 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [5:0] app_rx_bar;
 `ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
     wire app_rx_busy;
+    wire [19:0] app_raw_bar;
+`ifdef TARUGX_PCIE_AUTO_ROM
+    wire [19:0] rx_raw_tag={u_pcie.tl_rx_bardec0_w,u_pcie.PCIE_Controller_Top_pcie_tl_rx_bardec_i};
+    localparam AUTO_ROM = 1;
+`else
+    wire [19:0] rx_raw_tag=20'b0;
+    localparam AUTO_ROM = 0;
+`endif
     tarugx_tlp_rx_buffer u_rx_buffer (
         .clk(tlp_clk), .rst_n(cpu_reset[1]),
         .in_sop(rx_sop), .in_eop(rx_eop), .in_valid(rx_valid), .in_data(rx_data),
         .in_bar(rx_bar_decode), .in_error(rx_error), .in_wait(rx_wait),
+        .in_tag(rx_raw_tag), .out_tag(app_raw_bar),
         .out_sop(app_rx_sop), .out_eop(app_rx_eop), .out_valid(app_rx_valid), .out_data(app_rx_data),
         .out_bar(app_rx_bar), .out_error(app_rx_error), .out_wait(app_rx_wait), .busy(app_rx_busy)
     );
@@ -145,8 +154,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire rom_en, rom_diagnostic_error;
     wire [13:0] rom_addr;
     wire [31:0] rom_data;
-    tarugx_option_rom_diagnostic u_rom (
+    tarugx_option_rom_diagnostic #(.AUTO_ROM(AUTO_ROM)) u_rom (
         .clk(tlp_clk), .rst_n(cpu_reset[1]), .completer_id({cfg_busdev,3'b000}),
+        .rom_hit(app_raw_bar == 20'h00040),
         .rx_sop(app_rx_sop), .rx_eop(app_rx_eop), .rx_valid(app_rx_valid), .rx_data(app_rx_data),
         .rx_bar(app_rx_bar), .rx_error(app_rx_error), .rx_wait(app_rx_wait), .rx_masknp(app_rx_masknp),
         .core_rx_valid(core_rx_valid), .core_rx_wait(core_rx_wait), .core_rx_masknp(core_rx_masknp),
@@ -373,17 +383,32 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
 `endif
 `ifdef TARUGX_PCIE_ROM_PROBE
     wire [255:0] rom_probe_src, rom_probe_dbg;
-    tarugx_pcie_rx_probe u_rom_probe (
+`ifdef TARUGX_PCIE_RAW_BAR_PROBE
+    // Generated netlist confirms SOP/data/valid/BAR and TL clock pass through.
+    // Capture all 20 hard-macro BARDEC bits; do not assign meanings yet.
+    wire [19:0] raw_bar_decode = {u_pcie.tl_rx_bardec0_w,
+                                 u_pcie.PCIE_Controller_Top_pcie_tl_rx_bardec_i};
+    wire [255:0] rom_probe_data = {rx_data[255:128],12'b0,raw_bar_decode,96'b0};
+    localparam PROBE_REPLACE_UNMATCHED = 1;
+`else
+    wire [255:0] rom_probe_data = rx_data;
+    localparam PROBE_REPLACE_UNMATCHED = 0;
+`endif
+    tarugx_pcie_rx_probe #(.REPLACE_UNMATCHED(PROBE_REPLACE_UNMATCHED)) u_rom_probe (
         .clk(tlp_clk), .rst_n(pcie_debug_reset[1]), .rx_sop(rx_sop), .rx_eop(rx_eop),
         .rx_wait(rx_wait), .rx_valid(rx_valid), .rx_error(rx_error),
-        .rx_bar(rx_bar_decode), .rx_data(rx_data), .snapshot(rom_probe_src)
+        .rx_bar(rx_bar_decode), .rx_data(rom_probe_data), .snapshot(rom_probe_src)
     );
     tarugx_display_config_cdc #(.WIDTH(256), .SEND_UNCHANGED(1)) u_rom_probe_cdc (
         .src_clk(tlp_clk), .src_rst_n(pcie_debug_reset[1]),
         .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
         .src_config(rom_probe_src), .dst_config(rom_probe_dbg)
     );
-`ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
+`ifdef TARUGX_PCIE_AUTO_ROM
+    wire [287:0] uart_snapshot = {32'h46523131,rom_probe_dbg}; // FR11: hardware ROM hit
+`elsif TARUGX_PCIE_RAW_BAR_PROBE
+    wire [287:0] uart_snapshot = {32'h46523130,rom_probe_dbg}; // FR10: raw BARDEC
+`elsif TARUGX_PCIE_ROM_DIAGNOSTIC
     wire [287:0] uart_snapshot = {32'h46523039,rom_probe_dbg}; // FR09: software-configured ROM
 `else
     wire [287:0] uart_snapshot = {32'h46523038,rom_probe_dbg}; // FR08: passive RX probe

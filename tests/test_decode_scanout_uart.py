@@ -63,6 +63,16 @@ class DecodeTest(unittest.TestCase):
 
 
 class RomProbeDecodeTest(unittest.TestCase):
+    def test_fr11_tag(self):
+        result=decoder.decode("D1110X46523131" + "0" * 59 + "00040")
+        self.assertEqual(result["rom_probe"]["raw_bar"],"00040")
+
+    def test_fr10_raw_bar(self):
+        payload=(0x46523130<<256)|0x80040
+        result=decoder.decode(f"D1110X{payload:072X}")["rom_probe"]
+        self.assertEqual(result["raw_bar"],"80040")
+        self.assertEqual(len(result["dwords"]),4)
+
     def test_fr09_tag(self):
         self.assertIsNotNone(decoder.decode("D1110X46523039" + "0" * 64))
 

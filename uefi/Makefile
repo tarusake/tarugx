@@ -10,7 +10,7 @@ CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -fpic -ffreestanding \
  -I$(EFI_INC) -I$(EFI_INC)/x86_64 -I$(EFI_INC)/protocol
 
 .PHONY: all test clean
-all: $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.efi $(OUT)/TaruGxGop.mem
+all: $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.efi $(OUT)/TaruGxAutoProbe.efi $(OUT)/TaruGxGop.mem
 $(OUT):
 	mkdir -p $@
 $(OUT)/%.o: %.c blt.h dxe_memory.h | $(OUT)
@@ -39,7 +39,7 @@ test: | $(OUT)
 	python3 -m unittest discover -s ../tests -p test_rom_mem.py
 clean:
 	rm -f $(OUT)/*.o $(OUT)/TaruGxGop.so $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom $(OUT)/TaruGxGop.mem \
-	 $(OUT)/TaruGxTest.so $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.so $(OUT)/TaruGxProbe.efi $(OUT)/blt-test $(OUT)/driver-test
+	 $(OUT)/TaruGxTest.so $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.so $(OUT)/TaruGxProbe.efi $(OUT)/TaruGxAutoProbe.so $(OUT)/TaruGxAutoProbe.efi $(OUT)/blt-test $(OUT)/driver-test
 
 # Diagnostic variant: record results, then reboot through the normal BootOrder.
 $(OUT)/boot_probe.o: boot_test.c dxe_memory.h | $(OUT)
@@ -53,3 +53,13 @@ $(OUT)/TaruGxProbe.efi: $(OUT)/TaruGxProbe.so
 
 $(OUT)/TaruGxGop.mem: $(OUT)/TaruGxGop.rom $(ROOT)/tools/make_rom_mem.py
 	python3 $(ROOT)/tools/make_rom_mem.py $< $@ --aperture-size 65536
+
+# Observe firmware ROM discovery; never load the GOP driver from ESP.
+$(OUT)/boot_auto_probe.o: boot_test.c dxe_memory.h | $(OUT)
+	$(CC) $(CFLAGS) -DTARUGX_DIAGNOSTIC_RESET -DTARUGX_AUTO_ROM_TEST -c $< -o $@
+$(OUT)/TaruGxAutoProbe.so: $(OUT)/boot_auto_probe.o
+	ld -nostdlib -znocombreloc -T $(EFI_LIB)/elf_x86_64_efi.lds -shared -Bsymbolic \
+	 $(EFI_LIB)/crt0-efi-x86_64.o $^ -L$(EFI_LIB) -lefi -lgnuefi -o $@
+$(OUT)/TaruGxAutoProbe.efi: $(OUT)/TaruGxAutoProbe.so
+	objcopy -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel \
+	 -j .rela -j .reloc --target=efi-app-x86_64 $< $@
