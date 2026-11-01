@@ -2,6 +2,7 @@
 /// The source holds all payload bits until the synchronized acknowledgement.
 module display_config_cdc #(
     param WIDTH: u32 = 26,
+    param SEND_UNCHANGED: u32 = 0,
 ) (
     src_clk   : input  'src clock       ,
     src_rst_n : input  'src reset       ,
@@ -25,7 +26,7 @@ module display_config_cdc #(
                 ack_sync = 0;
             } else {
                 ack_sync = {ack_sync[0], ack};
-                if (request == ack_sync[1]) && (held != src_config) {
+                if (request == ack_sync[1]) && ((SEND_UNCHANGED != 0) || (held != src_config)) {
                     held    = src_config;
                     request = !request;
                 }

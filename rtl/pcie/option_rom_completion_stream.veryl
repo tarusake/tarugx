@@ -1,0 +1,92 @@
+/// Complete ROM responses as a normalized 32-bit DWORD Ready/Valid stream.
+/// Headers use PCIe bit significance, payload uses little-endian ROM words.
+/// A Gowin adapter must buffer a packet and pack/byte-swap payload lanes.
+/// The planner descriptor is held until the final DWORD has been accepted.
+module option_rom_completion_stream (
+    clk: input clock, rst_n: input reset,
+    req_valid: input logic, req_ready: output logic,
+    h0: input logic<32>, h1: input logic<32>,
+    h2: input logic<32>, h3: input logic<32>,
+    rom_enabled: input logic, rom_base: input logic<16>,
+    completer_id: input logic<16>,
+    tx_valid: output logic, tx_ready: input logic,
+    tx_sop: output logic, tx_eop: output logic, tx_data: output logic<32>,
+    rom_en: output logic, rom_addr: output logic<14>, rom_data: input logic<32>,
+    malformed: output logic, unsupported: output logic,
+) {
+    var cpl_valid: logic; var cpl_ready: logic;
+    var cpl_status: logic<3>; var cpl_addr: logic<16>;
+    var cpl_length: logic<6>; var cpl_byte_count: logic<12>;
+    var cpl_lower_addr: logic<7>; var cpl_requester: logic<16>;
+    var cpl_tag: logic<8>; var cpl_tc: logic<3>; var cpl_attr: logic<2>;
+    inst planner: option_rom_completion_plan (
+        clk, rst_n, req_valid, req_ready, h0, h1, h2, h3, rom_enabled, rom_base,
+        cpl_valid, cpl_ready, cpl_status, cpl_addr, cpl_length, cpl_byte_count,
+        cpl_lower_addr, cpl_requester, cpl_tag, cpl_tc, cpl_attr,
+        malformed, unsupported,
+    );
+    enum State: logic<3> { Idle, Header0, Header1, Header2, Fetch, WaitData, Data, }
+    var state: State;
+    var index: logic<6>;
+    var saved_completer: logic<16>;
+    var data: logic<32>;
+    var rd_ready: logic; var rsp_valid: logic; var rsp_data: logic<32>;
+    var rsp_error: logic;
+    inst reader: option_rom_reader (
+        clk, rst_n, req_valid: state == State::Fetch, req_ready: rd_ready,
+        req_write: 1'b0,
+        req_addr: (cpl_addr as 32) + ((index as 32) << 2),
+        rsp_valid, rsp_ready: state == State::WaitData,
+        rsp_data, rsp_error, rom_en, rom_addr, rom_data,
+    );
+    assign tx_valid = (state == State::Header0) || (state == State::Header1)
+                   || (state == State::Header2) || (state == State::Data);
+    assign tx_sop = state == State::Header0;
+    assign tx_eop = ((state == State::Header2) && (cpl_status != 0))
+                || ((state == State::Data) && (index + 6'd1 == cpl_length));
+    assign cpl_ready = tx_valid && tx_ready && tx_eop;
+    always_comb {
+        tx_data = 0;
+        case state {
+            State::Header0: {
+                tx_data = (if cpl_status == 0 ? 32'h4a000000 : 32'h0a000000)
+                        | ((cpl_tc as 32) << 20) | ((cpl_attr as 32) << 12)
+                        | (cpl_length as 32);
+            }
+            State::Header1: { tx_data = {saved_completer, cpl_status, 1'b0, cpl_byte_count}; }
+            State::Header2: { tx_data = {cpl_requester, cpl_tag, 1'b0, cpl_lower_addr}; }
+            State::Data: { tx_data = data; }
+            default: {}
+        }
+    }
+    always_ff {
+        if_reset { state = State::Idle; index = 0; data = 0; saved_completer = 0; }
+        else {
+            case state {
+                State::Idle: {
+                    if cpl_valid {
+                        index = 0; saved_completer = completer_id; state = State::Header0;
+                    }
+                }
+                State::Header0: { if tx_ready { state = State::Header1; } }
+                State::Header1: { if tx_ready { state = State::Header2; } }
+                State::Header2: {
+                    if tx_ready {
+                        state = if cpl_status == 0 ? State::Fetch : State::Idle;
+                    }
+                }
+                State::Fetch: { if rd_ready { state = State::WaitData; } }
+                State::WaitData: {
+                    if rsp_valid { data = rsp_data; state = State::Data; }
+                }
+                default: { state = State::Idle; }
+                State::Data: {
+                    if tx_ready {
+                        if tx_eop { state = State::Idle; }
+                        else { index = index + 6'd1; state = State::Fetch; }
+                    }
+                }
+            }
+        }
+    }
+}

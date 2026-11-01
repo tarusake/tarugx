@@ -119,14 +119,59 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [31:0] fb_req_addr, fb_req_wdata;
     wire [3:0] fb_req_wstrb;
     wire [32:0] cpu_response;
+    wire app_rx_sop, app_rx_eop, app_rx_wait, app_rx_masknp;
+    wire [7:0] app_rx_valid, app_rx_error;
+    wire [255:0] app_rx_data;
+    wire [5:0] app_rx_bar;
+`ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
+    wire app_rx_busy;
+    tarugx_tlp_rx_buffer u_rx_buffer (
+        .clk(tlp_clk), .rst_n(cpu_reset[1]),
+        .in_sop(rx_sop), .in_eop(rx_eop), .in_valid(rx_valid), .in_data(rx_data),
+        .in_bar(rx_bar_decode), .in_error(rx_error), .in_wait(rx_wait),
+        .out_sop(app_rx_sop), .out_eop(app_rx_eop), .out_valid(app_rx_valid), .out_data(app_rx_data),
+        .out_bar(app_rx_bar), .out_error(app_rx_error), .out_wait(app_rx_wait), .busy(app_rx_busy)
+    );
+    assign rx_masknp=app_rx_masknp | app_rx_busy;
+`else
+    assign app_rx_sop=rx_sop, app_rx_eop=rx_eop, app_rx_valid=rx_valid, app_rx_data=rx_data;
+    assign app_rx_bar=rx_bar_decode, app_rx_error=rx_error;
+    assign rx_wait=app_rx_wait, rx_masknp=app_rx_masknp;
+`endif
+    wire [7:0] core_rx_valid, core_tx_valid;
+    wire core_rx_wait, core_rx_masknp, core_tx_wait, core_tx_sop, core_tx_eop;
+    wire [255:0] core_tx_data;
+`ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
+    wire rom_en, rom_diagnostic_error;
+    wire [13:0] rom_addr;
+    wire [31:0] rom_data;
+    tarugx_option_rom_diagnostic u_rom (
+        .clk(tlp_clk), .rst_n(cpu_reset[1]), .completer_id({cfg_busdev,3'b000}),
+        .rx_sop(app_rx_sop), .rx_eop(app_rx_eop), .rx_valid(app_rx_valid), .rx_data(app_rx_data),
+        .rx_bar(app_rx_bar), .rx_error(app_rx_error), .rx_wait(app_rx_wait), .rx_masknp(app_rx_masknp),
+        .core_rx_valid(core_rx_valid), .core_rx_wait(core_rx_wait), .core_rx_masknp(core_rx_masknp),
+        .core_tx_valid(core_tx_valid), .core_tx_sop(core_tx_sop), .core_tx_eop(core_tx_eop),
+        .core_tx_data(core_tx_data), .core_tx_wait(core_tx_wait),
+        .tx_wait(tx_wait), .tx_valid(tx_valid), .tx_sop(tx_sop), .tx_eop(tx_eop), .tx_data(tx_data),
+        .rom_en(rom_en), .rom_addr(rom_addr), .rom_data(rom_data), .diagnostic_error(rom_diagnostic_error)
+    );
+    tarugx_option_rom_storage #(.INIT_FILE("__TARUGX_ROM_MEM__")) u_option_rom (
+        .clk(tlp_clk), .en(rom_en), .addr(rom_addr), .data(rom_data)
+    );
+`else
+    assign core_rx_valid=app_rx_valid;
+    assign app_rx_wait=core_rx_wait, app_rx_masknp=core_rx_masknp;
+    assign core_tx_wait=tx_wait;
+    assign tx_valid=core_tx_valid, tx_sop=core_tx_sop, tx_eop=core_tx_eop, tx_data=core_tx_data;
+`endif
     tarugx_tarugx_framebuffer_top u_core (
         .tlp_clk(tlp_clk), .tlp_rst_n(cpu_reset[1]),
         .completer_id({cfg_busdev, 3'b000}), .link_up(link_up), .perst_n(pcie_rstn),
         .clock_ready(clock_ready), .lane_status(lane_status), .ltssm(ltssm),
-        .rx_sop(rx_sop), .rx_eop(rx_eop), .rx_valid(rx_valid), .rx_data(rx_data),
-        .rx_bar_decode(rx_bar_decode), .rx_error(rx_error), .rx_wait(rx_wait),
-        .rx_masknp(rx_masknp), .tx_wait(tx_wait), .tx_sop(tx_sop), .tx_eop(tx_eop),
-        .tx_valid(tx_valid), .tx_data(tx_data), .led_status(led), .uart_tx_o(),
+        .rx_sop(app_rx_sop), .rx_eop(app_rx_eop), .rx_valid(core_rx_valid), .rx_data(app_rx_data),
+        .rx_bar_decode(app_rx_bar), .rx_error(app_rx_error), .rx_wait(core_rx_wait),
+        .rx_masknp(core_rx_masknp), .tx_wait(core_tx_wait), .tx_sop(core_tx_sop), .tx_eop(core_tx_eop),
+        .tx_valid(core_tx_valid), .tx_data(core_tx_data), .led_status(led), .uart_tx_o(),
         .display_ctrl(display_ctrl), .display_color(display_color),
         .committed_base(committed_base), .committed_stride(committed_stride),
         .fb_req_valid(fb_req_valid), .fb_req_ready(fb_req_ready), .fb_req_write(fb_req_write),
@@ -326,9 +371,29 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
 `else
     localparam [31:0] UART_VERSION = PCIE_RECOVERY_EXPERIMENT ? 32'h46523036 : 32'h46523034;
 `endif
+`ifdef TARUGX_PCIE_ROM_PROBE
+    wire [255:0] rom_probe_src, rom_probe_dbg;
+    tarugx_pcie_rx_probe u_rom_probe (
+        .clk(tlp_clk), .rst_n(pcie_debug_reset[1]), .rx_sop(rx_sop), .rx_eop(rx_eop),
+        .rx_wait(rx_wait), .rx_valid(rx_valid), .rx_error(rx_error),
+        .rx_bar(rx_bar_decode), .rx_data(rx_data), .snapshot(rom_probe_src)
+    );
+    tarugx_display_config_cdc #(.WIDTH(256), .SEND_UNCHANGED(1)) u_rom_probe_cdc (
+        .src_clk(tlp_clk), .src_rst_n(pcie_debug_reset[1]),
+        .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
+        .src_config(rom_probe_src), .dst_config(rom_probe_dbg)
+    );
+`ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
+    wire [287:0] uart_snapshot = {32'h46523039,rom_probe_dbg}; // FR09: software-configured ROM
+`else
+    wire [287:0] uart_snapshot = {32'h46523038,rom_probe_dbg}; // FR08: passive RX probe
+`endif
+`else
+    wire [287:0] uart_snapshot = {UART_VERSION,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
+`endif
     tarugx_ddr_debug_uart #(.CLKS_PER_BIT(91), .FRAME_GAP_CYCLES(2625000)) u_status_uart (
         .clk(debug_clk), .rst_n(debug_reset_n), .status(status_sync),
-        .snapshot({UART_VERSION,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync}), .tx(uart_tx)
+        .snapshot(uart_snapshot), .tx(uart_tx)
     );
     dvi_tx_top u_dvi (
         .pixel_clock(pixel_clk), .ddr_bit_clock(serial_clk), .reset(!pixel_reset[1]),

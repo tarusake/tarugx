@@ -1,0 +1,28 @@
+/// One registered RX beat. No fall-through: breaks IP-to-decode timing.
+/// At most one beat every two cycles; the stored beat holds until !out_wait.
+module tlp_rx_buffer (
+    clk: input clock, rst_n: input reset,
+    in_sop: input logic, in_eop: input logic, in_valid: input logic<8>,
+    in_data: input logic<256>, in_bar: input logic<6>, in_error: input logic<8>,
+    in_wait: output logic,
+    out_sop: output logic, out_eop: output logic, out_valid: output logic<8>,
+    out_data: output logic<256>, out_bar: output logic<6>, out_error: output logic<8>,
+    out_wait: input logic, busy: output logic,
+) {
+    var full: logic; var valid: logic<8>;
+    assign busy = full;
+    assign in_wait = full;
+    assign out_valid = if full ? valid : 8'b0;
+    always_ff {
+        if_reset {
+            full = 0; valid = 0; out_sop = 0; out_eop = 0;
+            out_data = 0; out_bar = 0; out_error = 0;
+        } else if full {
+            if !out_wait { full = 0; }
+        } else if |in_valid {
+            full = 1; valid = in_valid;
+            out_sop = in_sop; out_eop = in_eop; out_data = in_data;
+            out_bar = in_bar; out_error = in_error;
+        }
+    }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode complete FR03 through FR07 UART lines; ignore partial captures."""
+"""Decode complete FR03 through FR09 UART lines; ignore partial captures."""
 import json
 import re
 import sys
@@ -11,6 +11,19 @@ def decode(line):
         return None
     payload = int(match[2], 16)
     version = payload >> 256
+    if version in (0x46523038, 0x46523039):
+        flags=(payload>>184)&255
+        return {
+            **dict(zip(("ddr_pll","calibrated","link","underflow"),(int(v) for v in match[1]))),
+            "rom_probe": {
+                "accepted_sops":(payload>>224)&0xffffffff,
+                "unmatched_sops":(payload>>192)&0xffffffff,
+                "captured":bool(flags&1), "sop":bool(flags&2), "eop":bool(flags&4),
+                "unmatched":bool(flags&8), "bar":(payload>>176)&255,
+                "valid":(payload>>168)&255, "error":(payload>>160)&255,
+                "dwords":[f"{(payload>>shift)&0xffffffff:08x}" for shift in (128,96,64,32,0)]
+            }
+        }
     if version not in (0x46523033, 0x46523034, 0x46523035, 0x46523036, 0x46523037):
         return None
     status = dict(zip(("ddr_pll", "calibrated", "link", "underflow"),

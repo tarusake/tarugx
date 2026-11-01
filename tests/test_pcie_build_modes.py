@@ -35,9 +35,17 @@ class BuildModes(unittest.TestCase):
 
     def test_accept_explicit_modes(self):
         for flags, por in (({}, False), ({"POR_RELEASE_TEST": 1}, True),
-                           ({"PHY_RECOVERY_EXPERIMENT": 1}, True)):
+                           ({"PHY_RECOVERY_EXPERIMENT": 1}, True),
+                           ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1}, True),
+                           ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1, "ROM_DIAGNOSTIC": 1}, True)):
             with self.subTest(flags=flags):
                 self.assertIn("VALIDATED_TOOL_BOUNDARY", self.run_mode(por=por, **flags))
+
+    def test_rom_diagnostic_requires_probe(self):
+        self.assertIn("ROM diagnostic requires ROM probe", self.run_mode(ROM_DIAGNOSTIC=1))
+
+    def test_rom_probe_requires_phy_recovery(self):
+        self.assertIn("ROM probe requires PHY recovery", self.run_mode(ROM_PROBE=1))
 
     def test_reject_unconnected_por(self):
         self.assertIn("refusing an unconnected port", self.run_mode(por=True))

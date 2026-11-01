@@ -1,0 +1,125 @@
+/// FR09-only overlay. BAR0 0x40/0x44 hold software-verified ROM enable/base.
+/// Reset disables ROM. This is NOT automatic PCI configuration discovery.
+/// Core RX payload wires are shared; only its valid is gated. All outstanding
+/// core work drains before accepting ROM/config accesses; no TLP interleaving.
+module option_rom_diagnostic (
+    clk: input clock, rst_n: input reset, completer_id: input logic<16>,
+    rx_sop: input logic, rx_eop: input logic, rx_valid: input logic<8>,
+    rx_data: input logic<256>, rx_bar: input logic<6>, rx_error: input logic<8>,
+    rx_wait: output logic, rx_masknp: output logic,
+    core_rx_valid: output logic<8>, core_rx_wait: input logic, core_rx_masknp: input logic,
+    core_tx_valid: input logic<8>, core_tx_sop: input logic, core_tx_eop: input logic,
+    core_tx_data: input logic<256>, core_tx_wait: output logic,
+    tx_wait: input logic, tx_valid: output logic<8>,
+    tx_sop: output logic, tx_eop: output logic, tx_data: output logic<256>,
+    rom_en: output logic, rom_addr: output logic<14>, rom_data: input logic<32>,
+    diagnostic_error: output logic,
+) {
+    enum State: logic<2> { Idle, Rom, Config, }
+    var state: State;
+    var enabled: logic<32>; var base: logic<32>;
+    let h0: logic<32> = rx_data[255:224];
+    let h1: logic<32> = rx_data[223:192];
+    let h2: logic<32> = rx_data[191:160];
+    let h3: logic<32> = rx_data[159:128];
+    let payload: logic<32> = {h3[7:0],h3[15:8],h3[23:16],h3[31:24]};
+    let fmt: logic<3> = h0[31:29];
+    let memory_read: logic = (h0[28:24] == 0) && ((fmt == 0) || (fmt == 1));
+    let memory_write: logic = (h0[28:24] == 0) && (fmt == 2);
+    let framed: logic = rx_sop && rx_eop && (rx_valid[7:5] == 3'b111)
+        && !(|rx_error) && (!(fmt[0] || fmt[1]) || rx_valid[4]);
+    let cfg_select: logic = rx_bar[0] && !rx_bar[2] && ((fmt == 0) || (fmt == 2))
+        && (h0[28:24] == 0) && ((h2[15:2] == 14'h10) || (h2[15:2] == 14'h11));
+    let rom_select: logic = (rx_bar == 0) && memory_read;
+    let selected: logic = framed && (cfg_select || rom_select);
+    let core_pending: logic = core_rx_masknp || (|core_tx_valid);
+    let cfg_ok: logic = (h0[9:0] == 1) && (h1[7:4] == 0)
+        && (h1[3:0] != 0) && (h2[1:0] == 0);
+    var stream_ready: logic; var stream_valid: logic; var stream_accept: logic;
+    var stream_sop: logic; var stream_eop: logic; var stream_data: logic<32>;
+    var rom_bad: logic; var rom_unsupported: logic;
+    var packet_idle: logic; var packet_bad: logic;
+    var rom_tx_valid: logic<8>; var rom_tx_sop: logic; var rom_tx_eop: logic;
+    var rom_tx_data: logic<256>;
+    let accept: logic = selected && (state == State::Idle) && !core_pending && stream_ready;
+    assign core_rx_valid = if (state == State::Idle) && !selected ? rx_valid : 8'b0;
+    assign core_tx_wait = tx_wait || (state != State::Idle);
+    assign rx_wait = if state != State::Idle ? (|rx_valid) :
+                     (if selected ? (core_pending || !stream_ready) : core_rx_wait);
+    assign rx_masknp = (state != State::Idle) || core_rx_masknp || (selected && memory_read);
+    inst stream: option_rom_completion_stream (
+        clk, rst_n, req_valid: accept && rom_select, req_ready: stream_ready,
+        h0, h1, h2, h3, rom_enabled: enabled[0], rom_base: base[31:16],
+        completer_id, tx_valid: stream_valid, tx_ready: stream_accept,
+        tx_sop: stream_sop, tx_eop: stream_eop, tx_data: stream_data,
+        rom_en, rom_addr, rom_data, malformed: rom_bad, unsupported: rom_unsupported,
+    );
+    inst packet: tlp_completion_packet_buffer (
+        clk, rst_n, in_valid: stream_valid, in_ready: stream_accept,
+        in_sop: stream_sop, in_eop: stream_eop, in_data: stream_data,
+        tx_wait: tx_wait || (state != State::Rom),
+        tx_valid: rom_tx_valid, tx_sop: rom_tx_sop, tx_eop: rom_tx_eop,
+        tx_data: rom_tx_data, idle: packet_idle, framing_error: packet_bad,
+    );
+    var cfg_reqid: logic<16>; var cfg_tag: logic<8>; var cfg_addr: logic<16>;
+    var cfg_be: logic<4>; var cfg_data: logic<32>; var cfg_status: logic<3>;
+    var cfg_cpl_valid: logic; var cfg_h0: logic<32>; var cfg_h1: logic<32>;
+    var cfg_h2: logic<32>; var cfg_payload: logic<32>;
+    var cfg_ready: logic; var cfg_tx_valid: logic<8>;
+    var cfg_tx_sop: logic; var cfg_tx_eop: logic; var cfg_tx_data: logic<256>;
+    inst config_completion: tlp_completion_builder (
+        completion_valid: state == State::Config, completion_status: cfg_status,
+        with_data: cfg_status == 0, completer_id, requester_id: cfg_reqid,
+        request_tag: cfg_tag, request_addr: cfg_addr, request_be: cfg_be,
+        read_data: cfg_data, tx_valid: cfg_cpl_valid,
+        header_dw0: cfg_h0, header_dw1: cfg_h1, header_dw2: cfg_h2, payload_dw0: cfg_payload,
+    );
+    inst config_tx: tlp_tx_completion (
+        completion_valid: cfg_cpl_valid, completion_data: cfg_status == 0,
+        header_dw0: cfg_h0, header_dw1: cfg_h1, header_dw2: cfg_h2, payload_dw0: cfg_payload,
+        tx_wait, completion_ready: cfg_ready, tx_sop: cfg_tx_sop, tx_eop: cfg_tx_eop,
+        tx_valid: cfg_tx_valid, tx_data: cfg_tx_data,
+    );
+    assign tx_valid = if state == State::Rom ? rom_tx_valid :
+                      (if state == State::Config ? cfg_tx_valid : core_tx_valid);
+    assign tx_sop = if state == State::Rom ? rom_tx_sop :
+                    (if state == State::Config ? cfg_tx_sop : core_tx_sop);
+    assign tx_eop = if state == State::Rom ? rom_tx_eop :
+                    (if state == State::Config ? cfg_tx_eop : core_tx_eop);
+    assign tx_data = if state == State::Rom ? rom_tx_data :
+                     (if state == State::Config ? cfg_tx_data : core_tx_data);
+    assign diagnostic_error = rom_bad || packet_bad || (accept && cfg_select && !cfg_ok);
+
+    function merge (old: input logic<32>, data: input logic<32>, be: input logic<4>) -> logic<32> {
+        var result: logic<32>;
+        result = old;
+        for i in 0..4 { if be[i] { result[i*8+:8] = data[i*8+:8]; } }
+        return result;
+    }
+    always_ff {
+        if_reset {
+            state = State::Idle; enabled = 0; base = 0;
+            cfg_reqid = 0; cfg_tag = 0; cfg_addr = 0; cfg_be = 0; cfg_data = 0; cfg_status = 0;
+        } else {
+            if state == State::Rom {
+                if stream_ready && packet_idle && !stream_valid { state = State::Idle; }
+            } else if state == State::Config {
+                if cfg_ready { state = State::Idle; }
+            } else if accept {
+                if rom_select { state = State::Rom; }
+                else if memory_write {
+                    if cfg_ok {
+                        if h2[2] { base = merge(base,payload,h1[3:0]) & 32'hffff0000; }
+                        else { enabled = merge(enabled,payload,h1[3:0]) & 32'd1; }
+                    }
+                } else {
+                    cfg_reqid = h1[31:16]; cfg_tag = h1[15:8]; cfg_addr = h2[15:0];
+                    cfg_be = if cfg_ok ? h1[3:0] : 4'b0;
+                    cfg_status = if cfg_ok ? 3'b0 : 3'd1;
+                    cfg_data = if h2[2] ? base : enabled;
+                    state = State::Config;
+                }
+            }
+        }
+    }
+}

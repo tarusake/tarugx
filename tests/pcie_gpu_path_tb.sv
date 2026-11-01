@@ -43,6 +43,25 @@ module pcie_gpu_path_tb;
   fb_rsp_rdata='hdeadbeef;fb_rsp_valid=1;tick();@(negedge clk);fb_rsp_valid=0;
   completion('hdeadbeef);
   assert(!framing_error && !unsupported && !malformed) else $fatal;
+  // Unmatched requests must neither hang reads nor alias register writes.
+  for (int wide=0; wide<2; wide++) begin
+   packet(0,0,'h90000000,0);rx_bar_decode=0;
+   if (wide != 0) begin rx_data[255:224]=32'h20000001;rx_valid=8'hf0;end
+   tick();clear_rx();
+   repeat(4) begin
+    assert(tx_valid==8'he0 && tx_sop && tx_eop && rx_masknp) else $fatal(1,"UR handshake");
+    assert(tx_data[255:224]==32'h0a000000 && tx_data[223:192]==32'h01002000
+      && tx_data[191:168]==24'h12345a) else $fatal(1,"UR status/requester/tag");
+    assert(!fb_req_valid) else $fatal(1,"unmatched read reached DDR");tick();
+   end
+   @(negedge clk);tx_wait=0;tick();@(negedge clk);tx_wait=1;
+  end
+  packet(1,0,'h90000014,'h00abcdef);rx_bar_decode=6'b000010;
+  tick();clear_rx();repeat(4) begin
+   tick();assert(tx_valid==0 && !fb_req_valid && display_color==0) else $fatal(1,"unmatched posted write side effect");
+  end
+  packet(0,0,'h80200000,0);tick();clear_rx();completion('h54475055);
+  $display("PCIe GPU path: unmatched MRd32/64 UR and posted-write isolation PASS");
   $display("PCIe GPU path: BAR2 byte order, BAR0 posted-write fence, completion stalls/tags PASS");$finish;
  end
  initial begin #100000;$fatal(1,"timeout");end

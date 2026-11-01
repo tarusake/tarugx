@@ -50,7 +50,12 @@ module tlp_request_decoder (
         ur_required   = 1'b0;
         malformed     = 1'b0;
 
-        if request_valid && bar_decode[0] {
+        // BAR2 has its own bridge. Other unmatched Memory Reads must not
+        // disappear: return UR, without treating the request as a ROM hit.
+        if request_valid && !bar_decode[0] && !bar_decode[2] {
+            unsupported = 1'b1;
+            ur_required = is_mem && ((fmt == 3'b000) || (fmt == 3'b001));
+        } else if request_valid && bar_decode[0] {
             if !is_known {
                 unsupported = 1'b1;
                 ur_required = !has_data;

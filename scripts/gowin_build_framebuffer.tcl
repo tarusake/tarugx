@@ -14,6 +14,8 @@ set recovery_experiment 0
 set generated_no_msi 0
 set por_release_test 0
 set phy_recovery_experiment 0
+set rom_probe 0
+set rom_diagnostic 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
     set por_release_test 1
@@ -27,6 +29,14 @@ if {[info exists ::env(TARUGX_PCIE_PHY_RECOVERY_EXPERIMENT)] && $::env(TARUGX_PC
     if {$por_release_test || $recovery_experiment} { error "Select only one recovery experiment" }
     set phy_recovery_experiment 1
     set recovery_experiment 1
+}
+if {[info exists ::env(TARUGX_PCIE_ROM_PROBE)] && $::env(TARUGX_PCIE_ROM_PROBE) eq "1"} {
+    if {!$phy_recovery_experiment} { error "ROM probe requires PHY recovery and a generated IP bundle" }
+    set rom_probe 1
+}
+if {[info exists ::env(TARUGX_PCIE_ROM_DIAGNOSTIC)] && $::env(TARUGX_PCIE_ROM_DIAGNOSTIC) eq "1"} {
+    if {!$rom_probe} { error "ROM diagnostic requires ROM probe mode" }
+    set rom_diagnostic 1
 }
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
@@ -65,6 +75,9 @@ if {[info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} {
         set generated_no_msi 1
     }
 }
+
+if {$rom_probe} { set output_dir [file join $repo build gowin_framebuffer_rom_probe] }
+if {$rom_diagnostic} { set output_dir [file join $repo build gowin_framebuffer_rom_diagnostic] }
 
 foreach source [list \
     $serdes_v \
@@ -127,6 +140,15 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
     if {$generated_no_msi} { set top_text "`define TARUGX_PCIE_NO_MSI\n$top_text" }
     if {$por_release_test} { set top_text "`define TARUGX_PCIE_POR_RELEASE_TEST\n$top_text" }
     if {$phy_recovery_experiment} { set top_text "`define TARUGX_PCIE_PHY_RECOVERY\n$top_text" }
+    if {$rom_probe} { set top_text "`define TARUGX_PCIE_ROM_PROBE\n$top_text" }
+    if {$rom_diagnostic} {
+        set rom_image [file join $repo build uefi TaruGxGop.rom]
+        set rom_memory [file join $output_dir TaruGxGop.mem]
+        puts [exec python3 [file join $repo tools make_rom_mem.py] $rom_image $rom_memory]
+        set top_text [string map [list __TARUGX_ROM_MEM__ $rom_memory] $top_text]
+        set top_text "`define TARUGX_PCIE_ROM_DIAGNOSTIC\n$top_text"
+        add_file [file join $repo fpga tang_mega_138k tarugx_option_rom_storage.sv]
+    }
     set top_source [file join $output_dir tarugx_framebuffer_gowin_top.sv]
     set f [open $top_source w]; puts $f $top_text; close $f
 }
@@ -145,9 +167,25 @@ set timing_source [file join $repo fpga tang_mega_138k framebuffer.sdc]
 if {$recovery_experiment} {
     set recovery_sdc [file join $output_dir recovery.sdc]
     set f [open $timing_source r]; set base_timing [read $f]; close $f
+    if {$rom_probe} {
+        # FR08 replaces the old diagnostic UART payload. Synthesis removes
+        # those unused debug endpoints; retain all functional/CDC constraints.
+        set kept {}
+        foreach line [split $base_timing "\n"] {
+            if {[string match {*fault_snapshot*} $line] ||
+                [string match {*debug_aux_meta*} $line] ||
+                [string match {set_max_delay*u_pcie_debug/snapshot_cdc/*} $line]} { continue }
+            lappend kept $line
+        }
+        set base_timing [join $kept "\n"]
+    }
     set f [open $recovery_sdc w]
     puts $f $base_timing
     puts $f {set_false_path -to [get_pins {recovery_experiment.u_recovery/ready_sync_0_s0/D recovery_experiment.u_recovery/perst_sync_0_s0/D recovery_meta*/D recovery_experiment.u_reset_scope/inputs_meta*/D}]}
+    if {$rom_probe} {
+        puts $f {set_false_path -to [get_pins {u_rom_probe_cdc/ack_sync_0_s0/D u_rom_probe_cdc/request_sync_0_s0/D}]}
+        puts $f {set_max_delay 10 -from [get_pins {u_rom_probe_cdc/held*/Q}] -to [get_pins {u_rom_probe_cdc/dst_config*/D}]}
+    }
     close $f
     set timing_source $recovery_sdc
 }
