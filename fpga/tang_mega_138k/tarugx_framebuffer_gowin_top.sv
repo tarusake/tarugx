@@ -135,6 +135,7 @@ module tarugx_framebuffer_gowin_top (
     wire video_de, video_hsync, video_vsync;
     wire [23:0] video_rgb;
     wire underflow, config_error;
+    wire [63:0] fault_snapshot;
     wire [64:0] memory_settings;
     tarugx_display_config_cdc #(.WIDTH(65)) u_memory_config_cdc (
         .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
@@ -188,7 +189,7 @@ module tarugx_framebuffer_gowin_top (
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
         .config_error(config_error), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
         .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
-        .rgb(video_rgb), .underflow(underflow),
+        .rgb(video_rgb), .underflow(underflow), .fault_snapshot(fault_snapshot),
         .mem_valid(scan_valid),
         .mem_ready(scan_ready),
         .mem_addr(scan_addr),
@@ -249,11 +250,18 @@ module tarugx_framebuffer_gowin_top (
             end else if(!(&clock_idle)) clock_idle<=clock_idle+10'd1;
         end
     wire system_clock_present=clock_toggled && !(&clock_idle);
-    // D<DDR PLL><calibration><link><underflow>; FR02 low byte:
+    // D<DDR PLL><calibration><link><underflow>; FR03 low byte:
     // [7] video PLL, [6] PCIe PLL, [5] rst_n, [4:2] CPU/UI/pixel reset release,
     // [1] invalid scanout config, [0] external system-clock activity.
     (* async_reg="true" *) reg [3:0] status_meta=0, status_sync=0;
     (* async_reg="true" *) reg [7:0] debug_aux_meta=0, debug_aux_sync=0;
+    // Bundled data held at source; capture after synchronized sticky flag.
+    reg fault_seen=0;
+    reg [63:0] debug_fault=0;
+    always @(posedge debug_clk or negedge debug_reset_n)
+        if (!debug_reset_n) begin fault_seen<=0; debug_fault<=0; end
+        else if (!status_sync[0]) begin fault_seen<=0; debug_fault<=0; end
+        else if (!fault_seen) begin fault_seen<=1; debug_fault<=fault_snapshot; end
     always @(posedge debug_clk or negedge debug_reset_n)
         if (!debug_reset_n) begin
             status_meta<=0; status_sync<=0; debug_aux_meta<=0; debug_aux_sync<=0;
@@ -265,7 +273,7 @@ module tarugx_framebuffer_gowin_top (
         end
     tarugx_ddr_debug_uart #(.CLKS_PER_BIT(91), .FRAME_GAP_CYCLES(2625000)) u_status_uart (
         .clk(debug_clk), .rst_n(debug_reset_n), .status(status_sync),
-        .snapshot({32'h46523032,248'b0,debug_aux_sync}), .tx(uart_tx)
+        .snapshot({32'h46523033,184'b0,debug_fault,debug_aux_sync}), .tx(uart_tx)
     );
     dvi_tx_top u_dvi (
         .pixel_clock(pixel_clk), .ddr_bit_clock(serial_clk), .reset(!pixel_reset[1]),

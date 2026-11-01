@@ -1,6 +1,7 @@
 /build/
 /.build/
 /dependencies/
+/.local/
 /tarugx.f
 /*.vcd
 __pycache__/

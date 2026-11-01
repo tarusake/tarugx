@@ -2,7 +2,8 @@
 module framebuffer_display_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic [25:0] settings=26'h1000000;
- logic in_valid,in_ready,de,hsync,vsync,underflow;
+ logic in_valid,in_ready,de,hsync,vsync,underflow,display_active;
+ logic [63:0] fault_snapshot;
  logic [272:0] in_data;logic [23:0] rgb;
  int beat=0,frame=0,checked=0;bit inject=0;
  tarugx_framebuffer_display dut(.*);
@@ -29,9 +30,12 @@ module framebuffer_display_tb;
   wait(frame==2 && dut.y==2);@(negedge clk);inject=0;
   wait(frame==3 && dut.y==480);@(negedge clk);
   assert(underflow && checked==614400) else $fatal(1,"count/underflow %0d",checked);
+  assert(fault_snapshot[63:54]==160 && fault_snapshot[53:44]==1 &&
+         fault_snapshot[43:28]==100 && fault_snapshot[27:12]==100 &&
+         fault_snapshot[7:0]==8'hac) else $fatal(1,"first fault snapshot %h",fault_snapshot);
   settings=26'h3123456;
   wait(frame==4);@(negedge clk);assert(rgb==24'h123456) else $fatal(1,"solid mode");
-  rst_n=0;#1;assert(!underflow) else $fatal;
+  rst_n=0;#1;assert(!underflow && fault_snapshot==0) else $fatal;
   $display("Framebuffer display: 614400 exact pixels, underflow blacking, frame recovery, solid mode and reset PASS");$finish;
  end
  initial begin #18000000;$fatal(1,"timeout");end

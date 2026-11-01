@@ -1,0 +1,4 @@
+Xauthority*
+Xorg.*.log*
+desktop-config/
+desktop-cache/

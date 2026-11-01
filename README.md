@@ -16,3 +16,5 @@ veryl test --sim verilator
 
 Gowin実機ビルドには、ライセンス認証済みのEDAと対象ボード向けのベンダーIPが別途必要です。
 生成物や接続情報はGit管理外です。
+
+Linuxドライバー: `make -C drivers/tarugx`（対象カーネルのヘッダーが必要）。

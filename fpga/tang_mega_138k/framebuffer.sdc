@@ -17,6 +17,8 @@ set_false_path -from [get_clocks {ddr400}] -to [get_clocks {sys_clk}]
 set_false_path -to [get_pins {u_display_cdc/ack_sync_0_s0/D u_display_cdc/request_sync_0_s0/D}]
 set_false_path -to [get_pins {u_memory_config_cdc/ack_sync_0_s0/D u_memory_config_cdc/request_sync_0_s0/D}]
 set_false_path -to [get_pins {u_memory_path/cdc/request_sync_0_s0/D u_memory_path/cdc/response_sync_0_s0/D}]
+set_false_path -to [get_pins {u_scanout/display_active_sync_0_s0/D}]
+set_max_delay 10 -from [get_cells {u_scanout/display/fault_snapshot*}] -to [get_cells {debug_fault*}]
 set_false_path -to [get_pins {status_meta*/D}]
 set_false_path -to [get_pins {debug_aux_meta*/D sys_toggle_sync_0_s0/D}]
 # These registers implement asynchronous assertion / synchronous release.
