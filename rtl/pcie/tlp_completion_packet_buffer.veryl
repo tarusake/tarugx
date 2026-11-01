@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Buffer a complete 3-DW Completion (up to 32 payload DW), then emit
 /// contiguous Gowin 256-bit beats. Header DWs are unchanged; data is swapped.
 module tlp_completion_packet_buffer (

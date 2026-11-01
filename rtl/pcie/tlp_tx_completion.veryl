@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Pack one normalized Completion into a single Gowin 256-bit TX transfer.
 module tlp_tx_completion (
     completion_valid: input  logic     ,

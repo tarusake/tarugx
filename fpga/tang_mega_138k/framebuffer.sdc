@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 create_clock -name sys_clk -period 20 [get_ports {sys_clk_p}]
 # SUG940 4.1.2: derive the OSC clock from its primitive configuration.
 # Avoid rounding its period differently from the device timing model.

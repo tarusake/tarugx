@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module tarugx_ddr3_wrapper #(parameter bit PIPELINED_MEMORY=0) (
  input wire clk, rst_n,
  output wire ui_clk, pll_lock, calibrated,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #[test(gowin_rx_single_beat_unpack)]
 module gowin_rx_single_beat_unpack {
     inst clk: $tb::clock_gen;

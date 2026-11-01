@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Build a normalized one-DWORD Completion with Data packet.
 ///
 /// The output DWORDs still require vendor-specific lane packing before they are

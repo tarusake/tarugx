@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Vendor-neutral 64 KiB ROM backend; PCIe ROM matching is outside this module.
 /// The storage captures rom_addr on rom_en and returns data one clock later.
 /// A TLP frontend must handle Byte Enable and Completion splitting separately.

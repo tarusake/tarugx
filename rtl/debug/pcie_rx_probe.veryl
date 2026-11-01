@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Passive first accepted SOP capture; the first non-BAR0/2 SOP replaces it.
 /// No inference that an unmatched packet is an Expansion ROM access.
 module pcie_rx_probe #(

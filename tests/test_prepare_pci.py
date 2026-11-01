@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """No hardware accesses: validate PCI window encoding and write width."""
 import importlib.util
 from pathlib import Path

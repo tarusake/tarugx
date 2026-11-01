@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Complete ROM responses as a normalized 32-bit DWORD Ready/Valid stream.
 /// Headers use PCIe bit significance, payload uses little-endian ROM words.
 /// A Gowin adapter must buffer a packet and pack/byte-swap payload lanes.

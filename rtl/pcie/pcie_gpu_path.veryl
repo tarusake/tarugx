@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// BAR0/BAR2 router. A pending BAR2 write stalls later BAR0 reads.
 module pcie_gpu_path (
     clk            : input  clock     ,

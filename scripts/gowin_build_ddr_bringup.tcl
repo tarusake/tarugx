@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Official sample directories must be supplied by the caller.
 proc tarugx_required_dir {name} {
     if {![info exists ::env($name)] || $::env($name) eq ""} {

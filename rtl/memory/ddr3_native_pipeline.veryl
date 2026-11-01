@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// 1:4 BL8 native interface, with eight reserved in-order response slots.
 /// Read returns have no backpressure: every issued command owns storage first.
 /// IPUG281 4.4.8 guarantees read returns in command order for 1:4 mode.

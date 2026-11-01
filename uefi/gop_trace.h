@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #ifndef TARUGX_GOP_TRACE_H
 #define TARUGX_GOP_TRACE_H
 /* Private, read-only boot-services diagnostic protocol, version 2 (version-1 prefix retained).

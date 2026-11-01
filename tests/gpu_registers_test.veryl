@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #[test(gpu_registers_reset_and_read)]
 module gpu_registers_reset_and_read {
     inst clk: $tb::clock_gen;

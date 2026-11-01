@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Read FR09 ROM via Linux sysfs after configuring its diagnostic BAR0 registers.
 
 Run on the unbound Linux host as root. Memory Space must already be enabled.

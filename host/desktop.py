@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Start/stop the dedicated TaruGX Xorg + Xfce session (no boot enablement)."""
 import argparse
 import os

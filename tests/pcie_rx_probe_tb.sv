@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module pcie_rx_probe_tb;
 logic clk=0;always #5 clk=~clk;
 logic rst_n=0,rx_sop=0,rx_eop=1,rx_wait=0;

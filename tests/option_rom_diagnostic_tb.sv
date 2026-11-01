@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
  logic clk=0,rst_n=0;always #5 clk=~clk;

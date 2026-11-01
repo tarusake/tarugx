@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Decode a normalized PCIe Memory Request header.
 ///
 /// Inputs are PCIe header DWORDs in host bit significance, after any

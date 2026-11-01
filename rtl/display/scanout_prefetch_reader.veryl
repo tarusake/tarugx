@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Eight reserved response slots hide DDR read latency without dropping data.
 /// Responses must be ordered. Frame configuration changes only after full drain.
 module scanout_prefetch_reader (

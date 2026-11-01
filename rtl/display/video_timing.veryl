@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// 640x480, 800x525 total, negative sync. 25.1875 MHz gives 59.970238 Hz.
 module video_timing (
     clk        : input  clock    ,

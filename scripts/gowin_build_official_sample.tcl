@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 if {![info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
     error "Set SIPEED_PCIE_GEN2_DIR to the extracted official Gen2 sample"
 }

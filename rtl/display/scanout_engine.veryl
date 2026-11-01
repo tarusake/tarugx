@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Memory UI -> asynchronous FIFO -> fixed-mode RGB scanout.
 /// Settings must already be synchronized into their respective domains.
 module scanout_engine (

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #include "splash.h"
 #include "boot_logo_data.h"
 

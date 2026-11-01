@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Restore a kernel-allocated PCI bridge window; never allocate addresses.
 
 Default: inspect only. --apply requires the endpoint to be unbound.

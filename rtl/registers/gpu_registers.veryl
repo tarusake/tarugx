@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// TaruGX/100 BAR0 register block.
 ///
 /// The request interface accepts one 32-bit, naturally aligned transaction per

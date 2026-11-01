@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Single-outstanding-transaction BAR0 bridge using normalized PCIe DWORDs.
 ///
 /// This module supplies the ordering point between posted writes and reads: it

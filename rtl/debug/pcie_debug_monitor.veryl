@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Observation only: never drives resets or PCIe control signals.
 /// Resets assert together at FPGA configuration; release in each clock domain.
 module pcie_debug_monitor (

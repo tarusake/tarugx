@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// PCIe BAR0/BAR2 application core. FB_COMMIT snapshots base/stride.
 module tarugx_framebuffer_top (
     tlp_clk         : input  clock     ,

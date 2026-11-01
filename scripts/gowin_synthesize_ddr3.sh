@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Re-synthesize the official Rev.B camera example configuration for our part.
 # This does not validate the physical memory wiring or timing on the board.
 set -eu

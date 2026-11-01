@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Bundled-data toggle mailbox; both domains must be reset together.
 /// The source holds all payload bits until the synchronized acknowledgement.
 module display_config_cdc #(

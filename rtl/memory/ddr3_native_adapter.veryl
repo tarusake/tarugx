@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Single BL8 transfer for the Gowin 32-bit DQ / 1:4 interface.
 /// Runs on clk_out. Reset together with the memory controller.
 /// Write response means command and data accepted, not physical persistence.

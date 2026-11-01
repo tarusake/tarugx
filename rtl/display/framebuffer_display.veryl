@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Fixed-mode pixel consumer. After a lost beat, black the rest of the frame
 /// and discard queued beats until index zero for a later frame boundary.
 module framebuffer_display (

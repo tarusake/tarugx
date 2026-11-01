@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// One outstanding request/reply mailbox. Both domains must reset together.
 /// Payloads remain held across two-stage toggle synchronizers.
 module memory_request_cdc (

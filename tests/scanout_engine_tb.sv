@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 module scanout_engine_tb;
  logic mem_clk=0,pixel_clk=0,mem_rst_n=0,pixel_rst_n=0;

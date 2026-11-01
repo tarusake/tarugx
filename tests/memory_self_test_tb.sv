@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 module memory_self_test_tb;
   logic clk=0,rst_n=0,start=0,calibrated=0;

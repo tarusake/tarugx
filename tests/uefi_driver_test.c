@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /* Exercise the actual driver entry points with a mock EFI PCI I/O device. */
 #include <assert.h>
 #include <stdlib.h>

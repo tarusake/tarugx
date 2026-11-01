@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// UI-clock reader for fixed 640x480 XRGB8888 frames, eight pixels per beat.
 /// Configuration is sampled between frames. FIFO entries carry a frame index.
 module scanout_reader (

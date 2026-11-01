@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Decoded BAR request router contract; implementation follows TLP decoding.
 module bar_router (
     bar_decode : input  logic<6>,

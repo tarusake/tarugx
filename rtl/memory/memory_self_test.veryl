@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Destructive bring-up test of the first 512 bytes; not enabled by the GPU top.
 /// Start only after memory calibration and while other clients are stopped.
 module memory_self_test (

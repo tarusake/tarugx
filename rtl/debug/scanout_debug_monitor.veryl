@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Passive UI/pixel monitor. Freeze shortly after the first pixel underflow.
 /// FIFO level is a UI-domain upper estimate: synchronized pops lag real pops.
 /// Reset both domains together, as for the observed scanout FIFO.

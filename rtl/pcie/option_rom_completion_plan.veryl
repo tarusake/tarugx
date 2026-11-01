@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Normalized MRd32/MRd64 -> <=128-byte Completion descriptors.
 /// Only a verified configuration adapter may assert rom_enabled/base.
 /// Descriptor acceptance means its entire payload has been captured downstream.

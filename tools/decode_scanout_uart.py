@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Decode complete FR03 through FR16 UART lines; ignore partial captures."""
 import json
 import re

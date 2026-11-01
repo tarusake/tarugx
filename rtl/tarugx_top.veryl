@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Phase-1 TaruGX application core at the vendor-neutral PCIe TLP boundary.
 module tarugx_top (
     tlp_clk      : input  clock     ,

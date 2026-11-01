@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Check Gowin's summary AND inter-clock setup/hold/reset path tables."""
 import html
 from pathlib import Path

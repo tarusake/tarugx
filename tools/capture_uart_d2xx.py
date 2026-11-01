@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Reset FTDI-compatible channel B to UART mode and capture without tty.
 
 Run with both kernel interfaces detached; close then reattach them afterwards.

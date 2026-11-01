@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 [project]
 name = "tarugx"
 version = "0.1.0"

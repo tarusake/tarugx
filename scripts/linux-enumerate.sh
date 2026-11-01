@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 set -euo pipefail
 
 vendor_id=${TARUGX_VENDOR_ID:-22c2}

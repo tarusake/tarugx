@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Convert an EFI Option ROM to little-endian DWORDs for $readmemh.
 
 This only prepares storage contents; it does not enable PCIe ROM decoding.

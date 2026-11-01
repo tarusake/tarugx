@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Run as the desktop user after the dedicated Xorg server is ready.
 set -eu
 host_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

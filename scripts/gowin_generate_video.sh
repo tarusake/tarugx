@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 sample=${SIPEED_HDMI_DIR:?Set SIPEED_HDMI_DIR to the official sample directory}

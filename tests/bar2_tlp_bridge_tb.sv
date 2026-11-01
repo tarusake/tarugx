@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 module bar2_tlp_bridge_tb;
  logic clk=0,rst=0;always #5 clk=~clk;

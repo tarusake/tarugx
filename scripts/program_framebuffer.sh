@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Authorized destructive operation: replace external Flash with this GPU image.
 set -eu
 cd "$(dirname "$0")/.."

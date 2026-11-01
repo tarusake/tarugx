@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Load the installed DRM module and start TaruGX as the dedicated main desktop."""
 import argparse
 import os

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1'b0) (
     input  logic       sys_clk_p,
     input  logic       pcie_rstn,

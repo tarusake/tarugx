@@ -147,3 +147,5 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 ロゴは保有する権利の範囲でCC BY 4.0とします。
 Gowin IPとその他の第三者由来部分には、それぞれの元の条件が適用されます。
 適用範囲とライセンス本文は[LICENSE.md](LICENSE.md)を参照してください。
+
+第三者由来部分の出典・変更内容・外部依存は[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)に記載しています。

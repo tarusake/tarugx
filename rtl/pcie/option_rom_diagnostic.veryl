@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// FR09-only overlay. BAR0 0x40/0x44 hold software-verified ROM enable/base.
 /// In manual mode reset disables ROM. AUTO_ROM uses a wrapper-qualified,
 /// experimentally verified hardware ROM hit aligned with this RX beat.

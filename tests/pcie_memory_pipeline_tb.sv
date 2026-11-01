@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 module pcie_memory_pipeline_tb;
  logic clk=0,rst=0,mem_clk=0,mem_rst_n=0;

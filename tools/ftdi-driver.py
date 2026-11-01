@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Release/rebind the two FT2232 interfaces for Gowin Programmer / UART."""
 import ctypes as c
 import sys

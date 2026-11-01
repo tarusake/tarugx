@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Generate the TaruGX PCIe controller from its checked-in IPC configuration.
 set project_root [file normalize [file join [file dirname [info script]] ..]]
 set output_dir [file join $project_root .build gowin_ipgen]

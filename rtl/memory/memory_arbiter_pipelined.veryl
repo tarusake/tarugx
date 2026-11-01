@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Round-robin admission, eight ordered ownership slots, one held command.
 /// No Scanout priority tuning: overlap read latency while preserving CPU order.
 module memory_arbiter_pipelined (

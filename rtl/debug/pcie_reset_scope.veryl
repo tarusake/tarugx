@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Observe one pulse and raw reset levels; never drive the observed signals.
 /// bits: [5] pulse, [4] core_n, [3] pmac_n, [2] lane_n, [1] ahb_n, [0] upar_rst.
 module pcie_reset_scope (

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Derived from Sipeed TangMega-138K-example; see THIRD_PARTY_NOTICES.md.
+// Copyright [2024] [Shenzhen Sipeed Technology Co,Ltd.]
+// Modified by tarusake, 2026.
 IO_LOC "led[3]" R19;
 IO_PORT "led[3]" PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 IO_LOC "led[2]" U21;

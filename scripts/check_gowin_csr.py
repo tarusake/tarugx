@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """CSRの字句検査。レジスタの意味やハードウェア適合性は検証しない。"""
 import argparse
 from pathlib import Path

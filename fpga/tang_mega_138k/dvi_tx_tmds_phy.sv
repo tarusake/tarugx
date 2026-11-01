@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Derived from Sipeed TangMega-138K-example; see THIRD_PARTY_NOTICES.md.
+// Copyright [2024] [Shenzhen Sipeed Technology Co,Ltd.]
+// Modified by tarusake, 2026.
 // Gowin-specific TMDS serializer boundary. The encoder remains the Sipeed IP.
 // Assert reset asynchronously; release it on the serializer's fast clock,
 // instead of driving OSER10 RESET from a pixel-clock register.

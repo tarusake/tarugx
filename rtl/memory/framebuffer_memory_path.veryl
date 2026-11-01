@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// CPU DWORD mailbox -> lane bridge -> CPU/scanout arbiter.
 /// Resets must assert together; release is synchronized by the caller.
 module framebuffer_memory_path (

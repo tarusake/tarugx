@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """One-shot WSL recovery using existing Flash; no erase/program or background loop."""
 import argparse
 import json

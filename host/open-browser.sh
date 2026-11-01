@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Snap Firefox needs a user scope when launched from the dedicated Xfce unit.
 set -eu
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Complete Phase-1 application path at the Gowin PCIe TLP user boundary.
 module pcie_bar0_path (
     clk            : input  clock     ,

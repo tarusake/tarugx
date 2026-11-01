@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Global Resetの生成差分を確認する。実機用CSRやFlashは変更しない。"""
 import argparse
 import difflib

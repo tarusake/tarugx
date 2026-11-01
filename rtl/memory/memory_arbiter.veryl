@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Round-robin above the FIFO watermark, bounded Scanout priority below it.
 /// All ports run on the memory UI clock. The scanout client is read-only.
 module memory_arbiter (

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module ddr_bringup_top(
  input wire clk, rst_n, output wire uart_tx,
  output wire [14:0] ddr_addr, output wire [2:0] ddr_bank,

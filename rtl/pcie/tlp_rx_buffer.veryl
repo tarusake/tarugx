@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// One registered RX beat. No fall-through: breaks IP-to-decode timing.
 /// At most one beat every two cycles; the stored beat holds until !out_wait.
 module tlp_rx_buffer (

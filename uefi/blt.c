@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #include "blt.h"
 
 static int rectangle(size_t x, size_t y, size_t w, size_t h)

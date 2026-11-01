@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 // FPGA storage mapping only; protocol and diagnostic controls are Veryl.
 // 1-cycle synchronous read, initialized from the validated 64 KiB image.
 module tarugx_option_rom_storage #(

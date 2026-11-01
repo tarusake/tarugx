@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #ifndef TARUGX_DXE_MEMORY_H
 #define TARUGX_DXE_MEMORY_H
 #include <efi.h>

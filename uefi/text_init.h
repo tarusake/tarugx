@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #ifndef TARUGX_TEXT_INIT_H
 #define TARUGX_TEXT_INIT_H
 /* Optional firmware compatibility experiment. Only our output, once per child.

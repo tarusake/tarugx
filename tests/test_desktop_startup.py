@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 import importlib.util
 import itertools
 from pathlib import Path

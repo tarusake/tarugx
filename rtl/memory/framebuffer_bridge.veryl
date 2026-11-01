@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// One outstanding DWORD access to a 4 MiB byte-addressed aperture.
 /// Backend: atomic 32-byte request, one completion for reads AND writes.
 /// Backend write completion must provide ordering before subsequent requests.

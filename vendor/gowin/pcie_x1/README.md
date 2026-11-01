@@ -1,27 +1,34 @@
-# Gowin PCIe x1 generation input
+# Gowin PCIe x1生成入力
 
-`serdes.mod` is a headless Gowin Module Generator input derived from Sipeed's
-standard-Dock Gen2 example. It changes the generated SerDes wrapper to Q0 Lane 0
-and x1 only. The absolute output path is intentionally under the ignored
-`build/` directory.
+すべてのコマンドはリポジトリのルートで実行してください。
+`GOWIN_ROOT`はGowin EDAのインストール先です（`IDE/`を含むディレクトリ）。
 
-Generate the structural SerDes wrapper with Gowin EDA V1.9.12.03:
+`serdes.mod`はSipeed通常Dock版のGen2サンプルを基に、Q0 Lane 0のみの
+x1構成に変更したModule Generator入力です。出力先`./build/gowin_pcie_x1/`は
+**実行ディレクトリからの相対パス**で、Git管理外です。
+
+Gowin EDA V1.9.12.03で構造ラッパーを生成する例：
 
 ```sh
+: "${GOWIN_ROOT:?Set GOWIN_ROOT to your Gowin EDA installation}"
 mkdir -p build/gowin_pcie_x1
-"$GOWIN_HOME/IDE/bin/GowinModGen" -do vendor/gowin/pcie_x1/serdes.mod
+"$GOWIN_ROOT/IDE/bin/GowinModGen" -do vendor/gowin/pcie_x1/serdes.mod
 ```
 
-This `.mod` file does not contain PCIe configuration-space parameters. BAR
-sizes, IDs, class code, speed, and TLP clock must also be configured in the
-PCIe Controller IP and archived as an `.ipc` file. Generated sources are not
-treated as verified until their configuration and synthesis result are checked.
+`.mod`にはPCIe Configuration Spaceの設定は含まれません。
+BAR、ID、Class Code、速度、TLPクロックはPCIe Controller側の設定も必要です。
+`pcie_controller.ipc`はGen2 x1、TLPクロック100MHz、BAR0 64KiB
+non-prefetchable、BAR2 4MiB prefetchable、Class `03/80`、
+暫定ID `22c2:1100`の設定入力です。
 
-`pcie_controller.ipc` contains the current TaruGX proposal: Gen2 x1, 100 MHz
-TLP clock, BAR0 64 KiB non-prefetchable, BAR2 4 MiB prefetchable, class
-`03/80`, and the Sipeed example IDs `22c2:1100`. The IDs remain provisional.
-Generate it headlessly with:
+次のスクリプトは既定で`serdes.ipc`を読み、`SerDes_Top`を生成します。
+`pcie_controller.ipc`を直接生成するコマンドではありません。
 
 ```sh
-gw_sh scripts/gowin_generate_pcie.tcl
+: "${GOWIN_ROOT:?Set GOWIN_ROOT to your Gowin EDA installation}"
+"$GOWIN_ROOT/IDE/bin/gw_sh" scripts/gowin_generate_pcie.tcl
 ```
+
+入力を変更する場合は`TARUGX_PCIE_IPC`を指定します。
+生成物は設定と合成結果を確認するまで検証済みとは扱いません。
+出典・第三者の条件は[THIRD_PARTY_NOTICES.md](../../../THIRD_PARTY_NOTICES.md)を参照してください。

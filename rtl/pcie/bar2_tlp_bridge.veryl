@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Ordered single-DWORD BAR2 path. Posted writes receive no PCIe Completion.
 /// Outer router must stall BAR0 while !rx_ready, including pending writes.
 module bar2_tlp_bridge (

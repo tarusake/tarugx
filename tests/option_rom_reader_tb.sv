@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module option_rom_reader_tb;
   logic clk=0; always #5 clk=~clk;
   logic rst_n=0, req_valid=0, req_ready, req_write=0;

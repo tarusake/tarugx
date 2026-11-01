@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Wrap an X64 EFI boot-service driver in one uncompressed PCI option ROM.
 
 This creates a file; it does not configure the FPGA's Expansion ROM BAR.

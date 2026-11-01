@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Experimental one-shot reset, not a vendor-specified initialization sequence.
 /// rst_n is configuration POR, never the reset driven by this module.
 module pcie_startup_recovery #(

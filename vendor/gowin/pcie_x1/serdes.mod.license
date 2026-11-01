@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2024 Shenzhen Sipeed Technology Co,Ltd.
+SPDX-FileCopyrightText: 2026 tarusake
+SPDX-License-Identifier: Apache-2.0
+
+Derived from the Sipeed Gen2 SerDes module-generation input.
+Modified for x1, Rev.B and a repository-relative output path.
+See THIRD_PARTY_NOTICES.md. This does not license generated Gowin IP.

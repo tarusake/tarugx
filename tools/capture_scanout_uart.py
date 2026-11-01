@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Timestamp FR03/FR04 UART observations; print only changed decoded states."""
 import argparse
 from datetime import datetime, timezone

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 module tarugx_gowin_top (
     input  logic       sys_clk_p,
     input  logic       pcie_rstn,

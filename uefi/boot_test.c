@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /* One-shot GOP test, then chainload the existing Ubuntu shim on this ESP.
  * No NVRAM writes, no PCI configuration writes, no FPGA reconfiguration. */
 #include <efi.h>

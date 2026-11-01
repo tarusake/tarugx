@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 #[test(tlp_request_decode_read_write)]
 module tlp_request_decode_read_write {
     inst clk: $tb::clock_gen;
