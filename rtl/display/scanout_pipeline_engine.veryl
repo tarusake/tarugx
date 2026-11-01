@@ -1,0 +1,99 @@
+/// Memory UI -> asynchronous FIFO -> fixed-mode RGB scanout.
+/// Settings must already be synchronized into their respective domains.
+module scanout_pipeline_engine (
+    mem_clk       : input  'mem   clock     ,
+    mem_rst_n     : input  'mem   reset     ,
+    enable        : input  'mem   logic     ,
+    fb_base       : input  'mem   logic<32> ,
+    fb_stride     : input  'mem   logic<32> ,
+    config_error  : output 'mem   logic     ,
+    scan_urgent   : output 'mem   logic,
+    mem_valid     : output 'mem   logic     ,
+    mem_ready     : input  'mem   logic     ,
+    mem_addr      : output 'mem   logic<22> ,
+    mem_rsp_valid : input  'mem   logic     ,
+    mem_rsp_ready : output 'mem   logic     ,
+    mem_rsp_data  : input  'mem   logic<256>,
+    mem_rsp_error : input  'mem   logic     ,
+    pixel_clk     : input  'pixel clock     ,
+    pixel_rst_n   : input  'pixel reset     ,
+    settings      : input  'pixel logic<26> ,
+    de            : output 'pixel logic     ,
+    hsync         : output 'pixel logic     ,
+    vsync         : output 'pixel logic     ,
+    rgb           : output 'pixel logic<24> ,
+    underflow     : output 'pixel logic     ,
+    fault_snapshot: output 'pixel logic<64> ,
+) {
+    var buffered: 'mem logic;
+    var push_valid    : 'mem   logic     ;
+    var push_ready    : 'mem   logic     ;
+    var push_index    : 'mem   logic<16> ;
+    var push_data     : 'mem   logic<256>;
+    var push_error    : 'mem   logic     ;
+    var pop_valid     : 'pixel logic     ;
+    var pop_ready     : 'pixel logic     ;
+    var pop_data      : 'pixel logic<273>;
+    var display_active: 'pixel logic     ;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var display_active_sync: 'mem logic<2>;
+    assign scan_urgent = (enable || display_active_sync[1]) && !buffered && !config_error;
+    unsafe (cdc) {
+        always_ff (mem_clk, mem_rst_n) {
+            if_reset {
+                display_active_sync = 0;
+            } else {
+                display_active_sync = {display_active_sync[0], display_active};
+            }
+        }
+    }
+    inst reader: scanout_prefetch_reader (
+        clk  : mem_clk  ,
+        rst_n: mem_rst_n,
+        // Keep fetching until the pixel domain has actually blanked.
+        enable       : enable || display_active_sync[1],
+        fb_base                                        ,
+        fb_stride                                      ,
+        config_error                                   ,
+        mem_valid                                      ,
+        mem_ready                                      ,
+        mem_addr                                       ,
+        mem_rsp_valid                                  ,
+        mem_rsp_ready                                  ,
+        mem_rsp_data                                   ,
+        mem_rsp_error                                  ,
+        out_valid    : push_valid                      ,
+        out_ready    : push_ready                      ,
+        out_index    : push_index                      ,
+        out_data     : push_data                       ,
+        out_error    : push_error                      ,
+    );
+    inst fifo: scanout_fifo (
+        src_clk  : mem_clk                            ,
+        src_rst_n: mem_rst_n                          ,
+        src_valid: push_valid                         ,
+        src_buffered: buffered,
+        src_ready: push_ready                         ,
+        src_data : {push_error, push_index, push_data},
+        dst_clk  : pixel_clk                          ,
+        dst_rst_n: pixel_rst_n                        ,
+        dst_valid: pop_valid                          ,
+        dst_ready: pop_ready                          ,
+        dst_data : pop_data                           ,
+    );
+    inst display: framebuffer_display (
+        clk           : pixel_clk  ,
+        rst_n         : pixel_rst_n,
+        settings                   ,
+        in_valid      : pop_valid  ,
+        in_ready      : pop_ready  ,
+        in_data       : pop_data   ,
+        de                         ,
+        hsync                      ,
+        vsync                      ,
+        rgb                        ,
+        underflow                  ,
+        display_active             ,
+        fault_snapshot             ,
+    );
+}

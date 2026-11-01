@@ -1,4 +1,4 @@
-module tarugx_ddr3_wrapper(
+module tarugx_ddr3_wrapper #(parameter bit PIPELINED_MEMORY=0) (
  input wire clk, rst_n,
  output wire ui_clk, pll_lock, calibrated,
  input wire mem_reset_n,
@@ -34,6 +34,16 @@ module tarugx_ddr3_wrapper(
   .O_ddr_clk(ddr_ck),.O_ddr_clk_n(ddr_ck_n),.O_ddr_cke(ddr_cke),
   .O_ddr_odt(ddr_odt),.O_ddr_reset_n(ddr_reset_n),.O_ddr_dqm(ddr_dm),
   .IO_ddr_dq(ddr_dq),.IO_ddr_dqs(ddr_dqs),.IO_ddr_dqs_n(ddr_dqs_n));
+ generate if (PIPELINED_MEMORY) begin : pipelined
+ tarugx_ddr3_native_pipeline adapter(.clk(ui_clk),.rst_n(mem_reset_n),.calibrated(calibrated),
+  .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),
+  .mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),.mem_rsp_valid(mem_rsp_valid),
+  .mem_rsp_ready(mem_rsp_ready),.mem_rsp_data(mem_rsp_data),.mem_rsp_error(mem_rsp_error),
+  .cmd_ready(cmd_ready),.cmd(cmd),.cmd_en(cmd_en),.addr(addr),
+  .wr_data_rdy(wr_data_rdy),.wr_data(wr_data),.wr_data_en(wr_data_en),
+  .wr_data_end(wr_data_end),.wr_data_mask(wr_data_mask),
+  .rd_data(rd_data),.rd_data_valid(rd_data_valid),.rd_data_end(rd_data_end));
+ end else begin : serial_memory
  tarugx_ddr3_native_adapter adapter(.clk(ui_clk),.rst_n(mem_reset_n),.calibrated(calibrated),
   .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),
   .mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),.mem_rsp_valid(mem_rsp_valid),
@@ -42,4 +52,5 @@ module tarugx_ddr3_wrapper(
   .wr_data_rdy(wr_data_rdy),.wr_data(wr_data),.wr_data_en(wr_data_en),
   .wr_data_end(wr_data_end),.wr_data_mask(wr_data_mask),
   .rd_data(rd_data),.rd_data_valid(rd_data_valid),.rd_data_end(rd_data_end));
+ end endgenerate
 endmodule

@@ -1,4 +1,4 @@
-/// Round-robin CPU/scanout arbiter, one transaction outstanding.
+/// Round-robin above the FIFO watermark, bounded Scanout priority below it.
 /// All ports run on the memory UI clock. The scanout client is read-only.
 module memory_arbiter (
     clk           : input  clock     ,
@@ -14,6 +14,7 @@ module memory_arbiter (
     cpu_rsp_data  : output logic<256>,
     cpu_rsp_error : output logic     ,
     scan_valid    : input  logic     ,
+    scan_urgent   : input  logic,
     scan_ready    : output logic     ,
     scan_addr     : input  logic<22> ,
     scan_rsp_valid: output logic     ,
@@ -39,9 +40,15 @@ module memory_arbiter (
     var state         : State;
     var owner_scan    : logic;
     var prefer_scan   : logic;
-    let choose_scan   : logic = scan_valid && (!cpu_valid || prefer_scan);
+    var urgent_grants: logic<3>;
+    var reserve_age: logic<4>;
+    // Reserve the reader's short Push -> Issue gap, not just simultaneous requests.
+    // Four scan transactions at most precede a waiting CPU transaction.
+    let priority_scan: logic = scan_urgent && (urgent_grants <: 4);
+    let reserve_scan: logic = priority_scan && (reserve_age <: 8);
+    let choose_scan: logic = scan_valid && (!cpu_valid || (if scan_urgent ? priority_scan : prefer_scan));
     let response_phase: logic = (state == State::Wait) || ((state == State::Issue) && mem_ready);
-    assign cpu_ready      = (state == State::Idle) && !choose_scan;
+    assign cpu_ready      = (state == State::Idle) && !choose_scan && !(reserve_scan && !scan_valid);
     assign scan_ready     = (state == State::Idle) && choose_scan;
     assign mem_valid      = state == State::Issue;
     assign cpu_rsp_valid  = response_phase && mem_rsp_valid && !owner_scan;
@@ -53,6 +60,8 @@ module memory_arbiter (
     assign mem_rsp_ready  = response_phase && (if owner_scan ? scan_rsp_ready : cpu_rsp_ready);
     always_ff {
         if_reset {
+            urgent_grants = 0;
+            reserve_age = 0;
             state       = State::Idle;
             owner_scan  = 0;
             prefer_scan = 1;
@@ -61,9 +70,16 @@ module memory_arbiter (
             mem_wdata   = 0;
             mem_wstrb   = 0;
         } else {
+            if !scan_urgent { urgent_grants = 0; }
+            if (state == State::Idle) && scan_urgent && !scan_valid {
+                if reserve_age <: 8 { reserve_age = reserve_age + 4'd1; }
+            } else { reserve_age = 0; }
             case state {
                 State::Idle: {
                     if scan_valid && scan_ready {
+                        if scan_urgent && (urgent_grants <: 4) {
+                            urgent_grants = urgent_grants + 3'd1;
+                        }
                         owner_scan = 1;
                         mem_write  = 0;
                         mem_addr   = scan_addr;
@@ -71,6 +87,7 @@ module memory_arbiter (
                         mem_wstrb  = 0;
                         state      = State::Issue;
                     } else if cpu_valid && cpu_ready {
+                        urgent_grants = 0;
                         owner_scan = 0;
                         mem_write  = cpu_write;
                         mem_addr   = cpu_addr;

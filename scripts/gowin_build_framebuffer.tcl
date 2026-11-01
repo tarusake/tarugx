@@ -18,6 +18,7 @@ set rom_probe 0
 set rom_diagnostic 0
 set raw_bar_probe 0
 set auto_rom 0
+set pipelined_memory 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
     set por_release_test 1
@@ -47,6 +48,10 @@ if {[info exists ::env(TARUGX_PCIE_RAW_BAR_PROBE)] && $::env(TARUGX_PCIE_RAW_BAR
 if {[info exists ::env(TARUGX_PCIE_AUTO_ROM)] && $::env(TARUGX_PCIE_AUTO_ROM) eq "1"} {
     if {!$raw_bar_probe} { error "Auto ROM requires raw BAR probe and ROM diagnostic mode" }
     set auto_rom 1
+}
+if {[info exists ::env(TARUGX_PCIE_PIPELINED_MEMORY)] && $::env(TARUGX_PCIE_PIPELINED_MEMORY) eq "1"} {
+    if {!$auto_rom} { error "Pipelined memory requires auto ROM experiment" }
+    set pipelined_memory 1
 }
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
@@ -106,6 +111,8 @@ foreach source [list \
 }
 
 puts [exec python3 [file join $repo scripts check_gowin_csr.py] [file join $pcie_dir serdes.csr]]
+
+if {$pipelined_memory} { set output_dir [file join $repo build gowin_framebuffer_pipeline] }
 
 create_project -name tarugx -dir $output_dir \
     -pn GW5AST-LV138PG484AC2/I1 -device_version B -force
@@ -169,6 +176,7 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
     }
     if {$raw_bar_probe} { set top_text "`define TARUGX_PCIE_RAW_BAR_PROBE\n$top_text" }
     if {$auto_rom} { set top_text "`define TARUGX_PCIE_AUTO_ROM\n$top_text" }
+    if {$pipelined_memory} { set top_text "`define TARUGX_PIPELINED_MEMORY\n$top_text" }
     set top_source [file join $output_dir tarugx_framebuffer_gowin_top.sv]
     set f [open $top_source w]; puts $f $top_text; close $f
 }
@@ -187,8 +195,9 @@ set timing_source [file join $repo fpga tang_mega_138k framebuffer.sdc]
 if {$recovery_experiment} {
     set recovery_sdc [file join $output_dir recovery.sdc]
     set f [open $timing_source r]; set base_timing [read $f]; close $f
-    if {$rom_probe} {
-        # FR08 replaces the old diagnostic UART payload. Synthesis removes
+    if {$rom_probe && !$auto_rom} {
+        # FR08-FR11 probe payload replaces scanout diagnostics; FR12 auto ROM
+        # restores them. Synthesis removes
         # those unused debug endpoints; retain all functional/CDC constraints.
         set kept {}
         foreach line [split $base_timing "\n"] {
@@ -199,12 +208,32 @@ if {$recovery_experiment} {
         }
         set base_timing [join $kept "\n"]
     }
+    if {$auto_rom && !$pipelined_memory} {
+        # FR13 uses the diagnostic payload for memory/fifo performance instead
+        # of PCIe debug data; its payload registers are removed by synthesis.
+        set kept {}
+        foreach line [split $base_timing "\n"] {
+            if {[string match {set_max_delay*u_pcie_debug/snapshot_cdc/*} $line]} { continue }
+            lappend kept $line
+        }
+        set base_timing [join $kept "\n"]
+    }
     set f [open $recovery_sdc w]
     puts $f $base_timing
     puts $f {set_false_path -to [get_pins {recovery_experiment.u_recovery/ready_sync_0_s0/D recovery_experiment.u_recovery/perst_sync_0_s0/D recovery_meta*/D recovery_experiment.u_reset_scope/inputs_meta*/D}]}
     if {$rom_probe} {
+        # SEND_UNCHANGED keeps the toggle synchronizers even when the unused
+        # ROM payload registers are swept in FR12.
         puts $f {set_false_path -to [get_pins {u_rom_probe_cdc/ack_sync_0_s0/D u_rom_probe_cdc/request_sync_0_s0/D}]}
-        puts $f {set_max_delay 10 -from [get_pins {u_rom_probe_cdc/held*/Q}] -to [get_pins {u_rom_probe_cdc/dst_config*/D}]}
+        if {!$auto_rom} {
+            puts $f {set_max_delay 10 -from [get_pins {u_rom_probe_cdc/held*/Q}] -to [get_pins {u_rom_probe_cdc/dst_config*/D}]}
+        }
+    }
+    if {$auto_rom && !$pipelined_memory} {
+        puts $f {set_false_path -to [get_pins {u_scanout_debug/fault_sync_0_s0/D}]}
+        puts $f {set_max_delay 10 -from [get_cells {u_scanout_debug/pop_gray*}] -to [get_cells {u_scanout_debug/pop_meta*}]}
+        puts $f {set_false_path -to [get_pins {u_scanout_debug_cdc/ack_sync_0_s0/D u_scanout_debug_cdc/request_sync_0_s0/D}]}
+        puts $f {set_max_delay 10 -from [get_pins {u_scanout_debug_cdc/held*/Q}] -to [get_pins {u_scanout_debug_cdc/dst_config*/D}]}
     }
     close $f
     set timing_source $recovery_sdc

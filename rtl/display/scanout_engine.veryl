@@ -7,6 +7,7 @@ module scanout_engine (
     fb_base       : input  'mem   logic<32> ,
     fb_stride     : input  'mem   logic<32> ,
     config_error  : output 'mem   logic     ,
+    scan_urgent   : output 'mem   logic,
     mem_valid     : output 'mem   logic     ,
     mem_ready     : input  'mem   logic     ,
     mem_addr      : output 'mem   logic<22> ,
@@ -24,6 +25,7 @@ module scanout_engine (
     underflow     : output 'pixel logic     ,
     fault_snapshot: output 'pixel logic<64> ,
 ) {
+    var buffered: 'mem logic;
     var push_valid    : 'mem   logic     ;
     var push_ready    : 'mem   logic     ;
     var push_index    : 'mem   logic<16> ;
@@ -35,6 +37,7 @@ module scanout_engine (
     var display_active: 'pixel logic     ;
     #[sv("async_reg = \"true\", syn_preserve = 1")]
     var display_active_sync: 'mem logic<2>;
+    assign scan_urgent = (enable || display_active_sync[1]) && !buffered && !config_error;
     unsafe (cdc) {
         always_ff (mem_clk, mem_rst_n) {
             if_reset {
@@ -69,6 +72,7 @@ module scanout_engine (
         src_clk  : mem_clk                            ,
         src_rst_n: mem_rst_n                          ,
         src_valid: push_valid                         ,
+        src_buffered: buffered,
         src_ready: push_ready                         ,
         src_data : {push_error, push_index, push_data},
         dst_clk  : pixel_clk                          ,

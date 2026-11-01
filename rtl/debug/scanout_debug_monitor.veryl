@@ -1,0 +1,129 @@
+/// Passive UI/pixel monitor. Freeze shortly after the first pixel underflow.
+/// FIFO level is a UI-domain upper estimate: synchronized pops lag real pops.
+/// Reset both domains together, as for the observed scanout FIFO.
+module scanout_debug_monitor (
+    mem_clk: input 'mem clock,
+    mem_rst_n: input 'mem reset,
+    pixel_clk: input 'pixel clock,
+    pixel_rst_n: input 'pixel reset,
+    push: input 'mem logic,
+    pop: input 'pixel logic,
+    underflow: input 'pixel logic,
+    scan_valid: input 'mem logic,
+    scan_ready: input 'mem logic,
+    scan_rsp_valid: input 'mem logic,
+    scan_rsp_ready: input 'mem logic,
+    mem_valid: input 'mem logic,
+    mem_ready: input 'mem logic,
+    mem_write: input 'mem logic,
+    mem_rsp_valid: input 'mem logic,
+    mem_rsp_ready: input 'mem logic,
+    snapshot: output 'mem logic<184>,
+) {
+    var pushed: 'mem logic<10>;
+    var popped: 'pixel logic<10>;
+    var pop_gray: 'pixel logic<10>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var pop_meta: 'mem logic<10>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var pop_sync: 'mem logic<10>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var fault_sync: 'mem logic<2>;
+    var pop_binary: 'mem logic<10>;
+    always_comb {
+        pop_binary = pop_sync;
+        pop_binary = pop_binary ^ (pop_binary >> 1);
+        pop_binary = pop_binary ^ (pop_binary >> 2);
+        pop_binary = pop_binary ^ (pop_binary >> 4);
+        pop_binary = pop_binary ^ (pop_binary >> 8);
+    }
+    let level: 'mem logic<10> = pushed - pop_binary;
+    var minimum: 'mem logic<10>;
+    var maximum: 'mem logic<10>;
+    var armed: 'mem logic;
+    var frozen: 'mem logic;
+    var scan_pending: 'mem logic;
+    var memory_pending: 'mem logic;
+    var memory_write: 'mem logic;
+    var wait_age: 'mem logic<16>;
+    var scan_age: 'mem logic<16>;
+    var memory_age: 'mem logic<16>;
+    var max_wait: 'mem logic<16>;
+    var max_scan: 'mem logic<16>;
+    var max_read: 'mem logic<16>;
+    var max_write: 'mem logic<16>;
+    var scan_count: 'mem logic<32>;
+    var memory_count: 'mem logic<32>;
+    var wait_count: 'mem logic<32>;
+    assign snapshot = {max_wait, max_scan, max_read, max_write,
+        scan_count, memory_count, wait_count, frozen, armed, 2'b0, minimum, maximum};
+    always_ff (pixel_clk, pixel_rst_n) {
+        if_reset { popped = 0; pop_gray = 0; }
+        else if pop {
+            popped = popped + 10'd1;
+            pop_gray = (popped + 10'd1) ^ ((popped + 10'd1) >> 1);
+        }
+    }
+    unsafe (cdc) {
+        always_ff (mem_clk, mem_rst_n) {
+            if_reset { pop_meta = 0; pop_sync = 0; fault_sync = 0; }
+            else {
+                pop_meta = pop_gray;
+                pop_sync = pop_meta;
+                fault_sync = {fault_sync[0], underflow};
+            }
+        }
+    }
+    always_ff (mem_clk, mem_rst_n) {
+        if_reset {
+            pushed = 0; minimum = 10'd1023; maximum = 0;
+            armed = 0; frozen = 0;
+            scan_pending = 0; memory_pending = 0; memory_write = 0;
+            wait_age = 0; scan_age = 0; memory_age = 0;
+            max_wait = 0; max_scan = 0; max_read = 0; max_write = 0;
+            scan_count = 0; memory_count = 0; wait_count = 0;
+        } else {
+            // Continue pointer tracking even after diagnostic statistics freeze.
+            if push { pushed = pushed + 10'd1; }
+            if !frozen {
+                if fault_sync[1] { frozen = 1; }
+                if level >: maximum { maximum = level; }
+                if level >= 256 { armed = 1; }
+                if armed && (level <: minimum) { minimum = level; }
+                if scan_valid && !scan_ready {
+                    if wait_age != 16'hffff { wait_age = wait_age + 16'd1; }
+                    if wait_count != 32'hffffffff { wait_count = wait_count + 32'd1; }
+                    if wait_age >= max_wait { max_wait = if wait_age == 16'hffff ? wait_age : wait_age + 16'd1; }
+                } else { wait_age = 0; }
+                if scan_valid && scan_ready {
+                    scan_pending = 1;
+                    scan_age = 0;
+                    if scan_count != 32'hffffffff { scan_count = scan_count + 32'd1; }
+                }
+                if scan_pending && (scan_age != 16'hffff) { scan_age = scan_age + 16'd1; }
+                if scan_rsp_valid && scan_rsp_ready {
+                    scan_pending = 0;
+                    if scan_pending && (scan_age >= max_scan) {
+                        max_scan = if scan_age == 16'hffff ? scan_age : scan_age + 16'd1;
+                    }
+                }
+                if mem_valid && mem_ready {
+                    memory_pending = 1;
+                    memory_write = mem_write;
+                    memory_age = 0;
+                    if memory_count != 32'hffffffff { memory_count = memory_count + 32'd1; }
+                }
+                if memory_pending && (memory_age != 16'hffff) { memory_age = memory_age + 16'd1; }
+                if mem_rsp_valid && mem_rsp_ready {
+                    memory_pending = 0;
+                    if memory_pending && memory_write && (memory_age >= max_write) {
+                        max_write = if memory_age == 16'hffff ? memory_age : memory_age + 16'd1;
+                    }
+                    if memory_pending && !memory_write && (memory_age >= max_read) {
+                        max_read = if memory_age == 16'hffff ? memory_age : memory_age + 16'd1;
+                    }
+                }
+            }
+        }
+    }
+}

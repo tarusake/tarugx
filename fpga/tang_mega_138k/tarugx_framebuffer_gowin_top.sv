@@ -222,19 +222,29 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [255:0] mem_rsp_data;
     wire mem_rsp_error;
     wire scan_valid;
+    wire scan_urgent;
     wire scan_ready;
     wire [21:0] scan_addr;
     wire scan_rsp_valid;
     wire scan_rsp_ready;
     wire [255:0] scan_rsp_data;
     wire scan_rsp_error;
+`ifdef TARUGX_PIPELINED_MEMORY
+    localparam PIPELINED_MEMORY=1;
+    tarugx_framebuffer_memory_pipeline u_memory_path (
+`else
+    localparam PIPELINED_MEMORY=0;
     tarugx_framebuffer_memory_path u_memory_path (
+`endif
         .cpu_clk(tlp_clk), .cpu_rst_n(cpu_reset[1]),
         .cpu_valid(fb_req_valid), .cpu_ready(fb_req_ready),
         .cpu_request({fb_req_write, fb_req_addr, fb_req_wdata, fb_req_wstrb}),
         .cpu_rsp_valid(fb_rsp_valid), .cpu_rsp_ready(fb_rsp_ready), .cpu_response(cpu_response),
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .scan_valid(scan_valid),
+`ifndef TARUGX_PIPELINED_MEMORY
+        .scan_urgent(scan_urgent),
+`endif
         .scan_ready(scan_ready),
         .scan_addr(scan_addr),
         .scan_rsp_valid(scan_rsp_valid),
@@ -252,10 +262,14 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(mem_rsp_data),
         .mem_rsp_error(mem_rsp_error)
     );
+`ifdef TARUGX_PIPELINED_MEMORY
+    tarugx_scanout_pipeline_engine u_scanout (
+`else
     tarugx_scanout_engine u_scanout (
+`endif
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]), .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
-        .config_error(config_error), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
+        .config_error(config_error), .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
         .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
         .rgb(video_rgb), .underflow(underflow), .fault_snapshot(fault_snapshot),
         .mem_valid(scan_valid),
@@ -266,7 +280,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(scan_rsp_data),
         .mem_rsp_error(scan_rsp_error)
     );
-    tarugx_ddr3_wrapper u_ddr (
+    tarugx_ddr3_wrapper #(.PIPELINED_MEMORY(PIPELINED_MEMORY)) u_ddr (
         .clk(sys_clk_p), .rst_n(rst_n), .ui_clk(ui_clk), .pll_lock(ddr_pll_lock),
         .calibrated(calibrated), .mem_reset_n(mem_reset[1]),
         .mem_valid(mem_valid),
@@ -405,7 +419,30 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .src_config(rom_probe_src), .dst_config(rom_probe_dbg)
     );
 `ifdef TARUGX_PCIE_AUTO_ROM
-    wire [287:0] uart_snapshot = {32'h46523131,rom_probe_dbg}; // FR11: hardware ROM hit
+`ifdef TARUGX_PIPELINED_MEMORY
+    // FR16: serial-latency counters do not apply to multiple outstanding reads.
+    wire [287:0] uart_snapshot = {32'h46523136,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
+`else
+    // Passive observation of project-owned Veryl signals, never vendor IP internals.
+    wire [183:0] scanout_perf_src, scanout_perf_dbg;
+    tarugx_scanout_debug_monitor u_scanout_debug (
+        .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
+        .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
+        .push(u_scanout.push_valid && u_scanout.push_ready),
+        .pop(u_scanout.pop_valid && u_scanout.pop_ready), .underflow(underflow),
+        .scan_valid(scan_valid), .scan_ready(scan_ready),
+        .scan_rsp_valid(scan_rsp_valid), .scan_rsp_ready(scan_rsp_ready),
+        .mem_valid(mem_valid), .mem_ready(mem_ready), .mem_write(mem_write),
+        .mem_rsp_valid(mem_rsp_valid), .mem_rsp_ready(mem_rsp_ready),
+        .snapshot(scanout_perf_src)
+    );
+    tarugx_display_config_cdc #(.WIDTH(184), .SEND_UNCHANGED(1)) u_scanout_debug_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
+        .src_config(scanout_perf_src), .dst_config(scanout_perf_dbg)
+    );
+    wire [287:0] uart_snapshot = {32'h46523134,scanout_perf_dbg,debug_fault,debug_aux_sync};
+`endif
 `elsif TARUGX_PCIE_RAW_BAR_PROBE
     wire [287:0] uart_snapshot = {32'h46523130,rom_probe_dbg}; // FR10: raw BARDEC
 `elsif TARUGX_PCIE_ROM_DIAGNOSTIC

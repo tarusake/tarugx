@@ -47,6 +47,12 @@ class BuildModes(unittest.TestCase):
         self.assertIn("measured 64 KiB",self.run_mode(por=True,**flags))
         self.assertIn("VALIDATED_TOOL_BOUNDARY",self.run_mode(por=True,rom=True,**flags))
 
+    def test_pipeline_requires_auto_rom(self):
+        self.assertIn("Pipelined memory requires", self.run_mode(PIPELINED_MEMORY=1))
+        self.assertIn("VALIDATED_TOOL_BOUNDARY", self.run_mode(
+            por=True,rom=True,PHY_RECOVERY_EXPERIMENT=1,ROM_PROBE=1,
+            ROM_DIAGNOSTIC=1,RAW_BAR_PROBE=1,AUTO_ROM=1,PIPELINED_MEMORY=1))
+
     def test_auto_rom_requires_raw_probe(self):
         self.assertIn("Auto ROM requires raw BAR probe", self.run_mode(AUTO_ROM=1))
 

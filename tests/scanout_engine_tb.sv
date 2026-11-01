@@ -9,6 +9,7 @@ module scanout_engine_tb;
  logic de,hsync,vsync,underflow;logic [23:0] rgb;
  logic [63:0] fault_snapshot;
  int delay_count=0,cycle=0,frame=0,pixels=0;logic [21:0] saved_addr;
+ logic scan_urgent;
  tarugx_scanout_engine dut(.*);
  assign mem_ready=delay_count==0 && !mem_rsp_valid && cycle%7!=0;
  always @(posedge mem_clk) if(mem_rst_n) begin

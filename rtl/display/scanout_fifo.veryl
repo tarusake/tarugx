@@ -7,6 +7,7 @@ module scanout_fifo #(
     src_rst_n: input  'src reset     ,
     src_valid: input  'src logic     ,
     src_ready: output 'src logic     ,
+    src_buffered: output 'src logic, // At least half the FIFO, conservative UI estimate.
     src_data : input  'src logic<273>,
     dst_clk  : input  'dst clock     ,
     dst_rst_n: input  'dst reset     ,
@@ -21,10 +22,11 @@ module scanout_fifo #(
     inst fifo: $std::async_fifo::<$std::synchronizer_basic> #(
         WIDTH: 273,
         DEPTH     ,
+        THRESHOLD: DEPTH / 2,
     ) (
         is_clk        : src_clk               ,
         is_rst        : src_rst_n             ,
-        os_almost_full: _                     ,
+        os_almost_full: src_buffered                     ,
         os_full       : full                  ,
         is_push       : src_valid && src_ready,
         is_data       : src_data              ,

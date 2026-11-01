@@ -57,16 +57,53 @@ static uint32_t pixel(unsigned x, unsigned y)
            ((((x / 32) ^ (y / 32)) & 1) ? 255u : 32u);
 }
 
+/* Keep scanout enabled while competing for DDR; restore the original frame.
+ * UART sticky fault state must be captured separately, starting before this test. */
+static int stress_scanout(volatile uint32_t *regs, volatile uint32_t *fb)
+{
+    if (regs[0x10/4] != 1 || regs[0x1c/4] != 0 || regs[0x20/4] != WIDTH*4) {
+        fprintf(stderr, "stress requires enabled framebuffer, base=0 and stride=2560\n");
+        return 1;
+    }
+    uint32_t *saved = malloc(WIDTH * HEIGHT * sizeof(*saved));
+    if (!saved) { perror("malloc"); return 1; }
+    for (unsigned i=0; i<WIDTH*HEIGHT; i++) saved[i] = fb[i];
+    unsigned errors = 0;
+    for (unsigned pass=0; pass<8; pass++) {
+        uint32_t mask = (pass & 1) ? 0 : UINT32_C(0x00ffffff);
+        for (unsigned i=0; i<WIDTH*HEIGHT; i++) fb[i] = saved[i] ^ mask;
+        __sync_synchronize();
+        (void)regs[0];
+        for (unsigned i=0; i<WIDTH*HEIGHT; i++)
+            if (fb[i] != (saved[i] ^ mask)) errors++;
+    }
+    /* Last pass restores the frame even if an earlier comparison failed. */
+    printf("Scanout load: 8 full-frame write/read passes, errors=%u; "
+           "original frame restoration %s\n", errors, errors ? "not guaranteed" : "verified");
+    free(saved);
+    return errors || regs[0x10/4] != 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3 || (strcmp(argv[2], "probe") && strcmp(argv[2], "pattern") &&
-                     strcmp(argv[2], "sweep"))) {
-        fprintf(stderr, "usage: %s 0000:01:00.0 probe|pattern|sweep\n"
-                "probe overwrites 256 bytes; pattern writes 640x480; sweep overwrites all 4 MiB.\n",
+                     strcmp(argv[2], "sweep") && strcmp(argv[2], "stress"))) {
+        fprintf(stderr, "usage: %s 0000:01:00.0 probe|pattern|sweep|stress\n"
+                "probe overwrites 256 bytes; pattern writes 640x480; sweep overwrites all 4 MiB.\n"
+                "stress requires an unbound driver and enabled display; temporarily inverts and restores the frame.\n",
                 argv[0]);
         return 1;
     }
     if (check_device(argv[1])) return 1;
+    if (!strcmp(argv[2], "stress")) {
+        char path[256];
+        struct stat st;
+        if (snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/driver", argv[1]) >= (int)sizeof(path)) return 1;
+        if (lstat(path, &st) == 0 || errno != ENOENT) {
+            fprintf(stderr, "stress requires an unbound PCI device\n");
+            return 1;
+        }
+    }
     volatile uint32_t *regs = map_bar(argv[1], 0, BAR0_SIZE);
     if (!regs) return 1;
     if (regs[0] != UINT32_C(0x54475055)) {
@@ -76,6 +113,10 @@ int main(int argc, char **argv)
     volatile uint32_t *fb = map_bar(argv[1], 2, BAR2_SIZE);
     if (!fb) { munmap((void *)regs, BAR0_SIZE); return 1; }
     int rc = 1;
+    if (!strcmp(argv[2], "stress")) {
+        rc = stress_scanout(regs, fb);
+        goto done;
+    }
     int pattern = !strcmp(argv[2], "pattern");
     int sweep = !strcmp(argv[2], "sweep");
     unsigned count = sweep ? BAR2_SIZE/4 : (pattern ? WIDTH*HEIGHT : 64);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode complete FR03 through FR11 UART lines; ignore partial captures."""
+"""Decode complete FR03 through FR16 UART lines; ignore partial captures."""
 import json
 import re
 import sys
@@ -25,11 +25,35 @@ def decode(line):
                 **({"raw_bar": f"{payload & 0xfffff:05x}"} if version in (0x46523130, 0x46523131) else {})
             }
         }
+    performance = version in (0x46523133, 0x46523134)
+    if performance:
+        version = 0x46523033  # FR13 preserves the fault/aux portion only.
+    automatic_rom = version in (0x46523132, 0x46523136)
+    if automatic_rom:
+        version = 0x46523037  # FR12 carries the FR07 fault/reset layout.
     if version not in (0x46523033, 0x46523034, 0x46523035, 0x46523036, 0x46523037):
         return None
     status = dict(zip(("ddr_pll", "calibrated", "link", "underflow"),
                       (int(v) for v in match[1])))
     fault = (payload >> 8) & ((1 << 64) - 1)
+    if automatic_rom:
+        status["automatic_rom"] = True
+    if performance:
+        perf = (payload >> 72) & ((1 << 184) - 1)
+        status["automatic_rom"] = True
+        status["performance"] = {
+            "max_scan_wait_cycles": (perf >> 168) & 65535,
+            "max_scan_response_cycles": (perf >> 152) & 65535,
+            "max_memory_read_cycles": (perf >> 136) & 65535,
+            "max_memory_write_cycles": (perf >> 120) & 65535,
+            "scan_requests": (perf >> 88) & 0xffffffff,
+            "memory_requests": (perf >> 56) & 0xffffffff,
+            "scan_wait_cycles": (perf >> 24) & 0xffffffff,
+            "frozen": bool((perf >> 23) & 1),
+            "level_armed": bool((perf >> 22) & 1),
+            "min_level_upper_estimate": (perf >> 10) & 1023,
+            "max_level_upper_estimate": perf & 1023,
+        }
     status["aux"] = f"{payload & 255:02x}"
     if version in (0x46523034, 0x46523035, 0x46523036, 0x46523037):
         pci = (payload >> 72) & ((1 << 96) - 1)

@@ -9,6 +9,43 @@ spec.loader.exec_module(decoder)
 
 
 class DecodeTest(unittest.TestCase):
+    def test_fr16_pipeline_fault_layout(self):
+        data=decoder.decode("D1110X46523136" + "0" * 64)
+        self.assertTrue(data["automatic_rom"])
+        self.assertFalse(data["fault_captured"])
+        self.assertNotIn("performance",data)
+
+    def test_fr14_performance(self):
+        data=decoder.decode("D1110X46523134" + "0" * 64)
+        self.assertTrue(data["automatic_rom"])
+        self.assertFalse(data["performance"]["frozen"])
+
+    def test_fr13_performance(self):
+        perf = (17 << 168) | (33 << 152) | (29 << 136) | (5 << 120)
+        perf |= (1000 << 88) | (1200 << 56) | (333 << 24) | (3 << 22) | (2 << 10) | 512
+        payload = (0x46523133 << 256) | (perf << 72) | (0x28001006400640ac << 8) | 0xfd
+        data = decoder.decode(f"D1111X{payload:072X}")
+        self.assertEqual(data["performance"], dict(
+            max_scan_wait_cycles=17, max_scan_response_cycles=33,
+            max_memory_read_cycles=29, max_memory_write_cycles=5,
+            scan_requests=1000, memory_requests=1200, scan_wait_cycles=333,
+            frozen=True, level_armed=True, min_level_upper_estimate=2,
+            max_level_upper_estimate=512))
+        self.assertTrue(data["automatic_rom"])
+        self.assertEqual((data["x"], data["y"]), (160, 1))
+        self.assertNotIn("pcie", data)
+
+    def test_fr12_scanout_fault(self):
+        payload = (0x46523132 << 256) | (0x28001006400640ac << 8) | 0xfd
+        data = decoder.decode(f"D1111X{payload:072X}")
+        self.assertTrue(data["automatic_rom"])
+        self.assertTrue(data["phy_recovery"])
+        self.assertTrue(data["fault_captured"])
+        self.assertEqual((data["x"], data["y"], data["expected"], data["actual"]),
+                         (160, 1, 100, 100))
+        self.assertEqual(data["fifo_valid"], 0)
+        self.assertNotIn("rom_probe", data)
+
     def test_injected_fault(self):
         data = decoder.decode("D1111X46523033" + "0" * 46 + "28001006400640ACFD\r\n")
         self.assertEqual((data["x"], data["y"], data["expected"], data["actual"]),

@@ -15,12 +15,13 @@ module pcie_memory_integration_tb;
  logic [21:0] scan_addr=4096;logic [255:0] scan_rsp_data;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  logic [21:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
+ logic scan_urgent=0;
  tarugx_framebuffer_memory_path path(
   .cpu_clk(clk),.cpu_rst_n(rst),.cpu_valid(fb_req_valid),.cpu_ready(fb_req_ready),
   .cpu_request({fb_req_write,fb_req_addr,fb_req_wdata,fb_req_wstrb}),
   .cpu_rsp_valid(fb_rsp_valid),.cpu_rsp_ready(fb_rsp_ready),.cpu_response({fb_rsp_error,fb_rsp_rdata}),
   .mem_clk(mem_clk),.mem_rst_n(mem_rst_n),
-  .scan_valid(scan_valid),.scan_ready(scan_ready),.scan_addr(scan_addr),
+  .scan_valid(scan_valid),.scan_urgent(scan_urgent),.scan_ready(scan_ready),.scan_addr(scan_addr),
   .scan_rsp_valid(scan_rsp_valid),.scan_rsp_ready(scan_rsp_ready),.scan_rsp_data(scan_rsp_data),.scan_rsp_error(scan_rsp_error),
   .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),
   .mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),.mem_rsp_valid(mem_rsp_valid),

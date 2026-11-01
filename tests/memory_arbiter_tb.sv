@@ -7,6 +7,7 @@ module memory_arbiter_tb;
  logic [31:0] cpu_wstrb='hff00,mem_wstrb;
  logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=0,scan_rsp_error;
  logic mem_valid,mem_ready=0,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
+ logic scan_urgent=0;
  tarugx_memory_arbiter dut(.*);
  task tick;@(posedge clk);#1;endtask
  initial begin
@@ -30,8 +31,29 @@ module memory_arbiter_tb;
    @(negedge clk);cpu_rsp_ready=!scan;scan_rsp_ready=scan;tick();
    @(negedge clk);mem_rsp_valid=0;cpu_rsp_ready=0;scan_rsp_ready=0;
   end
+  // Four urgent scans, then one CPU grant, including the reader's Push gap.
+  scan_urgent=1;cpu_valid=1;
+  for(int n=0;n<10;n++)begin
+   bit scan;scan=n%5!=4;
+   if(scan)begin
+    scan_valid=0;
+    repeat(2)begin #1;assert(!cpu_ready)else $fatal(1,"reader gap not reserved");tick();@(negedge clk);end
+   end
+   scan_valid=1;#1;
+   assert(scan_ready==scan && cpu_ready==!scan)else $fatal(1,"bounded priority %0d",n);
+   tick();@(negedge clk);mem_ready=1;tick();@(negedge clk);mem_ready=0;
+   mem_rsp_valid=1;cpu_rsp_ready=1;scan_rsp_ready=1;
+   #1;assert(scan_rsp_valid==scan && cpu_rsp_valid==!scan)else $fatal(1,"priority owner");
+   tick();@(negedge clk);mem_rsp_valid=0;cpu_rsp_ready=0;scan_rsp_ready=0;
+  end
+  // A missing scan request may reserve only eight idle cycles.
+  scan_valid=0;
+  repeat(8)begin #1;assert(!cpu_ready)else $fatal(1,"short reservation");tick();@(negedge clk);end
+  #1;assert(cpu_ready)else $fatal(1,"CPU starved by absent scan request");
+  scan_urgent=0;scan_valid=1;#1;
+  assert(scan_ready || cpu_ready)else $fatal(1,"normal arbitration not restored");
   cpu_valid=0;scan_valid=0;rst_n=0;tick();assert(!mem_valid && !cpu_rsp_valid && !scan_rsp_valid) else $fatal;
-  $display("Memory arbiter: contention fairness, stable stalls, response ownership and reset PASS");$finish;
+  $display("Memory arbiter: round-robin, bounded urgent priority, reader gap, CPU timeout, stalls and reset PASS");$finish;
  end
  initial begin #100000;$fatal(1,"timeout");end
 endmodule

@@ -1,0 +1,82 @@
+/// Eight reserved response slots hide DDR read latency without dropping data.
+/// Responses must be ordered. Frame configuration changes only after full drain.
+module scanout_prefetch_reader (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    enable       : input  logic     ,
+    fb_base      : input  logic<32> ,
+    fb_stride    : input  logic<32> ,
+    config_error : output logic     ,
+    mem_valid    : output logic     ,
+    mem_ready    : input  logic     ,
+    mem_addr     : output logic<22> ,
+    mem_rsp_valid: input  logic     ,
+    mem_rsp_ready: output logic     ,
+    mem_rsp_data : input  logic<256>,
+    mem_rsp_error: input  logic     ,
+    out_valid    : output logic     ,
+    out_ready    : input  logic     ,
+    out_index    : output logic<16> ,
+    out_data     : output logic<256>,
+    out_error    : output logic     ,
+) {
+    var active: logic;
+    var issued: logic<16>;
+    var row: logic<9>;
+    var column: logic<7>;
+    var row_base: logic<22>;
+    var stride: logic<22>;
+    var reserved: logic<4>;
+    var available: logic<4>;
+    var head: logic<3>;
+    var tail: logic<3>;
+    var data: logic<256> [8];
+    var errors: logic [8];
+    let end_address: logic<64> = (fb_base as 64) + (fb_stride as 64) * 64'd479 + 64'd2560;
+    let valid_config: logic = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0) && (fb_stride >= 2560) && (end_address <= 64'h400000);
+    assign mem_valid = active && (issued <: 38400) && (reserved <: 8);
+    let issue: logic = mem_valid && mem_ready;
+    assign mem_rsp_ready = (reserved != available) || issue;
+    let response: logic = mem_rsp_valid && mem_rsp_ready;
+    assign out_valid = available != 0;
+    assign out_data = data[head];
+    assign out_error = errors[head];
+    let pop: logic = out_valid && out_ready;
+    always_ff {
+        if_reset {
+            active = 0; issued = 0; row = 0; column = 0; row_base = 0;
+            stride = 0; reserved = 0; available = 0; head = 0; tail = 0;
+            mem_addr = 0; out_index = 0; config_error = 0;
+            data = '{default: '0}; errors = '{default: '0};
+        } else {
+            if !active {
+                config_error = enable && !valid_config;
+                if enable && valid_config {
+                    active = 1; issued = 0; row = 0; column = 0;
+                    row_base = fb_base[21:0]; mem_addr = fb_base[21:0];
+                    stride = fb_stride[21:0]; out_index = 0;
+                }
+            }
+            if issue {
+                issued = issued + 16'd1;
+                if column == 79 {
+                    column = 0; row = row + 9'd1;
+                    row_base = row_base + stride; mem_addr = row_base + stride;
+                } else { column = column + 7'd1; mem_addr = mem_addr + 22'd32; }
+            }
+            if response {
+                data[tail] = mem_rsp_data; errors[tail] = mem_rsp_error;
+                tail = tail + 3'd1;
+            }
+            if pop {
+                head = head + 3'd1;
+                if out_index == 38399 { active = 0; }
+                else { out_index = out_index + 16'd1; }
+            }
+            if issue && !pop { reserved = reserved + 4'd1; }
+            else if pop && !issue { reserved = reserved - 4'd1; }
+            if response && !pop { available = available + 4'd1; }
+            else if pop && !response { available = available - 4'd1; }
+        }
+    }
+}

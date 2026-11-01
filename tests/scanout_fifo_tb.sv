@@ -5,6 +5,7 @@ module scanout_fifo_tb;
  logic src_valid=0,src_ready,dst_valid,dst_ready=0;
  logic [272:0] src_data=0,dst_data;
  int sent=0,received=0;bit saw_full=0;
+ logic src_buffered;
  tarugx_scanout_fifo #(.DEPTH(16)) dut(.*);
  function automatic logic [272:0] pattern(input int n);
   return {1'(n%2),16'(n),{8{32'(n^32'ha55a1234)}}};
@@ -22,9 +23,9 @@ module scanout_fifo_tb;
  end
  initial begin
   #100;src_rst_n=1;dst_rst_n=1;
-  #1500;dst_ready=1;
+  #1500;assert(src_buffered)else $fatal(1,"half-full watermark");dst_ready=1;
   wait(received==1000);#200;
-  assert(saw_full && !dst_valid) else $fatal;
+  assert(saw_full && !dst_valid && !src_buffered) else $fatal;
   // Common reset with buffered data must discard all entries.
   @(negedge dst_clk);dst_ready=0;sent=0;
   #500;src_rst_n=0;dst_rst_n=0;
