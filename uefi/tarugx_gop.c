@@ -2,6 +2,7 @@
 #include <efilib.h>
 #include <efipciio.h>
 #include "blt.h"
+#include "dxe_memory.h"
 
 static EFI_GUID pci_guid = EFI_PCI_IO_PROTOCOL_GUID;
 static EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -20,6 +21,9 @@ typedef struct {
     EFI_PCI_IO_PROTOCOL *pci;
     UINT64 attributes;
     struct tgx_io io;
+    TGX_DXE_PREFIX *dxe;
+    UINT64 fb_address, fb_attributes;
+    BOOLEAN cache_changed;
 } TGX;
 
 static EFI_STATUS reg_write(TGX *t, UINT64 offset, UINT32 value)
@@ -108,6 +112,51 @@ static EFI_STATUS check_bar(EFI_PCI_IO_PROTOCOL *pci, UINT8 bar, UINT64 minimum)
     return s;
 }
 
+/* BAR2 is a transaction aperture, not cacheable RAM. A DWORD API call
+ * must not become a CPU cache-line read that the current bridge rejects. */
+static EFI_STATUS uncached_framebuffer(TGX *t)
+{
+    EFI_GUID guid=TGX_DXE_GUID;
+    EFI_STATUS s;
+    VOID *resources=NULL;
+    TGX_GCD_DESCRIPTOR d;
+    s=LibGetSystemConfigurationTable(&guid,(VOID **)&t->dxe);
+    if (EFI_ERROR(s)) return s;
+    if (!t->dxe || t->dxe->header.Signature!=0x565245535f455844ULL ||
+        t->dxe->header.HeaderSize<sizeof(*t->dxe) || !t->dxe->get || !t->dxe->set)
+        return EFI_UNSUPPORTED;
+    s=t->pci->GetBarAttributes(t->pci,2,NULL,&resources);
+    if (EFI_ERROR(s)) return s;
+    if (!resources) return EFI_UNSUPPORTED;
+    UINT8 *p=resources;
+    if (p[0]!=0x8a || p[1]!=0x2b || p[2] || p[3]) s=EFI_UNSUPPORTED;
+    else for (UINTN i=0;i<8;i++) t->fb_address|=(UINT64)p[14+i]<<(8*i);
+    BS->FreePool(resources);
+    if (EFI_ERROR(s)) return s;
+    if (!t->fb_address || (t->fb_address&0xfff) || t->fb_address>~(UINT64)0-0x400000)
+        return EFI_UNSUPPORTED;
+    s=t->dxe->get(t->fb_address,&d);
+    if (EFI_ERROR(s)) return s;
+    if (d.type!=3 || !(d.capabilities&EFI_MEMORY_UC) || d.base>t->fb_address ||
+        d.length<0x400000 || t->fb_address-d.base>d.length-0x400000)
+        return EFI_UNSUPPORTED;
+    t->fb_attributes=d.attributes;
+    if ((d.attributes&0x1f)==EFI_MEMORY_UC) return EFI_SUCCESS;
+    s=t->dxe->set(t->fb_address,0x400000,(d.attributes&~(UINT64)0x1f)|EFI_MEMORY_UC);
+    if (EFI_ERROR(s)) return s;
+    t->cache_changed=TRUE;
+    s=t->dxe->get(t->fb_address,&d);
+    if (!EFI_ERROR(s) && (d.attributes&0x1f)!=EFI_MEMORY_UC) s=EFI_DEVICE_ERROR;
+    return s;
+}
+static EFI_STATUS restore_framebuffer_cache(TGX *t)
+{
+    if (!t->cache_changed) return EFI_SUCCESS;
+    EFI_STATUS s=t->dxe->set(t->fb_address,0x400000,t->fb_attributes);
+    if (!EFI_ERROR(s)) t->cache_changed=FALSE;
+    return s;
+}
+
 static EFI_STATUS EFIAPI supported(EFI_DRIVER_BINDING_PROTOCOL *self,
                                    EFI_HANDLE controller, EFI_DEVICE_PATH *remaining)
 {
@@ -144,6 +193,8 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     if (EFI_ERROR(s)) goto free;
     s = check_bar(pci, 2, 4*1024*1024);
     if (EFI_ERROR(s)) goto free;
+    s = uncached_framebuffer(t);
+    if (EFI_ERROR(s)) goto free;
     s = pci->Attributes(pci, EfiPciIoAttributeOperationGet, 0, &t->attributes);
     if (EFI_ERROR(s)) goto free;
     saved = TRUE;
@@ -171,6 +222,8 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
 blank:
     reg_write(t, 0x10, 0);
 free:
+    { EFI_STATUS restored=restore_framebuffer_cache(t);
+      if (EFI_ERROR(restored)) s=restored; }
     if (saved) pci->Attributes(pci, EfiPciIoAttributeOperationSet, t->attributes, NULL);
     BS->FreePool(t);
 close:
@@ -192,11 +245,12 @@ static EFI_STATUS EFIAPI stop(EFI_DRIVER_BINDING_PROTOCOL *self, EFI_HANDLE cont
         &gop_guid, &t->gop, &discovered_guid, &t->discovered, &active_guid, &t->active, NULL);
     if (EFI_ERROR(s)) return s;
     reg_write(t, 0x10, 0);
+    s=restore_framebuffer_cache(t);
     t->pci->Attributes(t->pci, EfiPciIoAttributeOperationSet, t->attributes, NULL);
     BS->CloseProtocol(controller, &pci_guid, self->DriverBindingHandle, controller);
     BS->FreePool(t);
     instances--;
-    return EFI_SUCCESS;
+    return s;
 }
 static EFI_DRIVER_BINDING_PROTOCOL binding = {supported, start, stop, 0x10, NULL, NULL};
 static EFI_STATUS EFIAPI unload(EFI_HANDLE image)

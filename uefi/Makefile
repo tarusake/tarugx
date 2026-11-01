@@ -10,10 +10,10 @@ CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -fpic -ffreestanding \
  -I$(EFI_INC) -I$(EFI_INC)/x86_64 -I$(EFI_INC)/protocol
 
 .PHONY: all test clean
-all: $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom $(OUT)/TaruGxTest.efi
+all: $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.efi
 $(OUT):
 	mkdir -p $@
-$(OUT)/%.o: %.c blt.h | $(OUT)
+$(OUT)/%.o: %.c blt.h dxe_memory.h | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/TaruGxGop.so: $(OUT)/tarugx_gop.o $(OUT)/blt.o
 	ld -nostdlib -znocombreloc -T $(EFI_LIB)/elf_x86_64_efi.lds -shared -Bsymbolic \
@@ -38,4 +38,14 @@ test: | $(OUT)
 	python3 ../tests/test_efi_rom.py
 clean:
 	rm -f $(OUT)/*.o $(OUT)/TaruGxGop.so $(OUT)/TaruGxGop.efi $(OUT)/TaruGxGop.rom \
-	 $(OUT)/TaruGxTest.so $(OUT)/TaruGxTest.efi $(OUT)/blt-test $(OUT)/driver-test
+	 $(OUT)/TaruGxTest.so $(OUT)/TaruGxTest.efi $(OUT)/TaruGxProbe.so $(OUT)/TaruGxProbe.efi $(OUT)/blt-test $(OUT)/driver-test
+
+# Diagnostic variant: record results, then reboot through the normal BootOrder.
+$(OUT)/boot_probe.o: boot_test.c dxe_memory.h | $(OUT)
+	$(CC) $(CFLAGS) -DTARUGX_DIAGNOSTIC_RESET -c $< -o $@
+$(OUT)/TaruGxProbe.so: $(OUT)/boot_probe.o
+	ld -nostdlib -znocombreloc -T $(EFI_LIB)/elf_x86_64_efi.lds -shared -Bsymbolic \
+	 $(EFI_LIB)/crt0-efi-x86_64.o $^ -L$(EFI_LIB) -lefi -lgnuefi -o $@
+$(OUT)/TaruGxProbe.efi: $(OUT)/TaruGxProbe.so
+	objcopy -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel \
+	 -j .rela -j .reloc --target=efi-app-x86_64 $< $@

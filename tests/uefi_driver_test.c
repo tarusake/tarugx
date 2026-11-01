@@ -16,6 +16,25 @@ static UINT32 pci_id=0x110022c2;
 VOID InitializeLib(EFI_HANDLE h, EFI_SYSTEM_TABLE *s) { (void)h; (void)s; }
 VOID SetMem(VOID *p, UINTN n, UINT8 v) { memset(p,v,n); }
 
+static UINT64 cache_attrs=EFI_MEMORY_WT;
+static int reject_uc;
+static EFI_STATUS EFIAPI gcd_get(EFI_PHYSICAL_ADDRESS address, TGX_GCD_DESCRIPTOR *d)
+{
+    assert(address==0x80400000);
+    *d=(TGX_GCD_DESCRIPTOR){.base=address,.length=0x400000,
+        .capabilities=EFI_MEMORY_UC|EFI_MEMORY_WT,.attributes=cache_attrs,.type=3};
+    return EFI_SUCCESS;
+}
+static EFI_STATUS EFIAPI gcd_set(EFI_PHYSICAL_ADDRESS address,UINT64 length,UINT64 value)
+{
+    assert(address==0x80400000 && length==0x400000);
+    if(reject_uc && value==EFI_MEMORY_UC)return EFI_UNSUPPORTED;
+    cache_attrs=value;return EFI_SUCCESS;
+}
+static TGX_DXE_PREFIX dxe={.header={.Signature=0x565245535f455844ULL,.HeaderSize=sizeof(TGX_DXE_PREFIX)},
+    .get=gcd_get,.set=gcd_set};
+EFI_STATUS LibGetSystemConfigurationTable(EFI_GUID *guid,VOID **table)
+{ EFI_GUID expected=TGX_DXE_GUID;assert(!memcmp(guid,&expected,sizeof(expected)));*table=&dxe;return EFI_SUCCESS; }
 static EFI_STATUS EFIAPI allocate(EFI_MEMORY_TYPE type, UINTN n, VOID **p)
 {
     assert(type==EfiBootServicesData); *p=calloc(1,n);
@@ -52,6 +71,7 @@ static EFI_STATUS EFIAPI mem_read(EFI_PCI_IO_PROTOCOL *p, EFI_PCI_IO_PROTOCOL_WI
                                   UINT8 bar, UINT64 off, UINTN n, VOID *v)
 {
     (void)p; assert(w==EfiPciIoWidthUint32 && n==1 && !(off%4));
+    if(bar==2)assert(cache_attrs==EFI_MEMORY_UC);
     if(fail_read) return EFI_DEVICE_ERROR;
     assert((bar==0 && off<sizeof(registers)) || (bar==2 && off<sizeof(pixels)));
     *(UINT32 *)v=bar==0?registers[off/4]:pixels[off/4];return EFI_SUCCESS;
@@ -61,6 +81,7 @@ static EFI_STATUS EFIAPI mem_write(EFI_PCI_IO_PROTOCOL *p, EFI_PCI_IO_PROTOCOL_W
 {
     (void)p;assert(w==EfiPciIoWidthUint32 && n==1 && !(off%4));
     assert((bar==0 && off<sizeof(registers)) || (bar==2 && off<sizeof(pixels)));
+    if(bar==2)assert(cache_attrs==EFI_MEMORY_UC);
     if(bar==0)registers[off/4]=*(UINT32 *)v;else pixels[off/4]=*(UINT32 *)v;
     return EFI_SUCCESS;
 }
@@ -79,6 +100,8 @@ static EFI_STATUS EFIAPI bars(EFI_PCI_IO_PROTOCOL *p, UINT8 bar, UINT64 *support
     EFI_STATUS s=allocate(EfiBootServicesData,48,r);
     if(EFI_ERROR(s))return s;
     unsigned char *d=*r;d[0]=0x8a;d[1]=0x2b;
+    UINT64 base=bar==0?0xa1300000:0x80400000;
+    for(unsigned i=0;i<8;i++)d[14+i]=base>>(8*i);
     UINT64 len=bar==0?65536:4*1024*1024;
     for(unsigned i=0;i<8;i++)d[38+i]=len>>(8*i);
     return EFI_SUCCESS;
@@ -109,6 +132,7 @@ int main(void)
     assert(supported(&binding,NULL,NULL)==EFI_SUCCESS && !opened);
     pci_id=0;assert(supported(&binding,NULL,NULL)==EFI_UNSUPPORTED && !opened);pci_id=0x110022c2;
     assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
+    assert(cache_attrs==EFI_MEMORY_UC);
     assert(installed && instances==1 && opened && allocations==1);
     assert(attrs==EFI_PCI_IO_ATTRIBUTE_MEMORY && registers[4]==1);
     assert(installed->mode.FrameBufferBase==0 && installed->mode.FrameBufferSize==0);
@@ -120,11 +144,20 @@ int main(void)
     assert(unload(NULL)==EFI_ACCESS_DENIED);
     assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS);
     assert(!allocations && !instances && !opened && !attrs && !registers[4]);
+    assert(cache_attrs==EFI_MEMORY_WT);
     reject_install=1;
     assert(start(&binding,NULL,NULL)==EFI_ACCESS_DENIED);
     assert(!allocations && !instances && !opened && !attrs && !registers[4]);
+    assert(cache_attrs==EFI_MEMORY_WT);
     reject_install=0;fail_read=1;
     assert(start(&binding,NULL,NULL)==EFI_DEVICE_ERROR);
     assert(!allocations && !instances && !opened && !attrs);
+    assert(cache_attrs==EFI_MEMORY_WT);
+    fail_read=0;reject_uc=1;
+    assert(start(&binding,NULL,NULL)==EFI_UNSUPPORTED);
+    assert(!allocations && !instances && !opened && !attrs && cache_attrs==EFI_MEMORY_WT);
+    reject_uc=0;cache_attrs=EFI_MEMORY_UC;
+    assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
+    assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS && cache_attrs==EFI_MEMORY_UC);
     puts("GOP driver: binding, mode, memory-only access, cleanup and failure rollback passed");
 }
