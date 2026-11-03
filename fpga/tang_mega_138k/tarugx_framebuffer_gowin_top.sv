@@ -369,7 +369,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .cpu_rsp_valid(fb_rsp_valid), .cpu_rsp_ready(fb_rsp_ready), .cpu_response(cpu_response),
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .scan_valid(scan_valid),
+`ifndef TARUGX_PIPELINED_MEMORY
         .scan_urgent(scan_urgent),
+`endif
         .scan_ready(scan_ready),
         .scan_addr(scan_addr),
         .scan_rsp_valid(scan_rsp_valid),
