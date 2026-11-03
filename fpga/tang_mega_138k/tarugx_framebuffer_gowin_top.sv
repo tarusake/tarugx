@@ -192,7 +192,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
 `endif
     tarugx_tarugx_framebuffer_top #(
 `ifdef TARUGX_VIDEO_1080P
-        .GPU_VERSION(32'h0001_0002)
+        .GPU_VERSION(32'h0001_0003)
 `else
         .GPU_VERSION(32'h0001_0001)
 `endif

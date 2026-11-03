@@ -80,6 +80,8 @@ struct tarugx {
 	const struct drm_display_mode *mode;
 	u32 width;
 	u32 height;
+	u32 cpp;
+	u32 format;
 	u32 pitch;
 	u32 frame_bytes;
 	u32 vram_bytes;
@@ -113,6 +115,9 @@ static const struct drm_gem_object_funcs tgx_host_object_funcs;
 #define TGX_1080P_HEIGHT 1080
 #define TGX_1080P_PITCH (TGX_1080P_WIDTH * 4)
 #define TGX_1080P_FRAME_BYTES (TGX_1080P_PITCH * TGX_1080P_HEIGHT)
+#define TGX_1080P_RGB565_PITCH (TGX_1080P_WIDTH * 2)
+#define TGX_1080P_RGB565_FRAME_BYTES \
+	(TGX_1080P_RGB565_PITCH * TGX_1080P_HEIGHT)
 #define TGX_DDR_BYTES SZ_16M
 #define TGX_REG_GPU_VERSION 0x04
 #define TGX_REG_DISPLAY_CTRL 0x10
@@ -125,6 +130,7 @@ static const struct drm_gem_object_funcs tgx_host_object_funcs;
 #define TGX_REG_ACTIVE_FB_BASE 0x34
 #define TGX_GPU_VERSION_ACTIVE_FB_BASE 0x00010001
 #define TGX_GPU_VERSION_1080P60 0x00010002
+#define TGX_GPU_VERSION_RGB565 0x00010003
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -293,16 +299,16 @@ static void tgx_program_render(struct tarugx *tgx, u32 base, u32 pitch,
 			       const struct drm_tarugx_command *command)
 {
 	if (command->opcode == DRM_TARUGX_OP_FILL) {
-		writel(base + command->dst_y * pitch + command->dst_x * 4,
+		writel(base + command->dst_y * pitch + command->dst_x * tgx->cpp,
 		       tgx->regs + TGX_REG_FILL_ADDR);
 		writel(pitch, tgx->regs + TGX_REG_FILL_STRIDE);
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_FILL_SIZE);
 		writel(command->color, tgx->regs + TGX_REG_FILL_COLOR);
 	} else {
-		writel(base + command->src_y * pitch + command->src_x * 4,
+		writel(base + command->src_y * pitch + command->src_x * tgx->cpp,
 		       tgx->regs + TGX_REG_BLIT_SRC);
-		writel(base + command->dst_y * pitch + command->dst_x * 4,
+		writel(base + command->dst_y * pitch + command->dst_x * tgx->cpp,
 		       tgx->regs + TGX_REG_BLIT_DST);
 		writel(pitch, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
 		writel(pitch, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
@@ -616,6 +622,9 @@ static int tgx_vram_object_mmap(struct drm_gem_object *gem,
 
 	if (length > gem->size)
 		return -EINVAL;
+	if (gem->size > TGX_BAR2_BYTES ||
+	    object->node.start > TGX_BAR2_BYTES - gem->size)
+		return -EOPNOTSUPP;
 	physical = pci_resource_start(tgx->pdev, 2) + object->node.start;
 	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
@@ -646,6 +655,9 @@ static int tgx_vram_object_vmap(struct drm_gem_object *gem,
 		container_of(gem, struct tarugx_vram_object, base);
 	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
 
+	if (gem->size > TGX_BAR2_BYTES ||
+	    object->node.start > TGX_BAR2_BYTES - gem->size)
+		return -EOPNOTSUPP;
 	iosys_map_set_vaddr_iomem(map, tgx->vram + object->node.start);
 	return 0;
 }
@@ -676,7 +688,7 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	if (!args->width || args->width > tgx->width || !args->height ||
 	    args->height > tgx->height || args->flags || args->pad)
 		return -EINVAL;
-	args->pitch = args->width * 4;
+	args->pitch = args->width * tgx->cpp;
 	size = PAGE_ALIGN((u64)args->pitch * args->height);
 	if (size > tgx->vram_gem_bytes)
 		return -ENOSPC;
@@ -1205,7 +1217,7 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 	if (!tgx->dma_only_scanout)
 		return drm_gem_shmem_dumb_create(file, drm, args);
 	if (!args->width || args->width > tgx->width || !args->height ||
-	    args->height > tgx->height || args->bpp != 32)
+	    args->height > tgx->height || args->bpp != tgx->cpp * 8)
 		return -EINVAL;
 	pitch = DIV_ROUND_UP((u64)args->width * args->bpp, 8);
 	if (check_mul_overflow(pitch, (u64)args->height, &size))
@@ -1310,8 +1322,10 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		target = vram_object->node.start;
 		target_index = -1;
 		copied = 0;
-		/* Flush userspace write-combine stores before changing scanout. */
-		readl(tgx->vram + target + tgx->frame_bytes - 4);
+		/* Only BAR-visible objects can have userspace write-combine stores.
+		 * Objects above BAR2 are produced by fenced FPGA render commands. */
+		if (target <= TGX_BAR2_BYTES - tgx->frame_bytes)
+			readl(tgx->vram + target + tgx->frame_bytes - 4);
 		goto upload_complete;
 	}
 	target_index = tgx->legacy_single_buffer && active <= 1 ?
@@ -1334,7 +1348,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		}
 		ret = 0;
 	}
-	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * 4;
+	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * tgx->cpp;
 	if ((full_damage || tgx->dma_only_scanout) &&
 	    (dma_upload || tgx->dma_only_scanout) &&
 	    tgx->dma_available) {
@@ -1518,12 +1532,42 @@ static void tgx_disable(struct drm_simple_display_pipe *pipe)
 	drm_dev_exit(idx);
 }
 
+static int tgx_begin_fb_access(struct drm_simple_display_pipe *pipe,
+			       struct drm_plane_state *state)
+{
+	struct drm_gem_object *gem;
+
+	if (!state->fb)
+		return 0;
+	gem = drm_gem_fb_get_obj(state->fb, 0);
+	if (gem && gem->funcs == &tgx_vram_object_funcs)
+		return 0;
+	return drm_gem_simple_kms_begin_shadow_fb_access(pipe, state);
+}
+
+static void tgx_end_fb_access(struct drm_simple_display_pipe *pipe,
+			      struct drm_plane_state *state)
+{
+	struct drm_gem_object *gem;
+
+	if (!state->fb)
+		return;
+	gem = drm_gem_fb_get_obj(state->fb, 0);
+	if (gem && gem->funcs == &tgx_vram_object_funcs)
+		return;
+	drm_gem_simple_kms_end_shadow_fb_access(pipe, state);
+}
+
 static const struct drm_simple_display_pipe_funcs tgx_pipe_funcs = {
 	.mode_valid = tgx_mode_valid,
 	.check = tgx_check,
 	.update = tgx_update,
 	.disable = tgx_disable,
-	DRM_GEM_SIMPLE_DISPLAY_PIPE_SHADOW_PLANE_FUNCS,
+	.begin_fb_access = tgx_begin_fb_access,
+	.end_fb_access = tgx_end_fb_access,
+	.reset_plane = drm_gem_simple_kms_reset_shadow_plane,
+	.duplicate_plane_state = drm_gem_simple_kms_duplicate_shadow_plane_state,
+	.destroy_plane_state = drm_gem_simple_kms_destroy_shadow_plane_state,
 };
 static const struct drm_mode_config_funcs tgx_mode_config_funcs = {
 	.fb_create = drm_gem_fb_create_with_dirty,
@@ -1534,10 +1578,26 @@ static const struct drm_mode_config_funcs tgx_mode_config_funcs = {
 static void tgx_configure_memory_and_mode(struct tarugx *tgx,
 					  u32 gpu_version)
 {
+	if (gpu_version >= TGX_GPU_VERSION_RGB565) {
+		tgx->mode = &tgx_mode_1920x1080;
+		tgx->width = TGX_1080P_WIDTH;
+		tgx->height = TGX_1080P_HEIGHT;
+		tgx->cpp = 2;
+		tgx->format = DRM_FORMAT_RGB565;
+		tgx->pitch = TGX_1080P_RGB565_PITCH;
+		tgx->frame_bytes = TGX_1080P_RGB565_FRAME_BYTES;
+		tgx->vram_bytes = TGX_DDR_BYTES;
+		tgx->vram_gem_base = 2 * tgx->frame_bytes;
+		tgx->vram_gem_bytes = tgx->vram_bytes - tgx->vram_gem_base;
+		tgx->dma_only_scanout = true;
+		return;
+	}
 	if (gpu_version >= TGX_GPU_VERSION_1080P60) {
 		tgx->mode = &tgx_mode_1920x1080;
 		tgx->width = TGX_1080P_WIDTH;
 		tgx->height = TGX_1080P_HEIGHT;
+		tgx->cpp = 4;
+		tgx->format = DRM_FORMAT_XRGB8888;
 		tgx->pitch = TGX_1080P_PITCH;
 		tgx->frame_bytes = TGX_1080P_FRAME_BYTES;
 		tgx->vram_bytes = TGX_DDR_BYTES;
@@ -1550,6 +1610,8 @@ static void tgx_configure_memory_and_mode(struct tarugx *tgx,
 	tgx->mode = &tgx_mode_640x480;
 	tgx->width = TGX_LEGACY_WIDTH;
 	tgx->height = TGX_LEGACY_HEIGHT;
+	tgx->cpp = 4;
+	tgx->format = DRM_FORMAT_XRGB8888;
 	tgx->pitch = TGX_LEGACY_PITCH;
 	tgx->frame_bytes = TGX_LEGACY_FRAME_BYTES;
 	tgx->vram_bytes = TGX_BAR2_BYTES;
@@ -1617,7 +1679,9 @@ static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
 
 static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	static const u32 formats[] = { DRM_FORMAT_XRGB8888 };
+	static const u32 xrgb8888_formats[] = { DRM_FORMAT_XRGB8888 };
+	static const u32 rgb565_formats[] = { DRM_FORMAT_RGB565 };
+	const u32 *formats;
 	struct tarugx *tgx;
 	struct drm_device *drm;
 	u32 dma_status, gpu_version, queue_status;
@@ -1659,6 +1723,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -ENODEV;
 	gpu_version = readl(tgx->regs + TGX_REG_GPU_VERSION);
 	tgx_configure_memory_and_mode(tgx, gpu_version);
+	formats = tgx->format == DRM_FORMAT_RGB565 ?
+		rgb565_formats : xrgb8888_formats;
 	tgx->active_fb_base_available =
 		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
 	dev_info(&pdev->dev,
@@ -1709,7 +1775,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	drm_connector_helper_add(&tgx->connector, &tgx_connector_helper);
 	ret = drm_simple_display_pipe_init(drm, &tgx->pipe, &tgx_pipe_funcs,
-			formats, ARRAY_SIZE(formats), NULL, &tgx->connector);
+			formats, 1, NULL, &tgx->connector);
 	if (ret)
 		return ret;
 	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);

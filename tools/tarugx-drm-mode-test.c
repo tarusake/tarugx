@@ -32,13 +32,22 @@ static double monotonic_seconds(void)
 }
 
 static void fill_rect(uint8_t *pixels, uint32_t pitch, const drmModeClip *clip,
-		      uint32_t color)
+		      uint32_t color, uint32_t bpp)
 {
 	for (uint32_t y = clip->y1; y < clip->y2; y++) {
-		uint32_t *row = (uint32_t *)(pixels + y * pitch);
+		if (bpp == 16) {
+			uint16_t *row = (uint16_t *)(pixels + y * pitch);
+			uint16_t rgb565 = ((color >> 19) & 0x1f) << 11 |
+				((color >> 10) & 0x3f) << 5 | ((color >> 3) & 0x1f);
 
-		for (uint32_t x = clip->x1; x < clip->x2; x++)
-			row[x] = color;
+			for (uint32_t x = clip->x1; x < clip->x2; x++)
+				row[x] = rgb565;
+		} else {
+			uint32_t *row = (uint32_t *)(pixels + y * pitch);
+
+			for (uint32_t x = clip->x1; x < clip->x2; x++)
+				row[x] = color;
+		}
 	}
 }
 
@@ -94,14 +103,26 @@ int main(int argc, char **argv)
 	create.width = connector->modes[0].hdisplay;
 	create.height = connector->modes[0].vdisplay;
 	if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create)) {
-		perror("create dumb buffer");
-		goto out;
+		if (errno != EINVAL) {
+			perror("create dumb buffer");
+			goto out;
+		}
+		create = (struct drm_mode_create_dumb) {
+			.width = connector->modes[0].hdisplay,
+			.height = connector->modes[0].vdisplay,
+			.bpp = 16,
+		};
+		if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create)) {
+			perror("create RGB565 dumb buffer");
+			goto out;
+		}
 	}
 	destroy.handle = create.handle;
 	handles[0] = create.handle;
 	pitches[0] = create.pitch;
 	if (drmModeAddFB2(fd, create.width, create.height,
-			  DRM_FORMAT_XRGB8888, handles, pitches, offsets,
+			  create.bpp == 16 ? DRM_FORMAT_RGB565 : DRM_FORMAT_XRGB8888,
+			  handles, pitches, offsets,
 			  &framebuffer, 0)) {
 		perror("add framebuffer");
 		goto out;
@@ -117,11 +138,11 @@ int main(int argc, char **argv)
 		perror("mmap dumb buffer");
 		goto out;
 	}
-	for (unsigned y = 0; y < create.height; y++) {
-		uint32_t *row = (uint32_t *)(pixels + y * create.pitch);
-
-		for (unsigned x = 0; x < create.width; x++)
-			row[x] = color((uint64_t)y * 6 / create.height);
+	full_clip = (drmModeClip){0, 0, create.width, create.height};
+	for (unsigned band = 0; band < 6; band++) {
+		drmModeClip band_clip = {0, create.height * band / 6,
+			create.width, create.height * (band + 1) / 6};
+		fill_rect(pixels, create.pitch, &band_clip, color(band), create.bpp);
 	}
 	modeset_started = monotonic_seconds();
 	if (drmModeSetCrtc(fd, crtc, framebuffer, 0, 0,
@@ -130,22 +151,21 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	modeset_seconds = monotonic_seconds() - modeset_started;
-	fill_rect(pixels, create.pitch, &clips[0], 0x00ffffff);
+	fill_rect(pixels, create.pitch, &clips[0], 0x00ffffff, create.bpp);
 	dirty_started = monotonic_seconds();
 	if (drmModeDirtyFB(fd, framebuffer, &clips[0], 1)) {
 		perror("first dirty framebuffer");
 		goto out;
 	}
 	dirty_seconds[0] = monotonic_seconds() - dirty_started;
-	fill_rect(pixels, create.pitch, &clips[1], 0x00ff8000);
+	fill_rect(pixels, create.pitch, &clips[1], 0x00ff8000, create.bpp);
 	dirty_started = monotonic_seconds();
 	if (drmModeDirtyFB(fd, framebuffer, &clips[1], 1)) {
 		perror("second dirty framebuffer");
 		goto out;
 	}
 	dirty_seconds[1] = monotonic_seconds() - dirty_started;
-	full_clip = (drmModeClip){0, 0, create.width, create.height};
-	fill_rect(pixels, create.pitch, &full_clip, 0x00204080);
+	fill_rect(pixels, create.pitch, &full_clip, 0x00204080, create.bpp);
 	dirty_started = monotonic_seconds();
 	if (drmModeDirtyFB(fd, framebuffer, &full_clip, 1)) {
 		perror("active full dirty framebuffer");
