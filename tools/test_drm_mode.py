@@ -41,6 +41,7 @@ old_module = Path(subprocess.run(
 old_copy = work/'tarugx-old.ko'
 shutil.copy2(old_module, old_copy)
 loaded_test_module = False
+stage = 'prepare'
 try:
     for name, contents in files.items():
         (work/name).write_bytes(base64.b64decode(contents))
@@ -57,12 +58,14 @@ try:
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
     subprocess.run(['insmod', str(work/'tarugx.ko')], check=True, timeout=30)
     loaded_test_module = True
+    stage = 'locate DRM device'
     device = Path('/sys/bus/pci/devices/0000:01:00.0')
     assert (device/'driver').resolve().name == 'tarugx'
     cards = [card for card in Path('/sys/class/drm').glob('card[0-9]*')
              if (card/'device/vendor').exists() and
              (card/'device/vendor').read_text().strip() == '0x22c2']
     assert len(cards) == 1, f'expected one TaruGX card, got {{cards}}'
+    stage = 'run modeset test'
     run = subprocess.run([str(test), '/dev/dri/'+cards[0].name, str(hold)],
                          check=True, text=True, capture_output=True,
                          timeout=hold + 30)
@@ -76,6 +79,25 @@ try:
     print(run.stdout, end='')
     print(json.dumps({{'expected': expected, 'counters': counters,
                       'dma_profile': dma_profile}}))
+except Exception as error:
+    device = Path('/sys/bus/pci/devices/0000:01:00.0')
+    diagnostics = {{'stage': stage, 'error_type': type(error).__name__,
+                   'error': str(error)}}
+    if 'run' in locals():
+        diagnostics['test_returncode'] = run.returncode
+        diagnostics['test_stdout'] = run.stdout[-2000:]
+        diagnostics['test_stderr'] = run.stderr[-2000:]
+    elif isinstance(error, subprocess.CalledProcessError):
+        diagnostics['test_returncode'] = error.returncode
+        diagnostics['test_stdout'] = (error.stdout or '')[-2000:]
+        diagnostics['test_stderr'] = (error.stderr or '')[-2000:]
+    for name in ('dma_profile', 'dma_error_code', 'dma_upload_failures'):
+        if (device/name).exists():
+            diagnostics[name] = (device/name).read_text().strip()
+    diagnostics['dmesg'] = subprocess.run(
+        ['dmesg'], capture_output=True, text=True
+    ).stdout[-3000:]
+    print('TARUGX_DRM_MODE_FAILED '+json.dumps(diagnostics))
 finally:
     if loaded_test_module:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
@@ -102,10 +124,13 @@ def main() -> None:
             ROOT / "tools" / "tarugx-drm-mode-test.c"
         ),
     }
-    print(Backend().remote(
+    output = Backend().remote(
         remote_program(files, args.expected, args.hold),
         "test DRM preferred mode", timeout=args.hold + 240
-    ), end="")
+    )
+    print(output, end="")
+    if "TARUGX_DRM_MODE_FAILED" in output:
+        raise RuntimeError("DRM preferred mode test failed")
 
 
 if __name__ == "__main__":
