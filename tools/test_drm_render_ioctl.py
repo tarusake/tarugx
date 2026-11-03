@@ -153,6 +153,11 @@ except Exception as error:
     for name in ('dma_profile', 'dma_upload_failures'):
         if (device/name).exists():
             diagnostics[name] = (device/name).read_text().strip()
+    if (device/'resource0').exists():
+        with (device/'resource0').open('rb', buffering=0) as regs_file, \
+             mmap.mmap(regs_file.fileno(), 65536, flags=mmap.MAP_SHARED,
+                       prot=mmap.PROT_READ) as regs:
+            diagnostics['dma_status'] = hex(struct.unpack_from('<I', regs, 0xd4)[0])
     print(json.dumps({{'error_type': type(error).__name__,
                       'stage': stage,
                       'error': str(error),

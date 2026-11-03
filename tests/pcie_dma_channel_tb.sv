@@ -27,9 +27,13 @@ module pcie_dma_channel_tb;
   int i=0;int words;
   while(i<count)begin
    while(!fb_req_valid)tick();words = $countones(fb_req_wstrb)/4;
-   assert(words>=1&&words<=8
+   if (!(words>=1&&words<=8
           &&fb_req_wstrb==(32'hffff_ffff>>((8-words)*4))
-          &&fb_req_wdata[31:0]==32'hca000000+base+i)else $fatal(1,"write data");
+          &&fb_req_wdata[31:0]==32'hca000000+base+i)) begin
+    $display("write mismatch i=%0d words=%0d strb=%08x data=%08x expected=%08x addr=%08x",
+     i,words,fb_req_wstrb,fb_req_wdata[31:0],32'hca000000+base+i,fb_req_addr);
+    $fatal(1,"write data");
+   end
    for(int word=1;word<words;word++)
     assert(fb_req_wdata[word*32+:32]==32'hca000000+base+i+word)else $fatal(1,"burst write data");
    @(negedge clk);fb_req_ready=1;tick();@(negedge clk);fb_req_ready=0;fb_rsp_valid=1;tick();@(negedge clk);fb_rsp_valid=0;
@@ -41,13 +45,14 @@ module pcie_dma_channel_tb;
   payload=0;for(int i=0;i<5;i++)payload[159-i*32-:32]=wire_word(32'hca000000+base+i);
   @(negedge clk);rx_data={{8'h4a,14'b0,10'(total)},{16'h0200,3'b0,1'b0,12'(total*4)},
    {requester_id,issued_tag,1'b0,issued_lower},payload};
-  rx_valid=8'hff;rx_sop=1;rx_eop=0;tick();
+  rx_valid=8'hff;rx_sop=1;rx_eop=0;#1;while(rx_wait)tick();tick();
   @(negedge clk);rx_valid=0;rx_sop=0;
  endtask
  task response_cont(input int count,input int base,input bit last);
   logic [255:0] payload;
   payload=0;for(int i=0;i<count;i++)payload[255-i*32-:32]=wire_word(32'hca000000+base+i);
-  @(negedge clk);rx_data=payload;rx_valid=8'hff<<(8-count);rx_sop=0;rx_eop=last;tick();
+  @(negedge clk);rx_data=payload;rx_valid=8'hff<<(8-count);rx_sop=0;rx_eop=last;
+  #1;while(rx_wait)tick();tick();
   @(negedge clk);rx_valid=0;rx_eop=0;
  endtask
  initial begin
