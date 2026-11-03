@@ -230,6 +230,11 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 実験構成の選択には`TARUGX_PCIE_GENERATED_DIR`や`TARUGX_PCIE_*`環境変数を使います。
 ロゴ入りROMを選ぶ場合は`TARUGX_PCIE_ROM_FILE`へ生成したROMのパスを指定します。
 環境変数を省略した既定構成が最新の実機検証構成と同じとは限りません。
+検証ビルドは合成成功時にVeryl、生成SystemVerilog、FPGA wrapper、制約、主要生成IP、
+bitstream、タイミングレポートのSHA-256を`tarugx_build_manifest.json`へ保存します。
+SRAM／Flash書込みスクリプトはこの台帳との完全一致を必須とし、RTLの編集、入力追加、
+生成IPやbitstreamの差替え、台帳のない旧出力を検出した場合は書込み前に停止します。
+したがってソース変更後は、書込み前に検証ビルドを再実行してください。
 
 開発中のビットストリームは、外部Flashを書き換えずSRAMへ更新できます。
 `build/gowin_framebuffer_pipeline/tarugx/impl/pnr`以外の出力を使う場合は

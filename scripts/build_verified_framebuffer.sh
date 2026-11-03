@@ -54,3 +54,9 @@ case "${TARUGX_VIDEO_MODE:-480p60}" in
 esac
 python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
 test -s "$out/tarugx.fs"
+python3 scripts/bitstream_manifest.py create "$out" \
+    --video-mode "${TARUGX_VIDEO_MODE:-480p60}" \
+    --input "$generated/serdes.v" \
+    --input "$generated/serdes.csr" \
+    --input "$generated/pcie_controller/pcie_controller.v" \
+    --input "$generated/upar_arbiter/upar_arbiter.v"

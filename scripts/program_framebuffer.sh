@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 out=build/gowin_framebuffer/tarugx/impl/pnr
 python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
 test -s "$out/tarugx.fs"
+python3 scripts/bitstream_manifest.py verify "$out"
 snapshot=$(mktemp -d "$(pwd)/build/framebuffer-flash-XXXXXX")
 cp "$out/tarugx.fs" "$snapshot/framebuffer.fs"
 cp "$out/tarugx_tr_content.html" "$snapshot/timing.html"
