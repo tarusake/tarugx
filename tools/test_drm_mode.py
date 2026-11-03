@@ -56,7 +56,10 @@ try:
         '-I/usr/include/libdrm', str(work/'tarugx-drm-mode-test.c'),
         '-ldrm', '-o', str(test)
     ], check=True, timeout=45)
-    subprocess.run(['systemctl', 'stop', *services], check=True, timeout=45)
+    # Transient desktop/Xorg units may already have been garbage-collected
+    # after a failed prior run. Stop each producer idempotently.
+    for name in services:
+        subprocess.run(['systemctl', 'stop', name], check=False, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
     module = work/'tarugx.ko'
     if keep_driver:
