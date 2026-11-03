@@ -17,7 +17,8 @@ def encoded(path: Path) -> str:
 
 
 def remote_program(files: dict[str, str], expected: str, hold: int,
-                   keep_driver: bool, bpp: int | None) -> str:
+                   keep_driver: bool, bpp: int | None,
+                   iterations: int) -> str:
     return f"""
 import base64
 import json
@@ -33,6 +34,7 @@ expected = {expected!r}
 hold = {hold!r}
 keep_driver = {keep_driver!r}
 bpp = {bpp!r}
+iterations = {iterations!r}
 services = ['tarugx-main-display', 'tarugx-xorg', 'tarugx-desktop']
 was_active = {{name: subprocess.run(
     ['systemctl', 'is-active', name], capture_output=True, text=True
@@ -81,10 +83,13 @@ try:
     test_args = [str(test), '/dev/dri/'+cards[0].name, str(hold)]
     if bpp is not None:
         test_args.append(str(bpp))
-    run = subprocess.run(test_args,
-                         check=True, text=True, capture_output=True,
-                         timeout=hold + 30)
-    assert expected in run.stdout, run.stdout
+    runs = []
+    for iteration in range(iterations):
+        run = subprocess.run(test_args,
+                             check=True, text=True, capture_output=True,
+                             timeout=hold + 30)
+        assert expected in run.stdout, run.stdout
+        runs.append(run.stdout)
     counters = {{name: int((device/name).read_text()) for name in (
         'dma_uploads', 'dma_upload_failures', 'flip_timeouts',
         'vblank_timeouts', 'page_flips')}}
@@ -94,10 +99,11 @@ try:
         field.split('=', 1) for field in update_profile.split()
     )
     pages_synced = int((device/'physical_pages_synced').read_text())
-    assert counters['dma_uploads'] >= 6, counters
+    assert counters['dma_uploads'] >= 6 * iterations, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
-    assert counters['page_flips'] >= 4, counters
+    assert counters['vblank_timeouts'] == 0, counters
+    assert counters['page_flips'] >= 4 * iterations, counters
     assert int(update_timings['update_ns']) > 0, update_timings
     assert int(update_timings['dma_ns']) > 0, update_timings
     if 'pitch=7680' in run.stdout:
@@ -105,8 +111,11 @@ try:
     # The final active full-frame upload deliberately leaves the old physical
     # page stale, so the next partial update must reconstruct it.
     assert pages_synced == 0, pages_synced
-    print(run.stdout, end='')
-    print(json.dumps({{'expected': expected, 'counters': counters,
+    for iteration, stdout in enumerate(runs, 1):
+        print(f'iteration={{iteration}}/{{iterations}}')
+        print(stdout, end='')
+    print(json.dumps({{'expected': expected, 'iterations': iterations,
+                      'counters': counters,
                       'dma_profile': dma_profile,
                       'update_profile': update_profile,
                       'physical_pages_synced': pages_synced}}))
@@ -151,7 +160,13 @@ def main() -> None:
         help="leave the worktree module loaded after the test",
     )
     parser.add_argument("--bpp", type=int, choices=(16, 32))
+    parser.add_argument(
+        "--iterations", type=int, default=1,
+        help="run the modeset/update sequence repeatedly without reloading the driver",
+    )
     args = parser.parse_args()
+    if args.iterations < 1:
+        parser.error("--iterations must be at least 1")
     driver = ROOT / "drivers" / "tarugx"
     files = {
         "Makefile": encoded(driver / "Makefile"),
@@ -163,8 +178,9 @@ def main() -> None:
     }
     output = Backend().remote(
         remote_program(files, args.expected, args.hold, args.keep_driver,
-                       args.bpp),
-        "test DRM preferred mode", timeout=args.hold + 240
+                       args.bpp, args.iterations),
+        "test DRM preferred mode",
+        timeout=args.iterations * (args.hold + 30) + 210
     )
     print(output, end="")
     if "TARUGX_DRM_MODE_FAILED" in output:

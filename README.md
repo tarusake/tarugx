@@ -264,13 +264,16 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   `active_full=46.743ms`、XRGB8888変換経路は`active_full=47.616ms`でした。
   いずれもDMA、flip、VBlank timeoutは0です。
   `tools/test_drm_mode.py --bpp 16`でRGB565を、`--bpp 32`でXRGB8888変換経路を
-  強制できます。2026-11-04の同条件比較ではXRGB8888が変換6.531ms、DMA10.751ms、
+  強制できます。`--iterations 5 --hold 2`のように指定するとドライバーを再ロードせず
+  mode set、DMA更新、ページフリップを連続実行し、累積カウンターからDMA、flip、
+  VBlank timeoutを検査できます。2026-11-04の同条件比較ではXRGB8888が変換6.531ms、DMA10.751ms、
   VBlank待ち30.217ms、全体47.510ms、RGB565が変換0ms、DMA17.215ms、
   VBlank待ち29.647ms、全体46.871msでした。MSI周期は実測59.93Hzで、約47msの
   主因はCPU色変換ではなくDDR競合中のページ切替タイミングです。
   framebuffer応答ready経路から不要なDMA state decodeを除去した実機確認では、
   XRGB8888全面更新が`active_full=30.846ms`、DMA失敗、flip timeout、VBlank
-  timeoutはいずれも0でした。
+  timeoutはいずれも0でした。同じSRAM版の5回連続回帰ではDMA 30回、ページフリップ
+  20回を実行し、各失敗・timeoutは0、2回目以降の全面更新は28.210–28.530msでした。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とします。
   配布済み0.1.0ドライバーへ戻すとGPU 1.2の1080p SRAM版を扱えず黒画面になるため、
   1080p実験中は作業ツリーの0.5.0ドライバーを使用してください。
