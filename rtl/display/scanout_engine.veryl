@@ -13,7 +13,7 @@ module scanout_engine (
     scan_urgent   : output 'mem   logic     ,
     mem_valid     : output 'mem   logic     ,
     mem_ready     : input  'mem   logic     ,
-    mem_addr      : output 'mem   logic<22> ,
+    mem_addr      : output 'mem   logic<24> ,
     mem_rsp_valid : input  'mem   logic     ,
     mem_rsp_ready : output 'mem   logic     ,
     mem_rsp_data  : input  'mem   logic<256>,

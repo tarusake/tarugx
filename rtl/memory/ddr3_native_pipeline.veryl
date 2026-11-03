@@ -9,7 +9,7 @@ module ddr3_native_pipeline (
     mem_valid    : input  logic     ,
     mem_ready    : output logic     ,
     mem_write    : input  logic     ,
-    mem_addr     : input  logic<22> ,
+    mem_addr     : input  logic<24> ,
     mem_wdata    : input  logic<256>,
     mem_wstrb    : input  logic<32> ,
     mem_rsp_valid: output logic     ,
@@ -81,7 +81,7 @@ module ddr3_native_pipeline (
                 issue_slot   = tail;
                 tail         = tail + 3'd1;
                 write        = mem_write;
-                addr         = {9'b0, mem_addr[21:2]};
+                addr         = {7'b0, mem_addr[23:2]};
                 wr_data      = mem_wdata;
                 wr_data_mask = ~mem_wstrb;
                 data[tail]   = 0;

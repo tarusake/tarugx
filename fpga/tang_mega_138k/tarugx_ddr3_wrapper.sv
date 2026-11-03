@@ -5,7 +5,7 @@ module tarugx_ddr3_wrapper #(parameter bit PIPELINED_MEMORY=0) (
  input wire mem_reset_n,
  input wire mem_valid, mem_write, mem_rsp_ready,
  output wire mem_ready, mem_rsp_valid, mem_rsp_error,
- input wire [21:0] mem_addr,
+ input wire [23:0] mem_addr,
  input wire [255:0] mem_wdata,
  input wire [31:0] mem_wstrb,
  output wire [255:0] mem_rsp_data,

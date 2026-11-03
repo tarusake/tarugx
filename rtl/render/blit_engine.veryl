@@ -22,7 +22,7 @@ module blit_engine (
     mem_valid     : output logic     ,
     mem_ready     : input  logic     ,
     mem_write     : output logic     ,
-    mem_addr      : output logic<22> ,
+    mem_addr      : output logic<24> ,
     mem_wdata     : output logic<256>,
     mem_wstrb     : output logic<32> ,
     mem_rsp_valid : input  logic     ,
@@ -83,12 +83,12 @@ module blit_engine (
     let command_basic_ok: logic   = (src_base[1:0] == 0) && (dst_base[1:0] == 0) && (src_stride[1:0] == 0)
         && (dst_stride[1:0] == 0) && (width != 0) && (height != 0);
     let command_stride_ok: logic  = ((src_stride as 64) >= row_bytes) && ((dst_stride as 64) >= row_bytes);
-    let bounds_ok: logic = (src_end <= 64'h400000) && (dst_end <= 64'h400000);
+    let bounds_ok: logic = (src_end <= 64'h1000000) && (dst_end <= 64'h1000000);
     assign cmd_ready     = state == State::Idle;
     assign busy          = state != State::Idle;
     assign mem_valid     = (state == State::ReadIssue) || (state == State::WriteIssue);
     assign mem_write     = state == State::WriteIssue;
-    assign mem_addr      = if state == State::WriteIssue ? {dst_pixel[21:5], 5'b0} : {src_pixel[21:5], 5'b0};
+    assign mem_addr      = if state == State::WriteIssue ? {dst_pixel[23:5], 5'b0} : {src_pixel[23:5], 5'b0};
     assign mem_rsp_ready = (state == State::ReadWait) || (state == State::WriteWait);
 
     always_comb {

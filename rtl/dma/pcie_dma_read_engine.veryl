@@ -100,7 +100,7 @@ module pcie_dma_read_engine #(
     let command_end: logic<33> = (issue_vram as 33) + (length_bytes as 33);
     let command_ok: logic = (issue_host[1:0] == 0) && (issue_vram[1:0] == 0)
         && (length_bytes != 0) && (length_bytes[1:0] == 0)
-        && (command_end <= 33'h00400000)
+        && (command_end <= 33'h01000000)
         && ((issue_host + (length_bytes as 64)) >= issue_host);
     let issue_slot: logic<3> = if !slot_valid[0] ? 0
         : if !slot_valid[1] ? 1

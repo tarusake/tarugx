@@ -19,9 +19,9 @@ module pcie_memory_integration_tb;
  logic [31:0] fb_req_addr,fb_rsp_rdata;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  tarugx_pcie_gpu_path pcie(.*);
  logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=1,scan_rsp_error;
- logic [21:0] scan_addr=4096;logic [255:0] scan_rsp_data;
+ logic [23:0] scan_addr=4096;logic [255:0] scan_rsp_data;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
- logic [21:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
+ logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
  logic scan_urgent=0;
  tarugx_framebuffer_memory_path path(
   .cpu_clk(clk),.cpu_rst_n(rst),.cpu_valid(fb_req_valid),.cpu_ready(fb_req_ready),

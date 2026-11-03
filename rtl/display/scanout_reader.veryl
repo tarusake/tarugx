@@ -12,7 +12,7 @@ module scanout_reader (
     active_fb_base: output logic<32>,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_rsp_valid: input  logic     ,
     mem_rsp_ready: output logic     ,
     mem_rsp_data : input  logic<256>,
@@ -32,11 +32,11 @@ module scanout_reader (
     var state       : State    ;
     var row         : logic<9> ;
     var column      : logic<7> ;
-    var row_base    : logic<22>;
-    var stride      : logic<22>;
+    var row_base    : logic<24>;
+    var stride      : logic<24>;
     let end_address : logic<64> = (fb_base as 64) + (fb_stride as 64) * 64'd479 + 64'd2560;
     let valid_config: logic     = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0) && (fb_stride >= 2560)
-        && (end_address <= 64'h400000);
+        && (end_address <= 64'h1000000);
     assign mem_valid     = state == State::Issue;
     assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);
     assign out_valid     = state == State::Push;
@@ -63,9 +63,9 @@ module scanout_reader (
                         active_buffer  = fb_base != 0;
                         active_fb_base = fb_base;
                         column        = 0;
-                        row_base      = fb_base[21:0];
-                        mem_addr      = fb_base[21:0];
-                        stride        = fb_stride[21:0];
+                        row_base      = fb_base[23:0];
+                        mem_addr      = fb_base[23:0];
+                        stride        = fb_stride[23:0];
                         out_index     = 0;
                         state         = State::Issue;
                     }
@@ -89,7 +89,7 @@ module scanout_reader (
                                 mem_addr = row_base + stride;
                             } else {
                                 column   = column + 7'd1;
-                                mem_addr = mem_addr + 22'd32;
+                                mem_addr = mem_addr + 24'd32;
                             }
                             state = State::Issue;
                         }

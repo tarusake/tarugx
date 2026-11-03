@@ -4,10 +4,10 @@ module scanout_pipeline_tb;
  logic mem_clk=0,pixel_clk=0,rst_n=0;
  always #5 mem_clk=~mem_clk;always #20 pixel_clk=~pixel_clk;
  logic scan_valid,scan_ready,scan_urgent,scan_rsp_valid,scan_rsp_ready,scan_rsp_error;
- logic [21:0] scan_addr;logic [255:0] scan_rsp_data;
+ logic [23:0] scan_addr;logic [255:0] scan_rsp_data;
  logic cpu_ready,cpu_rsp_valid,cpu_rsp_error;logic [255:0] cpu_rsp_data;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid,mem_rsp_ready;
- logic [21:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data;logic [31:0] mem_wstrb;
+ logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data;logic [31:0] mem_wstrb;
  logic config_error,de,hsync,vsync,underflow,vblank_toggle;logic [23:0] rgb;logic [63:0] fault_snapshot;
  logic active_buffer;
  logic [31:0] active_fb_base;
@@ -21,7 +21,7 @@ module scanout_pipeline_tb;
   .de(de),.hsync(hsync),.vsync(vsync),.rgb(rgb),.underflow(underflow),.vblank_toggle(vblank_toggle),.fault_snapshot(fault_snapshot));
  tarugx_memory_arbiter_pipelined arb(
   .clk(mem_clk),.rst_n(rst_n),.cpu_valid(1'b1),.cpu_ready(cpu_ready),.cpu_write(1'b0),
-  .cpu_addr(22'd0),.cpu_wdata(256'b0),.cpu_wstrb(32'b0),.cpu_rsp_valid(cpu_rsp_valid),
+  .cpu_addr(24'd0),.cpu_wdata(256'b0),.cpu_wstrb(32'b0),.cpu_rsp_valid(cpu_rsp_valid),
   .cpu_rsp_ready(1'b1),.cpu_rsp_data(cpu_rsp_data),.cpu_rsp_error(cpu_rsp_error),
   .scan_valid(scan_valid),.scan_ready(scan_ready),.scan_addr(scan_addr),
   .scan_rsp_valid(scan_rsp_valid),.scan_rsp_ready(scan_rsp_ready),.scan_rsp_data(scan_rsp_data),.scan_rsp_error(scan_rsp_error),

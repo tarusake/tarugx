@@ -100,7 +100,7 @@ module pcie_dma_read_engine_tb;
    completion(8,32,tag,lower);service_writes_deferred(8,32);wait(done);
    assert(!error&&!busy)else $fatal(1,"deferred write completion");tick();end
   command(3,0,4);wait(done);assert(error&&error_code==1)else $fatal(1,"unaligned host");tick();
-  command(0,'h3ffffc,8);wait(done);assert(error&&error_code==1)else $fatal(1,"VRAM bounds");tick();
+  command(0,'hfffffc,8);wait(done);assert(error&&error_code==1)else $fatal(1,"VRAM bounds");tick();
   command(0,0,6);wait(done);assert(error&&error_code==1)else $fatal(1,"length alignment");tick();
   command(0,0,4);while(!mrd_valid)tick();
   begin logic [7:0] tag;logic [6:0] lower;tag=mrd_tag;lower=mrd_host_address[6:0];

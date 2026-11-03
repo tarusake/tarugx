@@ -4,7 +4,7 @@ module memory_self_test_tb;
   logic clk=0,rst_n=0,start=0,calibrated=0;
   always #5 clk=~clk;
   logic busy,done,failed;
-  logic [21:0] fail_addr,mem_addr;
+  logic [23:0] fail_addr,mem_addr;
   logic [255:0] fail_data;
   logic fail_error;
   logic mem_valid,mem_ready=0,mem_write;

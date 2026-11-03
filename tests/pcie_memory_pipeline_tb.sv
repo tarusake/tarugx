@@ -37,13 +37,13 @@ module pcie_memory_pipeline_tb;
   .blit_start(queued_blit_start),.blit_command(queued_blit_command),
   .completion_valid(queue_completion_valid),.completion_error(queue_completion_error));
  logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=1,scan_rsp_error;
- logic [21:0] scan_addr=4096;logic [255:0] scan_rsp_data;
+ logic [23:0] scan_addr=4096;logic [255:0] scan_rsp_data;
  logic fill_mem_valid=0,fill_mem_ready,fill_mem_rsp_valid,fill_mem_rsp_ready=1,fill_mem_rsp_error;
- logic [21:0] fill_mem_addr=0;logic [255:0] fill_mem_wdata=0;logic [31:0] fill_mem_wstrb=0;
+ logic [23:0] fill_mem_addr=0;logic [255:0] fill_mem_wdata=0;logic [31:0] fill_mem_wstrb=0;
  logic blit_mem_valid,blit_mem_ready,blit_mem_write,blit_mem_rsp_valid,blit_mem_rsp_ready,blit_mem_rsp_error;
- logic [21:0] blit_mem_addr;logic [255:0] blit_mem_wdata,blit_mem_rsp_data;logic [31:0] blit_mem_wstrb;
+ logic [23:0] blit_mem_addr;logic [255:0] blit_mem_wdata,blit_mem_rsp_data;logic [31:0] blit_mem_wstrb;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
- logic [21:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
+ logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
  tarugx_framebuffer_memory_pipeline path(
   .cpu_clk(clk),.cpu_rst_n(rst),.cpu_valid(fb_req_valid),.cpu_ready(fb_req_ready),
   .cpu_request({fb_req_write,fb_req_addr,fb_req_wdata,fb_req_wstrb}),

@@ -243,7 +243,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire mem_valid;
     wire mem_ready;
     wire mem_write;
-    wire [21:0] mem_addr;
+    wire [23:0] mem_addr;
     wire [255:0] mem_wdata;
     wire [31:0] mem_wstrb;
     wire mem_rsp_valid;
@@ -253,7 +253,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire scan_valid;
     wire scan_urgent;
     wire scan_ready;
-    wire [21:0] scan_addr;
+    wire [23:0] scan_addr;
     wire scan_rsp_valid;
     wire scan_rsp_ready;
     wire [255:0] scan_rsp_data;
@@ -288,14 +288,14 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire fill_cmd_valid, fill_cmd_ready, fill_engine_done, fill_engine_error;
     wire [127:0] fill_mem_command;
     wire fill_mem_valid, fill_mem_ready, fill_mem_rsp_valid, fill_mem_rsp_ready, fill_mem_rsp_error;
-    wire [21:0] fill_mem_addr;
+    wire [23:0] fill_mem_addr;
     wire [255:0] fill_mem_wdata;
     wire [31:0] fill_mem_wstrb;
     wire blit_cmd_valid, blit_cmd_ready, blit_engine_done, blit_engine_error;
     wire [159:0] blit_mem_command;
     wire blit_mem_valid, blit_mem_ready, blit_mem_write;
     wire blit_mem_rsp_valid, blit_mem_rsp_ready, blit_mem_rsp_error;
-    wire [21:0] blit_mem_addr;
+    wire [23:0] blit_mem_addr;
     wire [255:0] blit_mem_wdata, blit_mem_rsp_data;
     wire [31:0] blit_mem_wstrb;
     tarugx_fill_command_cdc u_fill_cdc (

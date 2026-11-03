@@ -21,7 +21,7 @@ module fill_engine (
     error        : output logic     ,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_wdata    : output logic<256>,
     mem_wstrb    : output logic<32> ,
     mem_rsp_valid: input  logic     ,
@@ -43,7 +43,7 @@ module fill_engine (
     #[sv("syn_preserve=1")]
     var state      : State    ;
     var row_addr   : logic<32>;
-    var word_addr  : logic<22>;
+    var word_addr  : logic<24>;
     var stride     : logic<32>;
     var width      : logic<16>;
     var remaining  : logic<16>;
@@ -140,8 +140,8 @@ module fill_engine (
                     state       = State::Bounds;
                 }
                 State::Bounds: {
-                    if end_address <= 64'h400000 {
-                        word_addr = {row_addr[21:5], 5'b0};
+                    if end_address <= 64'h1000000 {
+                        word_addr = {row_addr[23:5], 5'b0};
                         remaining = width;
                         lane      = row_addr[4:2];
                         state     = State::Issue;
@@ -164,7 +164,7 @@ module fill_engine (
                             state = State::Idle;
                         } else if remaining >: (pixels as 16) {
                             remaining = remaining - (pixels as 16);
-                            word_addr = word_addr + 22'd32;
+                            word_addr = word_addr + 24'd32;
                             lane      = 0;
                             state     = State::Issue;
                         } else {
@@ -177,7 +177,7 @@ module fill_engine (
                 }
                 State::NextRow: {
                     row_addr  = next_row;
-                    word_addr = {next_row[21:5], 5'b0};
+                    word_addr = {next_row[23:5], 5'b0};
                     remaining = width;
                     rows_left = rows_left - 16'd1;
                     lane      = next_row[4:2];

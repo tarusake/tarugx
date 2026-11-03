@@ -10,7 +10,7 @@ module framebuffer_bridge_tb;
   logic rsp_valid,rsp_ready=0,rsp_error;
   logic [31:0] rsp_rdata;
   logic mem_valid,mem_ready=0,mem_write;
-  logic [21:0] mem_addr;
+  logic [23:0] mem_addr;
   logic [255:0] mem_wdata;
   logic [31:0] mem_wstrb;
   logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
@@ -44,7 +44,7 @@ module framebuffer_bridge_tb;
     logic [31:0] saved_strobe;
     saved_data=mem_wdata; saved_strobe=mem_wstrb;
     repeat(3) begin
-      assert(mem_valid && mem_write==wr && mem_addr==22'(addr & 'h3fffe0)) else $fatal;
+      assert(mem_valid && mem_write==wr && mem_addr==24'(addr & 'hffffe0)) else $fatal;
       assert(mem_wdata==saved_data && mem_wstrb==saved_strobe && !req_ready) else $fatal;
       tick();
     end
@@ -94,7 +94,10 @@ module framebuffer_bridge_tb;
     end
     send(1,4,64'h11223344_55667788,8'hff); backend(1,4,1,0); reply(0,0);
     send(1,2,0,15); reply(0,1);
-    send(0,'h400000,0,0); reply(0,1);
+    // The DMA/render path can address all 16 MiB even though BAR2 remains a
+    // 4 MiB host aperture.
+    send(0,'hffffe0,0,0); backend(0,'hffffe0,1,0); reply(32'h5a5a5a5a,0);
+    send(0,'h1000000,0,0); reply(0,1);
     send(1,0,123,15); backend(1,0,0,1); reply(0,1);
     send(0,0,0,0); backend(0,0,1,1); reply(123,1);
     // Accept eight writes before any backend response is returned.

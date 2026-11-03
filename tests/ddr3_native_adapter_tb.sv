@@ -4,7 +4,7 @@ module ddr3_native_adapter_tb;
  logic clk=0,rst_n=0,calibrated=0;
  always #5 clk=~clk;
  logic mem_valid=0,mem_ready,mem_write=0;
- logic [21:0] mem_addr=0;
+ logic [23:0] mem_addr=0;
  logic [255:0] mem_wdata=0,mem_rsp_data;
  logic [31:0] mem_wstrb=0;
  logic mem_rsp_valid,mem_rsp_ready=0,mem_rsp_error;
@@ -16,7 +16,7 @@ module ddr3_native_adapter_tb;
  task tick; @(posedge clk); #1; endtask
  task send(input bit write,input int address);
   @(negedge clk); assert(mem_ready) else $fatal;
-  mem_valid=1;mem_write=write;mem_addr=22'(address);mem_wdata=256'h123456789abcdef;mem_wstrb='h0000a55a;
+  mem_valid=1;mem_write=write;mem_addr=24'(address);mem_wdata=256'h123456789abcdef;mem_wstrb='h0000a55a;
   tick();@(negedge clk);mem_valid=0;
  endtask
  task finish_rsp(input bit error,input logic[255:0] data);
@@ -28,8 +28,9 @@ module ddr3_native_adapter_tb;
   tick();@(negedge clk);rst_n=1;tick();assert(!mem_ready) else $fatal;
   calibrated=1;
   for(int order=0;order<2;order++) begin
-   tick();send(1,'h3fffe0);
-   assert(cmd==0 && addr=='hffff8 && wr_data_mask=='hffff5aa5 && wr_data==mem_wdata) else $fatal;
+   int test_address=order==0?'h3fffe0:'hffffe0;
+   tick();send(1,test_address);
+   assert(cmd==0 && addr==29'(test_address/4) && wr_data_mask=='hffff5aa5 && wr_data==mem_wdata) else $fatal;
    repeat(3) begin tick();assert(!cmd_en && !wr_data_en && !wr_data_end) else $fatal;end
    @(negedge clk);cmd_ready=(order==0);wr_data_rdy=(order==1);tick();
    @(negedge clk);cmd_ready=0;wr_data_rdy=0;

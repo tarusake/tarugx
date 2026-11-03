@@ -4,7 +4,7 @@ module blit_engine_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic cmd_valid=0,cmd_ready;logic [31:0] cmd_src_addr=0,cmd_dst_addr=0,cmd_src_stride=0,cmd_dst_stride=0;
  logic [15:0] cmd_width=0,cmd_height=0;logic busy,done,error;
- logic mem_valid,mem_ready=0,mem_write;logic [21:0] mem_addr;logic [255:0] mem_wdata;logic [31:0] mem_wstrb;
+ logic mem_valid,mem_ready=0,mem_write;logic [23:0] mem_addr;logic [255:0] mem_wdata;logic [31:0] mem_wstrb;
  logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;logic [255:0] mem_rsp_data=0;
  byte unsigned memory[0:65535];int reads=0,writes=0,request_number=0;
  tarugx_blit_engine dut(.*);
@@ -17,7 +17,7 @@ module blit_engine_tb;
  task service(input bit inject_error=0);
   while(!done)begin
    if(mem_valid)begin
-    logic held_write;logic [21:0] held_addr;logic [255:0] held_data;logic [31:0] held_strobe;
+    logic held_write;logic [23:0] held_addr;logic [255:0] held_data;logic [31:0] held_strobe;
     held_write=mem_write;held_addr=mem_addr;held_data=mem_wdata;held_strobe=mem_wstrb;
     assert(held_addr[4:0]==0)else $fatal(1,"unaligned native request");
     repeat(request_number%3)begin tick();assert(mem_valid&&mem_write==held_write&&mem_addr==held_addr)else $fatal(1,"request changed");end
@@ -67,7 +67,7 @@ module blit_engine_tb;
   for(int y=0;y<4;y++)for(int x=0;x<8;x++)assert(get_pixel(8256+y*64+x*4)==snapshot[y*8+x])else $fatal(1,"vertical overlap");
   command(2,1024,32,32,4,1);tick();tick();assert(done&&error&&!mem_valid)else $fatal(1,"unaligned source");
   command(0,1024,14,32,4,2);tick();tick();assert(done&&error&&!mem_valid)else $fatal(1,"unaligned stride");
-  command('h3ffffc,0,4,4,2,1);tick();tick();tick();assert(done&&error&&!mem_valid)else $fatal(1,"aperture overflow");
+  command('hfffffc,0,8,8,2,1);service();assert(done&&error&&!mem_valid)else $fatal(1,"aperture overflow");
   command(0,16384,32,32,4,1);while(!mem_valid)tick();service(1);tick();assert(done&&error&&!busy)else $fatal(1,"backend error");
   $display("Blit engine: arbitrary lanes, 2D strides, overlap, stalls, bounds and backend errors PASS");$finish;
  end

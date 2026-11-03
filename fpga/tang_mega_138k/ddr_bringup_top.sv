@@ -32,7 +32,7 @@ module ddr_bringup_top(
  always @(posedge ui_clk or negedge run_reset_n)
   if(!run_reset_n) reset_sync<=0; else reset_sync<={reset_sync[0],1'b1};
  wire mem_valid,mem_ready,mem_write,mem_rsp_valid,mem_rsp_ready,mem_rsp_error;
- wire [21:0] mem_addr,fail_addr; wire [255:0] mem_wdata,mem_rsp_data;
+ wire [23:0] mem_addr,fail_addr; wire [255:0] mem_wdata,mem_rsp_data;
  wire [31:0] mem_wstrb; wire busy,done,failed,fail_error; wire [255:0] fail_data;
  tarugx_memory_self_test test_core(.clk(ui_clk),.rst_n(reset_sync[1]),
   .start(1'b1),.calibrated(calibrated),.busy(busy),.done(done),.failed(failed),.fail_addr(fail_addr),
