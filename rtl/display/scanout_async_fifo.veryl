@@ -114,13 +114,11 @@ module scanout_async_fifo #(
                     read_pointer_next = read_pointer_next + 1;
                     read_gray         = read_gray_next;
                 }
-                // Prefetch the first word when the FIFO becomes non-empty, then
-                // the following word on each successful pop.
-                if dst_empty && !empty_next {
-                    dst_data = ram[read_pointer[ADDRESS_WIDTH - 1:0]];
-                } else if pop && !empty_next {
-                    dst_data = ram[read_after_pop[ADDRESS_WIDTH - 1:0]];
-                }
+                // The value is don't-care while empty. Reading every cycle
+                // removes pop/empty from the clock enable of every wide data
+                // bit. On a pop, prefetch the following address; the consumer
+                // samples the old registered word on that same edge.
+                dst_data = ram[read_after_pop[ADDRESS_WIDTH - 1:0]];
             }
         }
     }

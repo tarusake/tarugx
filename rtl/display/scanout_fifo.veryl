@@ -21,11 +21,9 @@ module scanout_fifo #(
     var empty: 'dst logic;
     var raw_data : 'dst logic<257 + INDEX_WIDTH>;
     let raw_valid: 'dst logic = !empty;
-    // Register the dual-clock RAM output before it fans into pixel selection,
-    // fault capture and the TMDS encoder. This one-entry elastic stage keeps
-    // ready/valid semantics while separating RAM access from the pixel path.
-    let load_output: 'dst logic = !dst_valid || dst_ready;
     assign src_ready = !full;
+    assign dst_valid = raw_valid;
+    assign dst_data  = raw_data;
     inst fifo: scanout_async_fifo #(
         WIDTH: 257 + INDEX_WIDTH,
         DEPTH                  ,
@@ -38,20 +36,8 @@ module scanout_fifo #(
         src_buffered                            ,
         dst_clk                                ,
         dst_rst_n                              ,
-        dst_pop     : raw_valid && load_output ,
+        dst_pop     : raw_valid && dst_ready   ,
         dst_empty   : empty                    ,
         dst_data    : raw_data                 ,
     );
-    always_ff (dst_clk, dst_rst_n) {
-        if_reset {
-            dst_valid = 0;
-            dst_data  = 0;
-        } else if load_output {
-            dst_valid = raw_valid;
-            // Data is don't-care while dst_valid is low. Register it
-            // unconditionally so the asynchronous empty comparison controls
-            // only the one-bit valid path, not every wide data-register D.
-            dst_data = raw_data;
-        }
-    }
 }
