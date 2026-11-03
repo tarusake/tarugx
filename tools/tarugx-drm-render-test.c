@@ -23,6 +23,10 @@ _Static_assert(sizeof(struct drm_tarugx_submit_gem) == 224,
                "submit GEM ABI size changed");
 _Static_assert(offsetof(struct drm_tarugx_submit_gem, commands) == 32,
                "submit GEM command offset changed");
+_Static_assert(sizeof(struct drm_tarugx_submit_gem2) == 232,
+               "submit GEM2 ABI size changed");
+_Static_assert(offsetof(struct drm_tarugx_submit_gem2, commands) == 40,
+               "submit GEM2 command offset changed");
 
 static int close_handle(int fd, uint32_t handle)
 {
@@ -106,6 +110,9 @@ int main(int argc, char **argv)
     struct drm_tarugx_vram_create render_vram = {
         .width = 64, .height = 64,
     };
+    struct drm_tarugx_vram_create dependency_vram = {
+        .width = 640, .height = 480,
+    };
     struct drm_tarugx_submit_gem render_batch = {
         .count = 2,
         .flags = DRM_TARUGX_SUBMIT_ASYNC,
@@ -124,6 +131,33 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_submit_gem foreign_batch;
     struct drm_tarugx_submit_gem invalid_sync_batch;
+    struct drm_tarugx_submit_gem dependency_source = {
+        .count = 4,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .commands = {
+            { .opcode = DRM_TARUGX_OP_FILL, .width = 640, .height = 480,
+              .color = 0xff204060 },
+            { .opcode = DRM_TARUGX_OP_FILL, .width = 640, .height = 480,
+              .color = 0xff406080 },
+            { .opcode = DRM_TARUGX_OP_FILL, .width = 640, .height = 480,
+              .color = 0xff6080a0 },
+            { .opcode = DRM_TARUGX_OP_FILL, .width = 640, .height = 480,
+              .color = 0xff80a0c0 },
+        },
+    };
+    struct drm_tarugx_submit_gem2 dependent_batch = {
+        .count = 2,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .commands = {
+            { .opcode = DRM_TARUGX_OP_FILL,
+              .dst_x = 0, .dst_y = 0, .width = 64, .height = 32,
+              .color = 0xff30b070 },
+            { .opcode = DRM_TARUGX_OP_BLIT,
+              .src_x = 0, .src_y = 0, .dst_x = 64, .dst_y = 0,
+              .width = 64, .height = 32 },
+        },
+    };
+    struct drm_tarugx_submit_gem2 invalid_dependency;
     volatile uint32_t *vram_map;
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
@@ -134,7 +168,7 @@ int main(int argc, char **argv)
     uint32_t fb_offsets[4] = { 0 };
     struct timespec started, returned, stress_started, stress_finished;
     struct timespec cpu_started, cpu_finished;
-    double submit_ms, stress_s, cpu_s;
+    double submit_ms, dependency_wait_ms, stress_s, cpu_s;
     unsigned int iteration;
     int fd, other, render = -1, render_other = -1, sync_file = -1;
     int result = 1;
@@ -398,6 +432,65 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
+    if (ioctl(render, DRM_IOCTL_TARUGX_VRAM_CREATE, &dependency_vram)) {
+        perror("dependency VRAM create");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    invalid_dependency = dependent_batch;
+    invalid_dependency.handle = dependency_vram.handle;
+    invalid_dependency.in_syncobj = UINT32_MAX;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                     &invalid_dependency, ENOENT)) {
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    invalid_dependency.in_syncobj = 0;
+    invalid_dependency.in_point = 1;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                     &invalid_dependency, EINVAL)) {
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    dependency_source.handle = dependency_vram.handle;
+    dependency_source.out_syncobj = timeline_syncobj;
+    dependency_source.out_point = 20;
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &dependency_source)) {
+        perror("dependency producer submit");
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    dependent_batch.handle = dependency_vram.handle;
+    dependent_batch.in_syncobj = timeline_syncobj;
+    dependent_batch.in_point = 20;
+    dependent_batch.out_syncobj = timeline_syncobj;
+    dependent_batch.out_point = 21;
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &dependent_batch)) {
+        perror("dependency-aware GEM2 submit");
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &returned);
+    dependency_wait_ms = (returned.tv_sec - started.tv_sec) * 1000.0 +
+                         (returned.tv_nsec - started.tv_nsec) / 1000000.0;
+    timeline_point = 21;
+    if (drmSyncobjTimelineWait(render, &timeline_syncobj, &timeline_point, 1,
+                               INT64_MAX, 0, NULL)) {
+        perror("dependency output timeline wait");
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (close_handle(render, dependency_vram.handle)) {
+        perror("close dependency VRAM GEM");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
     /* Reap the completed timeline-backed record on the next private submit. */
     render_batch.out_syncobj = 0;
     render_batch.out_point = 0;
@@ -431,6 +524,8 @@ vram_gem_done:
     puts("DRM render node PASS: non-master GEM create, binary/multi-point timeline "
          "syncobj + sync_file resubmit and private fence fill/blit; "
          "screen fill denied");
+    printf("DRM input syncobj dependency PASS: GEM2 waited %.3f ms for point "
+           "20 and signaled point 21\n", dependency_wait_ms);
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;

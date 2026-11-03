@@ -961,6 +961,47 @@ out_syncobj:
 	return ret;
 }
 
+static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	struct drm_tarugx_submit_gem2 *args = data;
+	struct drm_tarugx_submit_gem submit = {
+		.handle = args->handle,
+		.count = args->count,
+		.flags = args->flags,
+		.out_syncobj = args->out_syncobj,
+		.out_point = args->out_point,
+	};
+	struct dma_fence *in_fence = NULL;
+	u32 i;
+	int status, ret;
+
+	if (args->flags != DRM_TARUGX_SUBMIT_ASYNC ||
+	    (args->in_point && !args->in_syncobj))
+		return -EINVAL;
+	for (i = 0; i < DRM_TARUGX_MAX_COMMANDS; i++)
+		submit.commands[i] = args->commands[i];
+	if (args->in_syncobj) {
+		ret = drm_syncobj_find_fence(file, args->in_syncobj,
+					     args->in_point, 0, &in_fence);
+		if (ret)
+			return ret;
+		ret = dma_fence_wait(in_fence, true);
+		if (ret)
+			goto out_fence;
+		status = dma_fence_get_status(in_fence);
+		if (status <= 0) {
+			ret = status ? status : -EIO;
+			goto out_fence;
+		}
+	}
+	ret = tgx_ioctl_submit_gem(drm, &submit, file);
+	args->fence = submit.fence;
+out_fence:
+	dma_fence_put(in_fence);
+	return ret;
+}
+
 static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 {
 	u32 offset;
@@ -1953,6 +1994,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM, tgx_ioctl_submit_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM2, tgx_ioctl_submit_gem2,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
 static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
@@ -1974,7 +2017,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 9,
+	.major = 0, .minor = 10,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)

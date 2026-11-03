@@ -85,12 +85,29 @@ struct drm_tarugx_submit_gem {
 	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
 };
 
+/* Dependency-aware extension.  The input fence is waited interruptibly before
+ * the batch is submitted; output completion uses the same binary/timeline
+ * syncobj semantics as drm_tarugx_submit_gem.
+ */
+struct drm_tarugx_submit_gem2 {
+	__u32 handle;
+	__u32 count;
+	__u32 flags;
+	__u32 fence;
+	__u32 in_syncobj;
+	__u32 out_syncobj;
+	__u64 in_point;
+	__u64 out_point;
+	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
+};
+
 #define DRM_TARUGX_FILL 0x00
 #define DRM_TARUGX_BLIT 0x01
 #define DRM_TARUGX_SUBMIT 0x02
 #define DRM_TARUGX_WAIT 0x03
 #define DRM_TARUGX_VRAM_CREATE 0x04
 #define DRM_TARUGX_SUBMIT_GEM 0x05
+#define DRM_TARUGX_SUBMIT_GEM2 0x06
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -106,5 +123,8 @@ struct drm_tarugx_submit_gem {
 #define DRM_IOCTL_TARUGX_SUBMIT_GEM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM, \
 		 struct drm_tarugx_submit_gem)
+#define DRM_IOCTL_TARUGX_SUBMIT_GEM2 \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM2, \
+		 struct drm_tarugx_submit_gem2)
 
 #endif

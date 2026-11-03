@@ -162,6 +162,12 @@ syncobj pointを追加します。従来の予約領域を再利用してioctl�
 `out_point=0`のbinary syncobj ABIにも互換です。同じsyncobjへpoint 7、11を順に登録した
 実機回帰では、両方の`drmSyncobjTimelineWait()`とquery、binary syncobj、sync_file、
 private fence、VRAM GEM直接scanoutを併用し、502 commandをfailure 0で完了しました。
+ドライバー0.10以降は`DRM_IOCTL_TARUGX_SUBMIT_GEM2`でbinary／timeline syncobjを入力依存に
+指定できます。未完了fenceはrender lockを保持せず割り込み可能なsleepで待ち、完了後だけ
+FPGAキューへ投入します。2026-11-04の実機では640×480全面fill 4件のpoint 20を入力にした
+別batchが5.509ms待ってから実行され、出力point 21をsignalしました。存在しない入力syncobjと
+syncobjなしの非0 pointも拒否し、全508 command、render failure 0でした。現段階ではioctlを
+待たせる安全な第一段階であり、DRM schedulerへの移行後は未完了依存があっても即時復帰させます。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -284,8 +290,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   GEM対象fill/blitはrender node対応のprivate ioctlとしてコマンドキュー、fence、MSIまで
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
-  直接scanout、binary／timeline syncobj出力まで実装済みです。標準DRM scheduler、
-  入力fence依存、複数同時バッチは未実装です。
+  直接scanout、binary／timeline syncobj入出力まで実装済みです。標準DRM schedulerによる
+  非同期入力fence待ちと、複数同時バッチは未実装です。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。

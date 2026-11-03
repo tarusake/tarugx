@@ -177,8 +177,8 @@ try:
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (502 if gpu_version >= 0x00010003 else
-         498 if gpu_version >= 0x00010002 else 500), counters
+        (508 if gpu_version >= 0x00010003 else
+         504 if gpu_version >= 0x00010002 else 506), counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \
@@ -249,10 +249,13 @@ def main() -> None:
             ROOT / "tools" / "tarugx-drm-vram-scanout-test.c"
         ),
     }
-    print(Backend().remote(
+    output = Backend().remote(
         remote_program(files, args.keep_driver),
         "test DRM render ioctls", timeout=300
-    ), end="")
+    )
+    print(output, end="")
+    if '"error_type"' in output:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
