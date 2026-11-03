@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// One-command 32-bpp VRAM-to-VRAM rectangle copy engine.
+/// One-command packed-pixel VRAM-to-VRAM rectangle copy engine.
 ///
 /// Aligned forward copies move eight pixels per read/write pair.  Unaligned,
 /// tail, and overlapping copies fall back to one pixel while every native
 /// request remains 256-bit aligned.  Backwards traversal provides memmove
 /// semantics for overlapping rectangles.
-module blit_engine (
+module blit_engine #(
+    param PIXEL_BYTES: u32 = 4,
+    param PIXEL_BITS : u32 = PIXEL_BYTES * 8,
+    param PIXELS_PER_BEAT: u32 = 32 / PIXEL_BYTES,
+) (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
     cmd_valid     : input  logic     ,
@@ -66,7 +70,7 @@ module blit_engine (
     var pixels_left: logic<16>;
     var rows_left  : logic<16>;
     var backward   : logic    ;
-    var transfer_count: logic<4>;
+    var transfer_count: logic<5>;
     var transfer_data: logic<256>;
     var src_tail   : logic<64>;
     var dst_tail   : logic<64>;
@@ -77,11 +81,12 @@ module blit_engine (
     var multiplier      : logic<16>;
     var multiply_step   : logic<5> ;
 
-    let row_bytes     : logic<64> = (width as 64) << 2;
-    let last_pixel    : logic<32> = ((width as 32) - 32'd1) << 2;
+    let row_bytes     : logic<64> = (width as 64) * (PIXEL_BYTES as 64);
+    let last_pixel    : logic<32> = ((width as 32) - 32'd1) * PIXEL_BYTES;
     let ranges_overlap: logic     = (src_base as 64) <: dst_end && (dst_base as 64) <: src_end;
-    let command_basic_ok: logic   = (src_base[1:0] == 0) && (dst_base[1:0] == 0) && (src_stride[1:0] == 0)
-        && (dst_stride[1:0] == 0) && (width != 0) && (height != 0);
+    let command_basic_ok: logic   = (src_base % PIXEL_BYTES == 0)
+        && (dst_base % PIXEL_BYTES == 0) && (src_stride % PIXEL_BYTES == 0)
+        && (dst_stride % PIXEL_BYTES == 0) && (width != 0) && (height != 0);
     let command_stride_ok: logic  = ((src_stride as 64) >= row_bytes) && ((dst_stride as 64) >= row_bytes);
     let bounds_ok: logic = (src_end <= 64'h1000000) && (dst_end <= 64'h1000000);
     assign cmd_ready     = state == State::Idle;
@@ -94,14 +99,14 @@ module blit_engine (
     always_comb {
         mem_wdata = 0;
         mem_wstrb = 0;
-        if transfer_count == 4'd8 {
+        if transfer_count == (PIXELS_PER_BEAT as 5) {
             mem_wdata = transfer_data;
             mem_wstrb = 32'hffff_ffff;
         } else {
-            for i in 0..8 {
-                if (i as 3) == dst_pixel[4:2] {
-                    mem_wdata[i * 32+:32] = transfer_data[31:0];
-                    mem_wstrb[i * 4+:4]   = 4'hf;
+            for i in 0..PIXELS_PER_BEAT {
+                if (i as 4) == (if PIXEL_BYTES == 2 ? dst_pixel[4:1] : {1'b0, dst_pixel[4:2]}) {
+                    mem_wdata[i * PIXEL_BITS+:PIXEL_BITS] = transfer_data[PIXEL_BITS - 1:0];
+                    mem_wstrb[i * PIXEL_BYTES+:PIXEL_BYTES] = '1;
                 }
             }
         }
@@ -222,7 +227,8 @@ module blit_engine (
                 }
                 State::ReadIssue : {
                     transfer_count = if !backward && (src_pixel[4:0] == 0)
-                        && (dst_pixel[4:0] == 0) && (pixels_left >= 16'd8) ? 4'd8 : 4'd1;
+                        && (dst_pixel[4:0] == 0) && (pixels_left >= (PIXELS_PER_BEAT as 16)) ?
+                        (PIXELS_PER_BEAT as 5) : 5'd1;
                     if mem_ready {
                         state = State::ReadWait;
                     }
@@ -231,13 +237,13 @@ module blit_engine (
                     if mem_rsp_error {
                         error = 1;
                         state = State::Finish;
-                    } else if transfer_count == 4'd8 {
+                    } else if transfer_count == (PIXELS_PER_BEAT as 5) {
                         transfer_data = mem_rsp_data;
                         state         = State::WriteIssue;
                     } else {
-                        for i in 0..8 {
-                            if (i as 3) == src_pixel[4:2] {
-                                transfer_data[31:0] = mem_rsp_data[i * 32+:32];
+                        for i in 0..PIXELS_PER_BEAT {
+                            if (i as 4) == (if PIXEL_BYTES == 2 ? src_pixel[4:1] : {1'b0, src_pixel[4:2]}) {
+                                transfer_data[PIXEL_BITS - 1:0] = mem_rsp_data[i * PIXEL_BITS+:PIXEL_BITS];
                             }
                         }
                         state = State::WriteIssue;
@@ -257,10 +263,10 @@ module blit_engine (
                 State::Advance   : {
                     if pixels_left >: (transfer_count as 16) {
                         pixels_left = pixels_left - (transfer_count as 16);
-                        src_pixel   = if backward ? src_pixel - 32'd4
-                            : src_pixel + ((transfer_count as 32) << 2);
-                        dst_pixel   = if backward ? dst_pixel - 32'd4
-                            : dst_pixel + ((transfer_count as 32) << 2);
+                        src_pixel   = if backward ? src_pixel - PIXEL_BYTES
+                            : src_pixel + (transfer_count as 32) * PIXEL_BYTES;
+                        dst_pixel   = if backward ? dst_pixel - PIXEL_BYTES
+                            : dst_pixel + (transfer_count as 32) * PIXEL_BYTES;
                         state       = State::ReadIssue;
                     } else {
                         state = State::RowCheck;

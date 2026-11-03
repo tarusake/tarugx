@@ -319,7 +319,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .dst_valid(fill_cmd_valid), .dst_ready(fill_cmd_ready), .dst_command(fill_mem_command),
         .dst_done(fill_engine_done), .dst_error(fill_engine_error)
     );
-    tarugx_fill_engine u_fill_engine (
+    tarugx_fill_engine #(
+`ifdef TARUGX_VIDEO_1080P
+        .PIXEL_BYTES(2)
+`else
+        .PIXEL_BYTES(4)
+`endif
+    ) u_fill_engine (
         .clk(ui_clk), .rst_n(mem_reset[1]),
         .cmd_valid(fill_cmd_valid), .cmd_ready(fill_cmd_ready),
         .cmd_addr(fill_mem_command[31:0]), .cmd_stride(fill_mem_command[63:32]),
@@ -340,7 +346,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .dst_valid(blit_cmd_valid), .dst_ready(blit_cmd_ready), .dst_command(blit_mem_command),
         .dst_done(blit_engine_done), .dst_error(blit_engine_error)
     );
-    tarugx_blit_engine u_blit_engine (
+    tarugx_blit_engine #(
+`ifdef TARUGX_VIDEO_1080P
+        .PIXEL_BYTES(2)
+`else
+        .PIXEL_BYTES(4)
+`endif
+    ) u_blit_engine (
         .clk(ui_clk), .rst_n(mem_reset[1]),
         .cmd_valid(blit_cmd_valid), .cmd_ready(blit_cmd_ready),
         .cmd_src_addr(blit_mem_command[31:0]), .cmd_dst_addr(blit_mem_command[63:32]),
