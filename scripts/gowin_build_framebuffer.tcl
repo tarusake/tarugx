@@ -288,11 +288,14 @@ if {$recovery_experiment} {
             puts $f {set_max_delay 10 -from [get_pins {u_rom_probe_cdc/held*/Q}] -to [get_pins {u_rom_probe_cdc/dst_config*/D}]}
         }
     }
-    if {$auto_rom && !$pipelined_memory} {
+    if {$auto_rom} {
         puts $f {set_false_path -to [get_pins {u_scanout_debug/fault_sync_0_s0/D}]}
         puts $f {set_max_delay 10 -from [get_cells {u_scanout_debug/pop_gray*}] -to [get_cells {u_scanout_debug/pop_meta*}]}
         puts $f {set_false_path -to [get_pins {u_scanout_debug_cdc/ack_sync_0_s0/D u_scanout_debug_cdc/request_sync_0_s0/D}]}
-        puts $f {set_max_delay 10 -from [get_pins {u_scanout_debug_cdc/held*/Q}] -to [get_pins {u_scanout_debug_cdc/dst_config*/D}]}
+        # The payload is held until the toggle crosses two 10.5 MHz debug
+        # clock stages.  Bound routing well inside that ~190 ns settling time
+        # without imposing the unrelated 10 ns UI-clock period on this path.
+        puts $f {set_max_delay 20 -from [get_pins {u_scanout_debug_cdc/held*/Q}] -to [get_pins {u_scanout_debug_cdc/dst_config*/D}]}
     }
     close $f
     set timing_source $recovery_sdc

@@ -10,6 +10,20 @@ spec.loader.exec_module(decoder)
 
 
 class DecodeTest(unittest.TestCase):
+    def test_fr17_pipeline_diagnostics_and_fault(self):
+        fifo = (1 << 23) | (1 << 22) | (7 << 10) | 511
+        diagnostic = (23 << 64) | (fifo << 8)
+        fault = ((800 << 52) | (717 << 41) | (86090 << 23) |
+                 (86090 << 5) | 0x16)
+        payload = (0x46523137 << 256) | (diagnostic << 176) | (fault << 8) | 0xfd
+        data = decoder.decode(f"D1111X{payload:072X}")
+        self.assertEqual(data["pipeline_scanout"], dict(
+            max_scan_wait_cycles=23,
+            frozen=True, level_armed=True,
+            min_level_upper_estimate=7, max_level_upper_estimate=511))
+        self.assertTrue(data["fault_captured"])
+        self.assertEqual((data["x"], data["y"]), (800, 717))
+
     def test_fr16_pipeline_fault_layout(self):
         data=decoder.decode("D1110X46523136" + "0" * 64)
         self.assertTrue(data["automatic_rom"])

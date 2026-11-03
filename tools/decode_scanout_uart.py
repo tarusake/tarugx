@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-"""Decode complete FR03 through FR16 UART lines; ignore partial captures."""
+"""Decode complete FR03 through FR17 UART lines; ignore partial captures."""
 import json
 import re
 import sys
@@ -26,11 +26,12 @@ def decode(line):
                 **({"raw_bar": f"{payload & 0xfffff:05x}"} if version in (0x46523130, 0x46523131) else {})
             }
         }
-    pipeline_fault = version == 0x46523136
+    pipeline_fault = version in (0x46523136, 0x46523137)
+    pipeline_diagnostics = version == 0x46523137
     performance = version in (0x46523133, 0x46523134)
     if performance:
         version = 0x46523033  # FR13 preserves the fault/aux portion only.
-    automatic_rom = version in (0x46523132, 0x46523136)
+    automatic_rom = version in (0x46523132, 0x46523136, 0x46523137)
     if automatic_rom:
         version = 0x46523037  # FR12 carries the FR07 fault/reset layout.
     if version not in (0x46523033, 0x46523034, 0x46523035, 0x46523036, 0x46523037):
@@ -40,6 +41,16 @@ def decode(line):
     fault = (payload >> 8) & ((1 << 64) - 1)
     if automatic_rom:
         status["automatic_rom"] = True
+    if pipeline_diagnostics:
+        diagnostic = (payload >> 176) & ((1 << 80) - 1)
+        fifo = (diagnostic >> 8) & ((1 << 24) - 1)
+        status["pipeline_scanout"] = {
+            "max_scan_wait_cycles": diagnostic >> 64,
+            "frozen": bool((fifo >> 23) & 1),
+            "level_armed": bool((fifo >> 22) & 1),
+            "min_level_upper_estimate": (fifo >> 10) & 1023,
+            "max_level_upper_estimate": fifo & 1023,
+        }
     if performance:
         perf = (payload >> 72) & ((1 << 184) - 1)
         status["automatic_rom"] = True

@@ -641,12 +641,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .src_config(rom_probe_src), .dst_config(rom_probe_dbg)
     );
 `ifdef TARUGX_PCIE_AUTO_ROM
-`ifdef TARUGX_PIPELINED_MEMORY
-    // FR16: serial-latency counters do not apply to multiple outstanding reads.
-    wire [287:0] uart_snapshot = {32'h46523136,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
-`else
     // Passive observation of project-owned Veryl signals, never vendor IP internals.
-    wire [183:0] scanout_perf_src, scanout_perf_dbg;
+    // The FIFO level and arbitration-wait fields remain valid with pipelined DDR;
+    // serial request/response latency fields do not and are not exported by FR17.
+    wire [183:0] scanout_perf_src;
     tarugx_scanout_debug_monitor u_scanout_debug (
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
@@ -658,6 +656,25 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_valid(mem_rsp_valid), .mem_rsp_ready(mem_rsp_ready),
         .snapshot(scanout_perf_src)
     );
+`ifdef TARUGX_PIPELINED_MEMORY
+    // FR17: keep PCIe recovery/fault data and use the former reset-scope area
+    // for pipeline-safe scanout wait/FIFO diagnostics. Layout after version:
+    // max_wait[16], reserved[32], frozen/armed/pad/min/max[24], reserved[8].
+    wire [39:0] pipeline_scanout_src = {
+        scanout_perf_src[183:168], scanout_perf_src[23:0]
+    };
+    wire [39:0] pipeline_scanout_dbg;
+    tarugx_display_config_cdc #(.WIDTH(40)) u_scanout_debug_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
+        .src_config(pipeline_scanout_src), .dst_config(pipeline_scanout_dbg)
+    );
+    wire [79:0] pipeline_scanout_debug = {
+        pipeline_scanout_dbg[39:24], 32'b0, pipeline_scanout_dbg[23:0], 8'b0
+    };
+    wire [287:0] uart_snapshot = {32'h46523137,pipeline_scanout_debug,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
+`else
+    wire [183:0] scanout_perf_dbg;
     tarugx_display_config_cdc #(.WIDTH(184), .SEND_UNCHANGED(1)) u_scanout_debug_cdc (
         .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
         .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
