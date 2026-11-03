@@ -89,6 +89,7 @@ struct tarugx {
 	atomic64_t render_fence_seqno;
 	struct dma_fence *render_sync_fence;
 	u32 render_sync_hw_fence;
+	u32 render_sync_commands;
 	u32 render_fence;
 	bool render_async_valid;
 	bool render_async_completed;
@@ -356,17 +357,27 @@ static struct dma_fence *tgx_create_dma_fence(struct tarugx *tgx)
 static void tgx_signal_sync_fence(struct tarugx *tgx, int error)
 {
 	struct dma_fence *fence;
+	u32 commands;
 	unsigned long flags;
 
 	spin_lock_irqsave(&tgx->render_fence_lock, flags);
 	fence = tgx->render_sync_fence;
+	commands = 0;
 	if (fence) {
+		commands = tgx->render_sync_commands;
 		tgx->render_sync_fence = NULL;
+		tgx->render_sync_commands = 0;
 		if (error)
 			dma_fence_set_error(fence, error);
 		dma_fence_signal_locked(fence);
 	}
 	spin_unlock_irqrestore(&tgx->render_fence_lock, flags);
+	if (commands) {
+		if (error)
+			atomic64_inc(&tgx->render_failures);
+		else
+			atomic64_add(commands, &tgx->render_commands);
+	}
 	if (fence)
 		dma_fence_put(fence);
 }
@@ -589,7 +600,9 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 	struct tarugx_sched_job *job =
 		container_of(sched_job, struct tarugx_sched_job, base);
 	struct tarugx *tgx = job->tgx;
-	u32 fence;
+	struct dma_fence *hw_fence = NULL;
+	unsigned long flags;
+	u32 fence = 0, status, submitted = 0;
 	int idx, ret;
 
 	ret = job->input_fence ? dma_fence_get_status(job->input_fence) : 1;
@@ -599,15 +612,73 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 		ret = -ENODEV;
 	} else {
 		mutex_lock(&tgx->render_lock);
-		ret = tgx_execute_commands(tgx, job->commands, job->count,
-					   job->vram_base, job->pitch, NULL,
-					   &fence);
+		status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+		if (status & TGX_QUEUE_ERROR) {
+			writel(TGX_QUEUE_ERROR,
+			       tgx->regs + TGX_REG_QUEUE_STATUS);
+			status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+		}
+		if (status & TGX_QUEUE_ERROR) {
+			ret = -EIO;
+		} else if (!(status & TGX_QUEUE_READY) ||
+			   status & (TGX_QUEUE_ACTIVE | TGX_QUEUE_LEVEL)) {
+			ret = -EBUSY;
+		} else {
+			hw_fence = tgx_create_dma_fence(tgx);
+			ret = hw_fence ? 0 : -ENOMEM;
+		}
+		for (; !ret && submitted < job->count; submitted++) {
+			status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+			if (!(status & TGX_QUEUE_READY)) {
+				ret = -EBUSY;
+				break;
+			}
+			tgx_program_render(tgx, job->vram_base, job->pitch,
+					   &job->commands[submitted]);
+			fence = tgx_next_render_fence(tgx);
+			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
+			writel(job->commands[submitted].opcode,
+			       tgx->regs + TGX_REG_QUEUE_SUBMIT);
+			readl(tgx->regs + TGX_REG_QUEUE_SUBMIT);
+			status = readl(tgx->regs + TGX_REG_QUEUE_STATUS) &
+				 TGX_QUEUE_LEVEL;
+			if (status > atomic64_read(&tgx->render_queue_peak))
+				atomic64_set(&tgx->render_queue_peak, status);
+		}
+		if (!ret) {
+			spin_lock_irqsave(&tgx->render_fence_lock, flags);
+			WARN_ON(tgx->render_sync_fence);
+			tgx->render_sync_hw_fence = fence;
+			tgx->render_sync_commands = submitted;
+			tgx->render_sync_fence = dma_fence_get(hw_fence);
+			spin_unlock_irqrestore(&tgx->render_fence_lock, flags);
+		} else if (submitted) {
+			/* Drain an unexpected partial enqueue before another job can
+			 * touch the single hardware queue. */
+			tgx_wait_render(tgx, fence, TGX_RENDER_TIMEOUT_MS);
+		}
 		mutex_unlock(&tgx->render_lock);
+		if (!ret)
+			tgx_update_sync_fence(tgx);
 		drm_dev_exit(idx);
 	}
-	if (ret)
+	if (ret) {
+		dma_fence_put(hw_fence);
 		dma_fence_set_error(&sched_job->s_fence->finished, ret);
-	return NULL;
+		atomic64_inc(&tgx->render_failures);
+		return NULL;
+	}
+	return hw_fence;
+}
+
+static enum drm_gpu_sched_stat
+tgx_sched_timedout_job(struct drm_sched_job *sched_job)
+{
+	struct tarugx_sched_job *job =
+		container_of(sched_job, struct tarugx_sched_job, base);
+
+	tgx_signal_sync_fence(job->tgx, -ETIMEDOUT);
+	return DRM_GPU_SCHED_STAT_NOMINAL;
 }
 
 static void tgx_sched_free_job(struct drm_sched_job *sched_job)
@@ -624,6 +695,7 @@ static void tgx_sched_free_job(struct drm_sched_job *sched_job)
 
 static const struct drm_sched_backend_ops tgx_sched_ops = {
 	.run_job = tgx_sched_run_job,
+	.timedout_job = tgx_sched_timedout_job,
 	.free_job = tgx_sched_free_job,
 };
 
@@ -2220,7 +2292,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 11,
+	.major = 0, .minor = 12,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -2253,8 +2325,7 @@ static int tgx_scheduler_init(struct tarugx *tgx)
 	int ret;
 
 	tgx->render_sched_list[0] = &tgx->render_sched;
-	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL, 1,
-			     TGX_RENDER_ENTITIES,
+	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL, 1, 1,
 			     0, msecs_to_jiffies(200), NULL, NULL,
 			     "tarugx-render", tgx->drm.dev);
 	if (ret)
