@@ -42,6 +42,7 @@ module pcie_dma_read_engine #(
     fb_rsp_valid    : input  logic     ,
     fb_rsp_ready    : output logic     ,
     fb_rsp_error    : input  logic     ,
+    fb_window_full  : output logic     ,
 ) {
     enum State: logic<3> {
         Idle,
@@ -187,6 +188,8 @@ module pcie_dma_read_engine #(
     };
     assign fb_rsp_ready     = ((state == State::Run) || (state == State::Fail))
         && (fb_outstanding != 0);
+    assign fb_window_full   = (state == State::Run) && chunk_pending
+        && (fb_outstanding >= 8);
     let fb_request_accept: logic = fb_req_valid && fb_req_ready;
     let fb_response_accept: logic = fb_rsp_valid && fb_rsp_ready;
 

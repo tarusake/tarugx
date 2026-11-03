@@ -35,6 +35,7 @@ module pcie_dma_channel #(
     fb_rsp_valid    : input  logic     ,
     fb_rsp_ready    : output logic     ,
     fb_rsp_error    : input  logic     ,
+    fb_window_full  : output logic     ,
 ) {
     var mrd_valid       : logic    ;
     var mrd_ready       : logic    ;
@@ -92,6 +93,7 @@ module pcie_dma_channel #(
         fb_rsp_valid,
         fb_rsp_ready,
         fb_rsp_error,
+        fb_window_full,
     );
 
     inst request_tx: dma_read_request_tx (

@@ -8,6 +8,7 @@ module pcie_dma_read_engine_tb;
  logic cpl_valid=0,cpl_ready,cpl_has_data=0,cpl_error=0;logic [3:0] cpl_length_dw=0;logic [6:0] cpl_lower_address=0;logic [7:0] cpl_tag=0;
  logic [255:0] cpl_data=0;logic fb_req_valid,fb_req_ready=0;logic [31:0] fb_req_addr;logic [255:0] fb_req_wdata;
  logic [31:0] fb_req_wstrb;logic fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
+ logic fb_window_full;
  tarugx_pcie_dma_read_engine #(.TIMEOUT_CYCLES(20)) dut(.*);
  logic [31:0] vram[0:1023];int request_count=0,write_count=0;
  task tick;@(posedge clk);#1;endtask

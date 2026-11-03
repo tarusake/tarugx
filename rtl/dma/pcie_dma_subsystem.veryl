@@ -77,6 +77,7 @@ module pcie_dma_subsystem #(
     var dma_fb_rsp_valid: logic     ;
     var dma_fb_rsp_ready: logic     ;
     var dma_fb_rsp_error: logic     ;
+    var dma_fb_window_full: logic   ;
     // Isolate the PCIe hard-IP configuration bus from the DMA datapath.  The
     // BDF is stable after enumeration, so one cycle of latency is harmless.
     var requester_id_q  : logic<16> ;
@@ -115,7 +116,7 @@ module pcie_dma_subsystem #(
                 if rx_stall_sample {
                     rx_stall_cycles += 1;
                 }
-                if dma_fb_req_valid && !dma_fb_req_ready {
+                if (dma_fb_req_valid && !dma_fb_req_ready) || dma_fb_window_full {
                     mem_stall_cycles += 1;
                 }
             }
@@ -159,6 +160,7 @@ module pcie_dma_subsystem #(
         fb_rsp_valid: dma_fb_rsp_valid,
         fb_rsp_ready: dma_fb_rsp_ready,
         fb_rsp_error: dma_fb_rsp_error,
+        fb_window_full: dma_fb_window_full,
     );
 
     inst tx_arbiter: pcie_tx_arbiter (

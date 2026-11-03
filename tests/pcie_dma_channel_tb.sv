@@ -8,6 +8,7 @@ module pcie_dma_channel_tb;
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;logic rx_claim,rx_wait;
  logic fb_req_valid,fb_req_ready=0;logic [31:0] fb_req_addr;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  logic fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
+ logic fb_window_full;
  logic [7:0] issued_tag;logic [6:0] issued_lower;
  tarugx_pcie_dma_channel #(.TIMEOUT_CYCLES(100)) dut(.*);
  task tick;@(posedge clk);#1;endtask
