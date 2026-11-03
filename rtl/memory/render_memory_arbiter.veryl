@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Serializes CPU, fill and blit before the timing-critical scanout arbiter.
+/// Round-robin CPU/fill/blit admission with eight ordered responses in flight.
 module render_memory_arbiter (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
@@ -42,38 +42,69 @@ module render_memory_arbiter (
     out_rsp_data  : input  logic<256>,
     out_rsp_error : input  logic     ,
 ) {
-    enum State: logic<2> {
-        Idle,
-        Issue,
-        Wait,
-        Respond,
-    }
-    var state         : State     ;
-    var owner         : logic<2>  ;
-    var preferred     : logic<2>  ;
-    var response_data : logic<256>;
-    var response_error: logic     ;
-    let choose_cpu : logic = cpu_valid && ((preferred == 0) || ((preferred == 1) && !fill_valid && !blit_valid) || ((preferred == 2) && !blit_valid));
-    let choose_fill: logic = fill_valid && ((preferred == 1) || ((preferred == 2) && !blit_valid && !cpu_valid) || ((preferred == 0) && !cpu_valid));
-    let choose_blit: logic = blit_valid && !choose_cpu && !choose_fill;
-    assign cpu_ready      = state == State::Idle && choose_cpu;
-    assign fill_ready     = state == State::Idle && choose_fill;
-    assign blit_ready     = state == State::Idle && choose_blit;
-    assign out_valid      = state == State::Issue;
-    assign out_rsp_ready  = state == State::Wait;
-    assign cpu_rsp_valid  = state == State::Respond && owner == 0;
-    assign fill_rsp_valid = state == State::Respond && owner == 1;
-    assign blit_rsp_valid = state == State::Respond && owner == 2;
+    var issuing       : logic         ;
+    var preferred     : logic<2>      ;
+    var owners        : logic<2>   [8];
+    var writes        : logic      [8];
+    var head          : logic<3>      ;
+    var tail          : logic<3>      ;
+    var count         : logic<4>      ;
+    var write_count   : logic<4>      ;
+    var response_valid: logic         ;
+    var response_owner: logic<2>      ;
+    var response_data : logic<256>    ;
+    var response_error: logic         ;
+    let cpu_eligible : logic = cpu_valid && (cpu_write || (write_count == 0));
+    let fill_eligible: logic = fill_valid;
+    let blit_eligible: logic = blit_valid && (blit_write || (write_count == 0));
+    let read_waiting: logic = (cpu_valid && !cpu_write) || (blit_valid && !blit_write);
+    let choose_cpu : logic = cpu_eligible && ((preferred == 0)
+        || ((preferred == 1) && !fill_eligible && !blit_eligible)
+        || ((preferred == 2) && !blit_eligible));
+    let choose_fill: logic = fill_eligible && ((preferred == 1)
+        || ((preferred == 2) && !blit_eligible && !cpu_eligible)
+        || ((preferred == 0) && !cpu_eligible));
+    let choose_blit: logic = blit_eligible && !choose_cpu && !choose_fill;
+    let selected_write: logic = if choose_cpu ? cpu_write
+        : if choose_fill ? 1'b1 : blit_write;
+    let issue_accept: logic = issuing && out_ready;
+    // Keep posted writes pipelined, but do not let a following read overtake
+    // their actual DDR commit. The response pipeline preserves command order,
+    // yet the native write response is generated when the command is accepted.
+    let capacity: logic = (count <: 8) && (!issuing || out_ready)
+        && !((write_count != 0) && read_waiting);
+    assign cpu_ready      = capacity && choose_cpu;
+    assign fill_ready     = capacity && choose_fill;
+    assign blit_ready     = capacity && choose_blit;
+    let push: logic = (cpu_valid && cpu_ready) || (fill_valid && fill_ready)
+        || (blit_valid && blit_ready);
+    assign out_valid      = issuing;
+    assign cpu_rsp_valid  = response_valid && (response_owner == 0);
+    assign fill_rsp_valid = response_valid && (response_owner == 1);
+    assign blit_rsp_valid = response_valid && (response_owner == 2);
     assign cpu_rsp_data   = response_data;
     assign cpu_rsp_error  = response_error;
     assign fill_rsp_error = response_error;
     assign blit_rsp_data  = response_data;
     assign blit_rsp_error = response_error;
+    let response_accept: logic = response_valid
+        && (if response_owner == 0 ? cpu_rsp_ready
+            : if response_owner == 1 ? fill_rsp_ready : blit_rsp_ready);
+    assign out_rsp_ready = (count != 0) && (!response_valid || response_accept);
+    let pop: logic = out_rsp_valid && out_rsp_ready;
+    let head_write: logic = writes[head];
     always_ff {
         if_reset {
-            state          = State::Idle;
-            owner          = 0;
+            issuing        = 0;
             preferred      = 0;
+            owners         = '{default: '0};
+            writes         = '{default: '0};
+            head           = 0;
+            tail           = 0;
+            count          = 0;
+            write_count    = 0;
+            response_valid = 0;
+            response_owner = 0;
             out_write      = 0;
             out_addr       = 0;
             out_wdata      = 0;
@@ -81,28 +112,38 @@ module render_memory_arbiter (
             response_data  = 0;
             response_error = 0;
         } else {
-            case state {
-                State::Idle   : if cpu_valid || fill_valid || blit_valid {
-                    owner      = if choose_cpu ? 2'd0 : if choose_fill ? 2'd1 : 2'd2;
-                    preferred  = if choose_cpu ? 2'd1 : if choose_fill ? 2'd2 : 2'd0;
-                    out_write  = if choose_cpu ? cpu_write : if choose_fill ? 1'b1 : blit_write;
-                    out_addr   = if choose_cpu ? cpu_addr : if choose_fill ? fill_addr : blit_addr;
-                    out_wdata  = if choose_cpu ? cpu_wdata : if choose_fill ? fill_wdata : blit_wdata;
-                    out_wstrb  = if choose_cpu ? cpu_wstrb : if choose_fill ? fill_wstrb : blit_wstrb;
-                    state       = State::Issue;
-                }
-                State::Issue  : if out_ready {
-                    state = State::Wait;
-                }
-                State::Wait   : if out_rsp_valid {
-                    response_data  = out_rsp_data;
-                    response_error = out_rsp_error;
-                    state          = State::Respond;
-                }
-                State::Respond: if (if owner == 0 ? cpu_rsp_ready : if owner == 1 ? fill_rsp_ready : blit_rsp_ready) {
-                    state = State::Idle;
-                }
-                default       : state = State::Idle;
+            if issue_accept {
+                issuing = 0;
+            }
+            if push {
+                issuing     = 1;
+                owners[tail] = if choose_cpu ? 2'd0 : if choose_fill ? 2'd1 : 2'd2;
+                writes[tail] = selected_write;
+                tail         = tail + 3'd1;
+                preferred    = if choose_cpu ? 2'd1 : if choose_fill ? 2'd2 : 2'd0;
+                out_write    = if choose_cpu ? cpu_write : if choose_fill ? 1'b1 : blit_write;
+                out_addr     = if choose_cpu ? cpu_addr : if choose_fill ? fill_addr : blit_addr;
+                out_wdata    = if choose_cpu ? cpu_wdata : if choose_fill ? fill_wdata : blit_wdata;
+                out_wstrb    = if choose_cpu ? cpu_wstrb : if choose_fill ? fill_wstrb : blit_wstrb;
+            }
+            if push && selected_write && !(pop && head_write) {
+                write_count = write_count + 4'd1;
+            } else if pop && head_write && !(push && selected_write) {
+                write_count = write_count - 4'd1;
+            }
+            if pop {
+                response_valid = 1;
+                response_owner = owners[head];
+                response_data  = out_rsp_data;
+                response_error = out_rsp_error;
+                head           = head + 3'd1;
+            } else if response_accept {
+                response_valid = 0;
+            }
+            if push && !pop {
+                count = count + 4'd1;
+            } else if pop && !push {
+                count = count - 4'd1;
             }
         }
     }
