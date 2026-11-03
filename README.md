@@ -252,8 +252,10 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
   fillエンジンで8,294,400 byteのXRGB8888色帯をDDRへ生成し、stride 7680で
   2回取得したHDMI画像が完全一致し、UART診断もDDR校正済み、PCIe link up、
-  underflowなし、faultなしでした。この構成のタイミング余裕はSetup 0.000ns、
-  Hold +0.136nsです。DRMからのモード選択、8MiB超の転送経路、1080p用GEM管理は
+  underflowなし、faultなしでした。scanout専用Gray pointer FIFOと故障判定経路の
+  分割を反映した最終構成のタイミング余裕はSetup +0.016ns、Hold +0.138nsです。
+  この構成はGPU version 1.2として公開します。DRMからのモード選択、8MiB超の
+  転送経路、1080p用GEM管理は
   まだ統合していません。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
