@@ -86,7 +86,7 @@ static int atomic_add_named(int fd, drmModeAtomicReq *request,
 static int atomic_modeset(int fd, uint32_t connector, uint32_t crtc,
 			  uint32_t plane, uint32_t framebuffer,
 			  const drmModeModeInfo *mode, int in_fence_fd,
-			  int *out_fence_fd)
+			  int *out_fence_fd, uint32_t flags)
 {
 	drmModeAtomicReq *request = NULL;
 	uint32_t mode_blob = 0;
@@ -94,6 +94,7 @@ static int atomic_modeset(int fd, uint32_t connector, uint32_t crtc,
 
 	if (drmModeCreatePropertyBlob(fd, mode, sizeof(*mode), &mode_blob))
 		return -1;
+	*out_fence_fd = -1;
 	request = drmModeAtomicAlloc();
 	if (!request)
 		goto out;
@@ -122,8 +123,7 @@ static int atomic_modeset(int fd, uint32_t connector, uint32_t crtc,
 	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD",
 		   (uint64_t)(int64_t)in_fence_fd);
 #undef ADD_ATOMIC
-	ret = drmModeAtomicCommit(fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET,
-				  NULL);
+	ret = drmModeAtomicCommit(fd, request, flags, NULL);
 out:
 	drmModeAtomicFree(request);
 	drmModeDestroyPropertyBlob(fd, mode_blob);
@@ -170,7 +170,8 @@ int main(int argc, char **argv)
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
 	unsigned requested_bpp = 0;
-	double modeset_started, modeset_seconds, dirty_started;
+	double modeset_completed_seconds, modeset_started, modeset_seconds;
+	double dirty_started;
 	double dirty_seconds[3];
 	drmModeClip clips[2] = {
 		{120, 120, 440, 200},
@@ -178,7 +179,8 @@ int main(int argc, char **argv)
 	};
 	drmModeClip full_clip;
 	int fd = -1, heap_buffer_fd = -1, heap_fd = -1, import_fd = -1;
-	int atomic_out_fence = -1, prime_fd = -1, render_sync_file = -1, rc = 1;
+	int atomic_out_fence = -1, nonblock_out_fence = -1, prime_fd = -1;
+	int render_sync_file = -1, rc = 1;
 
 	if (argc < 2 || argc > 4) {
 		fprintf(stderr,
@@ -382,7 +384,8 @@ int main(int argc, char **argv)
 		if (atomic_modeset(fd, connector->connector_id, crtc,
 				   plane_resources->planes[0], external_framebuffer,
 				   &connector->modes[0], render_sync_file,
-				   &atomic_out_fence)) {
+				   &atomic_out_fence,
+				   DRM_MODE_ATOMIC_ALLOW_MODESET)) {
 			perror("external PRIME atomic modeset");
 			goto out;
 		}
@@ -442,12 +445,34 @@ int main(int argc, char **argv)
 		fill_rect(pixels, create.pitch, &band_clip, color(band), create.bpp);
 	}
 	modeset_started = monotonic_seconds();
-	if (drmModeSetCrtc(fd, crtc, framebuffer, 0, 0,
-			   &connector->connector_id, 1, &connector->modes[0])) {
-		perror("modeset");
+	if (atomic_modeset(fd, connector->connector_id, crtc,
+			   plane_resources->planes[0], framebuffer,
+			   &connector->modes[0], -1, &nonblock_out_fence,
+			   DRM_MODE_ATOMIC_ALLOW_MODESET |
+			   DRM_MODE_ATOMIC_NONBLOCK)) {
+		perror("nonblocking atomic modeset");
 		goto out;
 	}
 	modeset_seconds = monotonic_seconds() - modeset_started;
+	if (modeset_seconds >= 0.005) {
+		fprintf(stderr, "nonblocking atomic commit took %.3f ms\n",
+			modeset_seconds * 1000.0);
+		goto out;
+	}
+	{
+		struct pollfd completed = {
+			.fd = nonblock_out_fence,
+			.events = POLLIN,
+		};
+
+		if (nonblock_out_fence < 0 || poll(&completed, 1, 1000) != 1 ||
+		    !(completed.revents & POLLIN)) {
+			fputs("nonblocking atomic out fence did not signal\n", stderr);
+			goto out;
+		}
+	}
+	modeset_completed_seconds = monotonic_seconds() - modeset_started;
+	puts("DRM atomic nonblocking PASS: commit returned before DMA and out fence signaled");
 	fill_rect(pixels, create.pitch, &clips[0], 0x00ffffff, create.bpp);
 	dirty_started = monotonic_seconds();
 	if (drmModeDirtyFB(fd, framebuffer, &clips[0], 1)) {
@@ -469,9 +494,10 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	dirty_seconds[2] = monotonic_seconds() - dirty_started;
-	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs dirty1=%.6fs dirty2=%.6fs active_full=%.6fs hold=%us\n",
+	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs modeset_done=%.6fs dirty1=%.6fs dirty2=%.6fs active_full=%.6fs hold=%us\n",
 	       create.width, create.height, create.pitch,
 	       (unsigned long long)create.size, modeset_seconds,
+	       modeset_completed_seconds,
 	       dirty_seconds[0], dirty_seconds[1], dirty_seconds[2], hold_seconds);
 	fflush(stdout);
 	{
@@ -488,6 +514,8 @@ out:
 		close(render_sync_file);
 	if (atomic_out_fence >= 0)
 		close(atomic_out_fence);
+	if (nonblock_out_fence >= 0)
+		close(nonblock_out_fence);
 	if (render_syncobj && fd >= 0)
 		drmSyncobjDestroy(fd, render_syncobj);
 	if (render_handle && fd >= 0) {

@@ -147,6 +147,10 @@ WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は�
 完了sync_fileを取得するatomic modesetも実機で通しました。atomic commit後に入力fenceと
 出力fenceの両方がsignalされ、XRGB8888外部PRIME framebufferのDMA転送と表示まで
 完了します。これによりimplicit reservation fenceとexplicit atomic fenceの両経路を回帰で覆います。
+`DRM_MODE_ATOMIC_NONBLOCK`で通常のDMA-backed framebufferへ切り替える回帰も追加し、
+XRGB8888実機でatomic ioctlは0.399msで復帰、約30.000ms後にout fenceがsignalされました。
+これにより、ユーザー空間は全面変換／PCIe DMA／VBlankをioctl内で待たず、完了を
+標準sync_fileで受け取れます。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、
