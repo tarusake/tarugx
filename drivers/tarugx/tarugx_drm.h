@@ -79,7 +79,8 @@ struct drm_tarugx_submit_gem {
 	__u32 count;
 	__u32 flags;
 	__u32 fence;
-	__u32 pad[4];
+	__u32 out_syncobj; /* optional binary syncobj signaled by the final fence */
+	__u32 pad[3];
 	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
 };
 

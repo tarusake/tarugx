@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -115,8 +116,11 @@ int main(int argc, char **argv)
             },
         },
     };
+    struct drm_tarugx_submit_gem foreign_batch;
+    struct drm_tarugx_submit_gem invalid_sync_batch;
     volatile uint32_t *vram_map;
     uint32_t fb_id = 0;
+    uint32_t syncobj = 0;
     uint32_t fb_handles[4] = { 0 };
     uint32_t fb_pitches[4] = { 0 };
     uint32_t fb_offsets[4] = { 0 };
@@ -124,7 +128,8 @@ int main(int argc, char **argv)
     struct timespec cpu_started, cpu_finished;
     double submit_ms, stress_s, cpu_s;
     unsigned int iteration;
-    int fd, other, render = -1, render_other = -1, result = 1;
+    int fd, other, render = -1, render_other = -1, sync_file = -1;
+    int result = 1;
 
     if (argc != 3) {
         fprintf(stderr, "usage: %s /dev/dri/cardN /dev/dri/renderDN\n",
@@ -255,9 +260,37 @@ vram_gem_done:
         perror("render-node DRM_IOCTL_TARUGX_VRAM_CREATE");
         goto out_render;
     }
+    invalid_sync_batch = render_batch;
+    invalid_sync_batch.handle = render_vram.handle;
+    invalid_sync_batch.flags = 0;
+    invalid_sync_batch.out_syncobj = 1;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM,
+                     &invalid_sync_batch, EINVAL)) {
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (drmSyncobjCreate(render, 0, &syncobj)) {
+        perror("drmSyncobjCreate");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    invalid_sync_batch = render_batch;
+    invalid_sync_batch.handle = UINT32_MAX;
+    invalid_sync_batch.out_syncobj = syncobj;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM,
+                     &invalid_sync_batch, ENOENT)) {
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
     render_batch.handle = render_vram.handle;
+    render_batch.out_syncobj = syncobj;
     if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
         perror("render-node DRM_IOCTL_TARUGX_SUBMIT_GEM");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (drmSyncobjExportSyncFile(render, syncobj, &sync_file)) {
+        perror("drmSyncobjExportSyncFile");
         close_handle(render, render_vram.handle);
         goto out_render;
     }
@@ -267,8 +300,10 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
+    foreign_batch = render_batch;
+    foreign_batch.out_syncobj = 0;
     if (expect_errno(render_other, DRM_IOCTL_TARUGX_SUBMIT_GEM,
-                     &render_batch, ENOENT)) {
+                     &foreign_batch, ENOENT)) {
         close_handle(render, render_vram.handle);
         goto out_render;
     }
@@ -282,6 +317,22 @@ vram_gem_done:
     }
     close(render_other);
     render_other = -1;
+    {
+        struct pollfd sync_poll = { .fd = sync_file, .events = POLLIN };
+
+        if (poll(&sync_poll, 1, 1000) != 1 || !(sync_poll.revents & POLLIN)) {
+            fputs("exported sync_file did not signal\n", stderr);
+            close_handle(render, render_vram.handle);
+            goto out_render;
+        }
+    }
+    close(sync_file);
+    sync_file = -1;
+    if (drmSyncobjWait(render, &syncobj, 1, INT64_MAX, 0, NULL)) {
+        perror("drmSyncobjWait");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
     if (ioctl(render, DRM_IOCTL_TARUGX_WAIT, &wait)) {
         perror("render-node DRM_IOCTL_TARUGX_WAIT");
         close_handle(render, render_vram.handle);
@@ -291,10 +342,15 @@ vram_gem_done:
         perror("close render-node VRAM GEM");
         goto out_render;
     }
+    if (drmSyncobjDestroy(render, syncobj)) {
+        perror("drmSyncobjDestroy");
+        goto out_render;
+    }
+    syncobj = 0;
     close(render);
     render = -1;
-    puts("DRM render node PASS: non-master GEM create, fenced fill/blit; "
-         "screen fill denied");
+    puts("DRM render node PASS: non-master GEM create, syncobj/sync_file + "
+         "private fence fill/blit; screen fill denied");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;
@@ -368,8 +424,12 @@ out_other:
     close(other);
     goto out_drop;
 out_render:
+    if (sync_file >= 0)
+        close(sync_file);
     if (render_other >= 0)
         close(render_other);
+    if (syncobj)
+        drmSyncobjDestroy(render, syncobj);
     close(render);
     close(other);
 out_drop:

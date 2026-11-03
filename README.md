@@ -142,6 +142,13 @@ surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲�
 nodeから明示的に拒否し、別fdのGEM handleによるsubmitとfence回収もそれぞれ`ENOENT`、
 `EPERM`で拒否します。2026-11-04の実機回帰ではrender nodeを含む496命令、120バッチを
 render failure 0、プロセスCPU 0.6%で処理し、RGB565 GEMの直接scanoutにも復帰しました。
+ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
+syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
+完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
+`out_syncobj=0`の既存アプリとprivate fence／WAIT ABIもそのまま利用できます。実機では
+同じバッチを`drmSyncobjWait()`とprivate WAITの両方で回収し、496命令をfailure 0で
+完了しました。syncobjからexportした`sync_file`も`poll()`で完了を受信できます。
+存在しないsyncobj、同期submitとの組合せ、別fdのhandleも拒否します。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -264,7 +271,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   GEM対象fill/blitはrender node対応のprivate ioctlとしてコマンドキュー、fence、MSIまで
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
-  直接scanoutまで実装済みです。標準DRM scheduler、dma-fence、syncobjへの統合は未実装です。
+  直接scanout、binary syncobj出力まで実装済みです。標準DRM scheduler、timeline
+  syncobj、複数同時バッチ、GEM reservationへのimplicit fence統合は未実装です。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。

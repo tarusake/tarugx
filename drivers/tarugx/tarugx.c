@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-fence.h>
 #include <linux/iosys-map.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
@@ -28,6 +29,7 @@
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+#include <drm/drm_syncobj.h>
 #include <drm/drm_vma_manager.h>
 
 #include "tarugx_drm.h"
@@ -75,6 +77,11 @@ struct tarugx {
 	bool removing;
 	wait_queue_head_t vblank_wait;
 	wait_queue_head_t render_wait;
+	spinlock_t render_fence_lock;
+	u64 render_fence_context;
+	atomic64_t render_fence_seqno;
+	struct dma_fence *render_sync_fence;
+	u32 render_sync_hw_fence;
 	u32 render_fence;
 	bool render_async_valid;
 	bool render_async_completed;
@@ -102,6 +109,10 @@ struct tarugx_vram_object {
 	u32 width;
 	u32 height;
 	u32 pitch;
+};
+
+struct tarugx_dma_fence {
+	struct dma_fence base;
 };
 
 struct tarugx_host_object {
@@ -277,6 +288,80 @@ static u32 tgx_next_render_fence(struct tarugx *tgx)
 	if (!tgx->render_fence)
 		tgx->render_fence++;
 	return tgx->render_fence;
+}
+
+static const char *tgx_dma_fence_get_driver_name(struct dma_fence *fence)
+{
+	return "tarugx";
+}
+
+static const char *tgx_dma_fence_get_timeline_name(struct dma_fence *fence)
+{
+	return "tarugx-render";
+}
+
+static void tgx_dma_fence_release(struct dma_fence *fence)
+{
+	struct tarugx_dma_fence *tgx_fence =
+		container_of(fence, struct tarugx_dma_fence, base);
+
+	kfree(tgx_fence);
+}
+
+static const struct dma_fence_ops tgx_dma_fence_ops = {
+	.use_64bit_seqno = true,
+	.get_driver_name = tgx_dma_fence_get_driver_name,
+	.get_timeline_name = tgx_dma_fence_get_timeline_name,
+	.release = tgx_dma_fence_release,
+};
+
+static struct dma_fence *tgx_create_dma_fence(struct tarugx *tgx)
+{
+	struct tarugx_dma_fence *fence;
+
+	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+	if (!fence)
+		return NULL;
+	dma_fence_init(&fence->base, &tgx_dma_fence_ops,
+			&tgx->render_fence_lock, tgx->render_fence_context,
+			atomic64_inc_return(&tgx->render_fence_seqno));
+	return &fence->base;
+}
+
+static void tgx_signal_sync_fence(struct tarugx *tgx, int error)
+{
+	struct dma_fence *fence;
+	unsigned long flags;
+
+	spin_lock_irqsave(&tgx->render_fence_lock, flags);
+	fence = tgx->render_sync_fence;
+	if (fence) {
+		tgx->render_sync_fence = NULL;
+		if (error)
+			dma_fence_set_error(fence, error);
+		dma_fence_signal_locked(fence);
+	}
+	spin_unlock_irqrestore(&tgx->render_fence_lock, flags);
+	if (fence)
+		dma_fence_put(fence);
+}
+
+static void tgx_update_sync_fence(struct tarugx *tgx)
+{
+	u32 status;
+
+	if (!READ_ONCE(tgx->render_sync_fence))
+		return;
+	if (READ_ONCE(tgx->removing)) {
+		tgx_signal_sync_fence(tgx, -ENODEV);
+		return;
+	}
+	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	if (status & TGX_QUEUE_ERROR)
+		tgx_signal_sync_fence(tgx, -EIO);
+	else if (readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) ==
+		 READ_ONCE(tgx->render_sync_hw_fence))
+		tgx_signal_sync_fence(tgx, 0);
 }
 
 static bool tgx_command_valid(const struct drm_tarugx_command *command,
@@ -750,18 +835,36 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
 	struct drm_tarugx_submit_gem *args = data;
 	struct drm_gem_object *gem;
+	struct drm_syncobj *syncobj = NULL;
+	struct dma_fence *sync_fence = NULL;
 	struct tarugx_vram_object *object;
+	unsigned long irq_flags;
 	bool async;
 	u32 i;
 	int idx, ret;
 
 	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS ||
 	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad[0] ||
-	    args->pad[1] || args->pad[2] || args->pad[3])
+	    args->pad[1] || args->pad[2])
 		return -EINVAL;
+	async = args->flags & DRM_TARUGX_SUBMIT_ASYNC;
+	if (args->out_syncobj && !async)
+		return -EINVAL;
+	if (args->out_syncobj) {
+		syncobj = drm_syncobj_find(file, args->out_syncobj);
+		if (!syncobj)
+			return -ENOENT;
+		sync_fence = tgx_create_dma_fence(tgx);
+		if (!sync_fence) {
+			ret = -ENOMEM;
+			goto out_syncobj;
+		}
+	}
 	gem = drm_gem_object_lookup(file, args->handle);
-	if (!gem)
-		return -ENOENT;
+	if (!gem) {
+		ret = -ENOENT;
+		goto out_fence;
+	}
 	if (gem->funcs != &tgx_vram_object_funcs) {
 		ret = -EINVAL;
 		goto out_put;
@@ -782,7 +885,6 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		ret = -ENODEV;
 		goto out_put;
 	}
-	async = args->flags & DRM_TARUGX_SUBMIT_ASYNC;
 	mutex_lock(&tgx->render_lock);
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
 				   object->node.start, object->pitch,
@@ -790,11 +892,30 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	if (!ret && async) {
 		tgx->render_async_gem = gem;
 		gem = NULL;
+		if (sync_fence) {
+			/* The syncobj takes its own reference.  The original reference
+			 * remains owned by the IRQ path until signal or teardown. */
+			drm_syncobj_replace_fence(syncobj, sync_fence);
+			spin_lock_irqsave(&tgx->render_fence_lock, irq_flags);
+			WARN_ON(tgx->render_sync_fence);
+			tgx->render_sync_hw_fence = args->fence;
+			tgx->render_sync_fence = sync_fence;
+			sync_fence = NULL;
+			spin_unlock_irqrestore(&tgx->render_fence_lock, irq_flags);
+		}
 	}
 	mutex_unlock(&tgx->render_lock);
+	if (!ret)
+		tgx_update_sync_fence(tgx);
 	drm_dev_exit(idx);
 out_put:
 	drm_gem_object_put(gem);
+out_fence:
+	if (sync_fence)
+		dma_fence_put(sync_fence);
+out_syncobj:
+	if (syncobj)
+		drm_syncobj_put(syncobj);
 	return ret;
 }
 
@@ -1107,6 +1228,7 @@ static irqreturn_t tgx_irq(int irq, void *data)
 	struct tarugx *tgx = data;
 
 	atomic64_inc(&tgx->msi_interrupts);
+	tgx_update_sync_fence(tgx);
 	wake_up_all(&tgx->vblank_wait);
 	wake_up_all(&tgx->render_wait);
 	return IRQ_HANDLED;
@@ -1778,7 +1900,7 @@ static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
 }
 static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC |
-		DRIVER_RENDER,
+		DRIVER_RENDER | DRIVER_SYNCOBJ,
 	.fops = &tgx_fops,
 	.postclose = tgx_postclose,
 	.dumb_create = tgx_dumb_create,
@@ -1789,7 +1911,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 6,
+	.major = 0, .minor = 7,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -1843,6 +1965,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	mutex_init(&tgx->dma_lock);
 	mutex_init(&tgx->render_lock);
 	mutex_init(&tgx->vram_lock);
+	spin_lock_init(&tgx->render_fence_lock);
+	tgx->render_fence_context = dma_fence_context_alloc(1);
 	tgx->regs = pcim_iomap_table(pdev)[0];
 	tgx->vram = pcim_iomap_table(pdev)[2];
 	init_waitqueue_head(&tgx->vblank_wait);
@@ -1936,6 +2060,7 @@ static void tgx_stop_waiters(struct tarugx *tgx)
 	 * begins.  Publish removal before masking MSI, then wake both classes of
 	 * waiter so they return immediately instead of reaching their timeout. */
 	WRITE_ONCE(tgx->removing, true);
+	tgx_signal_sync_fence(tgx, -ENODEV);
 	wake_up_all(&tgx->render_wait);
 	wake_up_all(&tgx->vblank_wait);
 }
