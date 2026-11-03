@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Two-outstanding PCIe host-memory to VRAM DMA read engine.
+/// Four-outstanding PCIe host-memory to VRAM DMA read engine.
 ///
 /// Requests are split at 64-byte Read Completion Boundaries and may contain up
-/// to sixteen DWORDs. Two tags may be active concurrently; Completion chunks
+/// to sixteen DWORDs. Four tags may be active concurrently; Completion chunks
 /// are associated with their request slot and written through the 256-bit VRAM
 /// path. Completion packets may arrive in either tag order.
 module pcie_dma_read_engine #(
@@ -23,10 +23,8 @@ module pcie_dma_read_engine #(
     mrd_host_address: output logic<64> ,
     mrd_length_dw   : output logic<5>  ,
     mrd_tag         : output logic<8>  ,
-    active0_valid   : output logic     ,
-    active0_tag     : output logic<8>  ,
-    active1_valid   : output logic     ,
-    active1_tag     : output logic<8>  ,
+    active_valid    : output logic<4>  ,
+    active_tags     : output logic<32> ,
     cpl_valid       : input  logic     ,
     cpl_ready       : output logic     ,
     cpl_has_data    : input  logic     ,
@@ -57,14 +55,14 @@ module pcie_dma_read_engine #(
     var length_bytes      : logic<32> ;
     var issue_remaining_dw: logic<30> ;
     var next_tag          : logic<8>  ;
-    var slot_valid        : logic<2>  ;
-    var slot_tag          : logic<8>  [2];
-    var slot_host         : logic<64> [2];
-    var slot_vram         : logic<32> [2];
-    var slot_length       : logic<5>  [2];
-    var slot_done         : logic<5>  [2];
+    var slot_valid        : logic<4>  ;
+    var slot_tag          : logic<8>  [4];
+    var slot_host         : logic<64> [4];
+    var slot_vram         : logic<32> [4];
+    var slot_length       : logic<5>  [4];
+    var slot_done         : logic<5>  [4];
     var chunk_pending     : logic     ;
-    var chunk_slot        : logic     ;
+    var chunk_slot        : logic<2>  ;
     var chunk_words       : logic<256>;
     var chunk_left        : logic<4>  ;
     var chunk_total       : logic<4>  ;
@@ -82,23 +80,31 @@ module pcie_dma_read_engine #(
         && (length_bytes != 0) && (length_bytes[1:0] == 0)
         && (command_end <= 33'h00400000)
         && ((issue_host + (length_bytes as 64)) >= issue_host);
-    let issue_slot: logic = slot_valid[0];
+    let issue_slot: logic<2> = if !slot_valid[0] ? 0
+        : if !slot_valid[1] ? 1
+        : if !slot_valid[2] ? 2
+        : 3;
     let slot_available: logic = !(&slot_valid);
     let tag_available: logic = !(slot_valid[0] && (slot_tag[0] == next_tag))
-        && !(slot_valid[1] && (slot_tag[1] == next_tag));
+        && !(slot_valid[1] && (slot_tag[1] == next_tag))
+        && !(slot_valid[2] && (slot_tag[2] == next_tag))
+        && !(slot_valid[3] && (slot_tag[3] == next_tag));
     let issue_possible: logic = (state == State::Run) && (issue_remaining_dw != 0)
         && slot_available && tag_available;
-    let cpl_match0: logic = slot_valid[0] && (slot_tag[0] == cpl_tag);
-    let cpl_match1: logic = slot_valid[1] && (slot_tag[1] == cpl_tag);
-    let cpl_slot: logic = !cpl_match0;
-    let expected_address0: logic<64> = slot_host[0] + ((slot_done[0] as 64) << 2);
-    let expected_address1: logic<64> = slot_host[1] + ((slot_done[1] as 64) << 2);
-    let cpl_expected_lower: logic<7> = if cpl_slot ? expected_address1[6:0] : expected_address0[6:0];
-    let cpl_remaining0: logic<6> = (slot_length[0] as 6) - (slot_done[0] as 6);
-    let cpl_remaining1: logic<6> = (slot_length[1] as 6) - (slot_done[1] as 6);
-    let cpl_remaining: logic<6> = if cpl_slot ? cpl_remaining1 : cpl_remaining0;
-    let cpl_vram0: logic<32> = slot_vram[0] + ((slot_done[0] as 32) << 2);
-    let cpl_vram1: logic<32> = slot_vram[1] + ((slot_done[1] as 32) << 2);
+    let cpl_match: logic<4> = {
+        slot_valid[3] && (slot_tag[3] == cpl_tag),
+        slot_valid[2] && (slot_tag[2] == cpl_tag),
+        slot_valid[1] && (slot_tag[1] == cpl_tag),
+        slot_valid[0] && (slot_tag[0] == cpl_tag),
+    };
+    let cpl_slot: logic<2> = if cpl_match[0] ? 0
+        : if cpl_match[1] ? 1
+        : if cpl_match[2] ? 2
+        : 3;
+    let expected_address: logic<64> = slot_host[cpl_slot] + ((slot_done[cpl_slot] as 64) << 2);
+    let cpl_expected_lower: logic<7> = expected_address[6:0];
+    let cpl_remaining: logic<6> = (slot_length[cpl_slot] as 6) - (slot_done[cpl_slot] as 6);
+    let cpl_vram: logic<32> = slot_vram[cpl_slot] + ((slot_done[cpl_slot] as 32) << 2);
     let shifted_words: logic<256> = chunk_words >> ((chunk_index as 8) * 8'd32);
     let write_word_count: logic<4> = if (write_vram[4:0] == 0) && (chunk_left >= 4'd8) ?
         4'd8
@@ -110,10 +116,11 @@ module pcie_dma_read_engine #(
     let progress: logic = (mrd_valid && mrd_ready) || (cpl_valid && cpl_ready)
         || (fb_req_valid && fb_req_ready) || (fb_rsp_valid && fb_rsp_ready);
 
-    assign active0_valid    = slot_valid[0];
-    assign active0_tag      = slot_tag[0];
-    assign active1_valid    = slot_valid[1];
-    assign active1_tag      = slot_tag[1];
+    assign active_valid     = slot_valid;
+    assign active_tags[7:0] = slot_tag[0];
+    assign active_tags[15:8] = slot_tag[1];
+    assign active_tags[23:16] = slot_tag[2];
+    assign active_tags[31:24] = slot_tag[3];
     assign cmd_ready        = state == State::Idle;
     assign busy             = state != State::Idle;
     assign mrd_valid        = issue_possible;
@@ -121,7 +128,7 @@ module pcie_dma_read_engine #(
     assign mrd_length_dw    = next_request_dw;
     assign mrd_tag          = next_tag;
     assign cpl_ready        = (state == State::Run) && !chunk_pending
-        && (cpl_match0 || cpl_match1);
+        && (|cpl_match);
     assign fb_req_valid     = (state == State::Run) && chunk_pending && (fb_outstanding <: 8);
     assign fb_req_addr      = write_vram;
     assign fb_req_wdata     = shifted_words;
@@ -220,7 +227,7 @@ module pcie_dma_read_engine #(
                             chunk_left    = cpl_length_dw;
                             chunk_total   = cpl_length_dw;
                             chunk_index   = 0;
-                            write_vram    = if cpl_slot ? cpl_vram1 : cpl_vram0;
+                            write_vram    = cpl_vram;
                         }
                     }
 

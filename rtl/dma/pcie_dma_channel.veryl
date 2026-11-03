@@ -40,10 +40,8 @@ module pcie_dma_channel #(
     var mrd_host_address: logic<64>;
     var mrd_length_dw   : logic<5> ;
     var mrd_tag         : logic<8> ;
-    var active0_valid   : logic    ;
-    var active0_tag     : logic<8> ;
-    var active1_valid   : logic    ;
-    var active1_tag     : logic<8> ;
+    var active_valid    : logic<4> ;
+    var active_tags     : logic<32>;
     var cpl_valid       : logic    ;
     var cpl_ready       : logic    ;
     var cpl_has_data    : logic    ;
@@ -74,10 +72,8 @@ module pcie_dma_channel #(
         mrd_host_address,
         mrd_length_dw,
         mrd_tag,
-        active0_valid,
-        active0_tag,
-        active1_valid,
-        active1_tag,
+        active_valid,
+        active_tags,
         cpl_valid,
         cpl_ready,
         cpl_has_data,
@@ -120,10 +116,8 @@ module pcie_dma_channel #(
         rx_data,
         rx_error,
         expected_requester  : requester_id,
-        active0_valid,
-        active0_tag,
-        active1_valid,
-        active1_tag,
+        active_valid,
+        active_tags,
         completion_ready    : cpl_ready   ,
         rx_wait,
         completion_valid    : cpl_valid   ,
@@ -142,7 +136,9 @@ module pcie_dma_channel #(
     let rx_completion_match: logic = rx_sop
         && ((rx_header_dw0[31:24] == 8'h4a) || (rx_header_dw0[31:24] == 8'h0a))
         && (rx_header_dw2[31:16] == requester_id)
-        && ((active0_valid && (rx_header_dw2[15:8] == active0_tag))
-            || (active1_valid && (rx_header_dw2[15:8] == active1_tag)));
+        && ((active_valid[0] && (rx_header_dw2[15:8] == active_tags[7:0]))
+            || (active_valid[1] && (rx_header_dw2[15:8] == active_tags[15:8]))
+            || (active_valid[2] && (rx_header_dw2[15:8] == active_tags[23:16]))
+            || (active_valid[3] && (rx_header_dw2[15:8] == active_tags[31:24])));
     assign rx_claim = cpl_valid || rx_completion_match;
 }
