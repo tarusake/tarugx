@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
@@ -37,6 +38,7 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_submit batch = {
         .count = 4,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
         .commands = {
             {
                 .opcode = DRM_TARUGX_OP_FILL,
@@ -60,6 +62,9 @@ int main(int argc, char **argv)
             },
         },
     };
+    struct drm_tarugx_wait wait;
+    struct timespec started, returned;
+    double submit_ms;
     int fd, other, result = 1;
 
     if (argc != 2) {
@@ -95,8 +100,22 @@ int main(int argc, char **argv)
         perror("DRM_IOCTL_TARUGX_BLIT");
         goto out_other;
     }
+    clock_gettime(CLOCK_MONOTONIC, &started);
     if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch)) {
         perror("DRM_IOCTL_TARUGX_SUBMIT");
+        goto out_other;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &returned);
+    submit_ms = (returned.tv_sec - started.tv_sec) * 1000.0 +
+                (returned.tv_nsec - started.tv_nsec) / 1000000.0;
+    if (expect_errno(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch, EBUSY))
+        goto out_other;
+    wait = (struct drm_tarugx_wait) {
+        .fence = batch.fence,
+        .timeout_ms = 1000,
+    };
+    if (ioctl(fd, DRM_IOCTL_TARUGX_WAIT, &wait)) {
+        perror("DRM_IOCTL_TARUGX_WAIT");
         goto out_other;
     }
     if (!fill.fence || !blit.fence || fill.fence == blit.fence) {
@@ -111,8 +130,13 @@ int main(int argc, char **argv)
     }
 
     printf("DRM render ioctl PASS: master restriction, bounds, fill fence %u, "
-           "blit fence %u, four-command batch fence %u\n",
-           fill.fence, blit.fence, batch.fence);
+           "blit fence %u, async four-command batch fence %u returned in "
+           "%.3f ms\n", fill.fence, blit.fence, batch.fence, submit_ms);
+    if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch)) {
+        perror("DRM_IOCTL_TARUGX_SUBMIT for postclose test");
+        goto out_other;
+    }
+    printf("DRM render postclose cleanup pending fence %u\n", batch.fence);
     result = 0;
 out_other:
     close(other);

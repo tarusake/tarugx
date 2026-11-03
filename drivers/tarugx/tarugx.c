@@ -61,6 +61,12 @@ struct tarugx {
 	wait_queue_head_t vblank_wait;
 	wait_queue_head_t render_wait;
 	u32 render_fence;
+	bool render_async_valid;
+	bool render_async_completed;
+	struct drm_file *render_async_owner;
+	u32 render_async_fence;
+	u32 render_async_commands;
+	int render_async_result;
 };
 
 #define TGX_WIDTH 640
@@ -223,15 +229,26 @@ static void tgx_program_render(struct tarugx *tgx, u32 base,
 	}
 }
 
-static int tgx_wait_render(struct tarugx *tgx, u32 fence)
+static int tgx_wait_render(struct tarugx *tgx, u32 fence, u32 timeout_ms)
 {
 	u32 status;
 	long waited;
 
+	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	if (status & TGX_QUEUE_ERROR) {
+		dev_warn_ratelimited(tgx->drm.dev,
+			"render command fence %u failed (error fence %u)\n",
+			fence, readl(tgx->regs + TGX_REG_QUEUE_ERROR_FENCE));
+		return -EIO;
+	}
+	if (readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) == fence)
+		return 0;
+	if (!timeout_ms)
+		return -EAGAIN;
 	waited = wait_event_timeout(tgx->render_wait,
 		readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) == fence ||
 		readl(tgx->regs + TGX_REG_QUEUE_STATUS) & TGX_QUEUE_ERROR,
-		msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS));
+		msecs_to_jiffies(timeout_ms));
 	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 	if (status & TGX_QUEUE_ERROR) {
 		dev_warn_ratelimited(tgx->drm.dev,
@@ -244,13 +261,55 @@ static int tgx_wait_render(struct tarugx *tgx, u32 fence)
 	return 0;
 }
 
+static void tgx_clear_async(struct tarugx *tgx)
+{
+	tgx->render_async_valid = false;
+	tgx->render_async_completed = false;
+	tgx->render_async_owner = NULL;
+	tgx->render_async_fence = 0;
+	tgx->render_async_commands = 0;
+	tgx->render_async_result = 0;
+}
+
+static int tgx_reap_async(struct tarugx *tgx, u32 timeout_ms)
+{
+	int ret;
+
+	if (!tgx->render_async_valid)
+		return 0;
+	if (tgx->render_async_completed)
+		return tgx->render_async_result;
+	ret = tgx_wait_render(tgx, tgx->render_async_fence, timeout_ms);
+	if (ret == -EAGAIN || ret == -ETIMEDOUT)
+		return ret;
+	tgx->render_async_completed = true;
+	tgx->render_async_result = ret;
+	if (ret)
+		atomic64_inc(&tgx->render_failures);
+	else
+		atomic64_add(tgx->render_async_commands,
+			     &tgx->render_commands);
+	return ret;
+}
+
 static int tgx_execute_commands(struct tarugx *tgx,
 				const struct drm_tarugx_command *commands,
-				u32 count, u32 *fence_out)
+				u32 count, struct drm_file *async_owner,
+				u32 *fence_out)
 {
-	u32 active, base, fence = 0, irq_mask, status, submitted = 0;
+	u32 active, base, fence = 0, status, submitted = 0;
 	int ret = 0, wait_ret;
 
+	if (tgx->render_async_valid) {
+		if (tgx->render_async_owner)
+			return -EBUSY;
+		ret = tgx_reap_async(tgx, 0);
+		if (!tgx->render_async_completed)
+			return -EBUSY;
+		tgx_clear_async(tgx);
+		if (ret)
+			return ret;
+	}
 	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
 	if (active > 1)
 		return -EIO;
@@ -266,8 +325,6 @@ static int tgx_execute_commands(struct tarugx *tgx,
 		return -EBUSY;
 
 	base = TGX_FB_BASE(active);
-	irq_mask = readl(tgx->regs + TGX_REG_IRQ_ENABLE);
-	writel(irq_mask | TGX_IRQ_RENDER, tgx->regs + TGX_REG_IRQ_ENABLE);
 	for (submitted = 0; submitted < count; submitted++) {
 		status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 		if (!(status & TGX_QUEUE_READY)) {
@@ -284,16 +341,24 @@ static int tgx_execute_commands(struct tarugx *tgx,
 		if (status > atomic64_read(&tgx->render_queue_peak))
 			atomic64_set(&tgx->render_queue_peak, status);
 	}
+	if (!ret && async_owner) {
+		tgx->render_async_valid = true;
+		tgx->render_async_completed = false;
+		tgx->render_async_owner = async_owner;
+		tgx->render_async_fence = fence;
+		tgx->render_async_commands = submitted;
+		tgx->render_async_result = 0;
+		*fence_out = fence;
+		return 0;
+	}
 
 	/* Even an unexpected partial enqueue is drained before releasing the
 	 * render lock, so KMS cannot start a direct blit against an active queue. */
 	if (submitted) {
-		wait_ret = tgx_wait_render(tgx, fence);
+		wait_ret = tgx_wait_render(tgx, fence, TGX_RENDER_TIMEOUT_MS);
 		if (!ret)
 			ret = wait_ret;
 	}
-	writel(irq_mask, tgx->regs + TGX_REG_IRQ_ENABLE);
-	readl(tgx->regs + TGX_REG_IRQ_ENABLE);
 	if (ret) {
 		atomic64_inc(&tgx->render_failures);
 		return ret;
@@ -328,7 +393,7 @@ static int tgx_ioctl_fill(struct drm_device *drm, void *data,
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
 	mutex_lock(&tgx->render_lock);
-	ret = tgx_execute_commands(tgx, &command, 1, &args->fence);
+	ret = tgx_execute_commands(tgx, &command, 1, NULL, &args->fence);
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 	return ret;
@@ -362,7 +427,7 @@ static int tgx_ioctl_blit(struct drm_device *drm, void *data,
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
 	mutex_lock(&tgx->render_lock);
-	ret = tgx_execute_commands(tgx, &command, 1, &args->fence);
+	ret = tgx_execute_commands(tgx, &command, 1, NULL, &args->fence);
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 	return ret;
@@ -376,9 +441,8 @@ static int tgx_ioctl_submit(struct drm_device *drm, void *data,
 	u32 i;
 	int idx, ret;
 
-	(void)file;
 	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS ||
-	    args->flags || args->pad)
+	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad)
 		return -EINVAL;
 	for (i = 0; i < args->count; i++)
 		if (!tgx_command_valid(&args->commands[i]))
@@ -389,7 +453,35 @@ static int tgx_ioctl_submit(struct drm_device *drm, void *data,
 		return -ENODEV;
 	mutex_lock(&tgx->render_lock);
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
+				   args->flags & DRM_TARUGX_SUBMIT_ASYNC ?
+				   file : NULL,
 				   &args->fence);
+	mutex_unlock(&tgx->render_lock);
+	drm_dev_exit(idx);
+	return ret;
+}
+
+static int tgx_ioctl_wait(struct drm_device *drm, void *data,
+			  struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_wait *args = data;
+	int idx, ret;
+
+	if (args->flags || args->pad || args->timeout_ms > 1000)
+		return -EINVAL;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&tgx->render_lock);
+	if (!tgx->render_async_valid || tgx->render_async_owner != file ||
+	    tgx->render_async_fence != args->fence) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+	ret = tgx_reap_async(tgx, args->timeout_ms);
+	if (tgx->render_async_completed)
+		tgx_clear_async(tgx);
+out_unlock:
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 	return ret;
@@ -703,6 +795,21 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	if (!drm_dev_enter(&tgx->drm, &idx))
 		return;
 	mutex_lock(&tgx->render_lock);
+	if (tgx->render_async_valid) {
+		u32 pending_fence = tgx->render_async_fence;
+
+		ret = tgx_reap_async(tgx, TGX_RENDER_TIMEOUT_MS);
+		if (!tgx->render_async_owner && tgx->render_async_completed)
+			tgx_clear_async(tgx);
+		if (ret) {
+			dev_warn_ratelimited(tgx->drm.dev,
+				"KMS update deferred by render fence %u: %d\n",
+				pending_fence, ret);
+			mutex_unlock(&tgx->render_lock);
+			drm_dev_exit(idx);
+			return;
+		}
+	}
 	/* A partial update starts from an exact copy of the active physical page.
 	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
 	 * the damage rectangle is guaranteed to contain new valid contents. */
@@ -862,10 +969,29 @@ static const struct drm_mode_config_funcs tgx_mode_config_funcs = {
 };
 DEFINE_DRM_GEM_FOPS(tgx_fops);
 
+static void tgx_postclose(struct drm_device *drm, struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
+	mutex_lock(&tgx->render_lock);
+	if (tgx->render_async_valid && tgx->render_async_owner == file) {
+		tgx_reap_async(tgx, TGX_RENDER_TIMEOUT_MS);
+		tgx->render_async_owner = NULL;
+		if (tgx->render_async_completed)
+			tgx_clear_async(tgx);
+	}
+	mutex_unlock(&tgx->render_lock);
+	drm_dev_exit(idx);
+}
+
 static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_FILL, tgx_ioctl_fill, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_BLIT, tgx_ioctl_blit, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT, tgx_ioctl_submit, DRM_MASTER),
+	DRM_IOCTL_DEF_DRV(TARUGX_WAIT, tgx_ioctl_wait, DRM_AUTH),
 };
 
 static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
@@ -877,14 +1003,15 @@ static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
 static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &tgx_fops,
+	.postclose = tgx_postclose,
 	DRM_GEM_SHMEM_DRIVER_OPS,
 	.ioctls = tgx_ioctls,
 	.num_ioctls = ARRAY_SIZE(tgx_ioctls),
 	.gem_prime_import = tgx_prime_import,
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
-	.date = "20261031",
-	.major = 0, .minor = 1,
+	.date = "20261103",
+	.major = 0, .minor = 2,
 };
 
 static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -972,7 +1099,9 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			       "tarugx-vblank", tgx);
 	if (ret)
 		return ret;
-	writel(TGX_IRQ_VBLANK, tgx->regs + TGX_REG_IRQ_ENABLE);
+	writel(TGX_IRQ_VBLANK |
+	       (tgx->render_available ? TGX_IRQ_RENDER : 0),
+	       tgx->regs + TGX_REG_IRQ_ENABLE);
 	readl(tgx->regs);
 	ret = devm_add_action_or_reset(&pdev->dev, tgx_disable_msi, tgx);
 	if (ret)

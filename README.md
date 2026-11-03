@@ -113,6 +113,10 @@ CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全
 `render_commands`と`render_failures`属性で確認できます。
 複数命令をまとめる`DRM_IOCTL_TARUGX_SUBMIT`は最大4命令を連続投入し、最後のfenceだけを
 待ちます。`render_queue_peak`にはドライバーが観測した最大待機命令数を記録します。
+`DRM_TARUGX_SUBMIT_ASYNC`を指定するとsubmitは投入直後に戻り、返されたfenceを
+`DRM_IOCTL_TARUGX_WAIT`で待てます。未回収の非同期バッチはDRMファイルごとに1件に制限し、
+別ファイルからの回収を拒否します。WAITせずファイルを閉じた場合は`postclose`で回収し、
+KMS更新と重なった場合もfence完了を待ってから表示用のblitやページ更新を開始します。
 
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。

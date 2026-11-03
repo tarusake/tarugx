@@ -34,6 +34,7 @@ struct drm_tarugx_blit {
 #define DRM_TARUGX_OP_FILL 1
 #define DRM_TARUGX_OP_BLIT 2
 #define DRM_TARUGX_MAX_COMMANDS 4
+#define DRM_TARUGX_SUBMIT_ASYNC (1U << 0)
 
 struct drm_tarugx_command {
 	__u32 opcode;
@@ -56,9 +57,17 @@ struct drm_tarugx_submit {
 	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
 };
 
+struct drm_tarugx_wait {
+	__u32 fence;
+	__u32 timeout_ms; /* zero performs a non-blocking poll */
+	__u32 flags;
+	__u32 pad;
+};
+
 #define DRM_TARUGX_FILL 0x00
 #define DRM_TARUGX_BLIT 0x01
 #define DRM_TARUGX_SUBMIT 0x02
+#define DRM_TARUGX_WAIT 0x03
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -66,5 +75,7 @@ struct drm_tarugx_submit {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_BLIT, struct drm_tarugx_blit)
 #define DRM_IOCTL_TARUGX_SUBMIT \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT, struct drm_tarugx_submit)
+#define DRM_IOCTL_TARUGX_WAIT \
+	DRM_IOW(DRM_COMMAND_BASE + DRM_TARUGX_WAIT, struct drm_tarugx_wait)
 
 #endif
