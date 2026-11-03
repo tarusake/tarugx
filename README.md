@@ -105,6 +105,22 @@ DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe 
 従来の64-bit BAR2書込みへフォールバックします。部分更新は損傷矩形だけをBAR2へ
 転送するため、不要な全画面DMAは行いません。
 
+2D fill/blitは`drivers/tarugx/tarugx_drm.h`のprivate DRM ioctlから利用できます。
+ioctlはDRM masterだけに許可し、任意のVRAMアドレスではなく640×480画面内の座標だけを
+受け付けます。ドライバーは表示中ページのアドレスへ変換してコマンドキューへ投入し、
+CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全性を優先した同期APIで、
+各呼出しは完了または100msのtimeoutまで待ちます。成功・失敗数はPCIデバイスの
+`render_commands`と`render_failures`属性で確認できます。
+
+実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
+master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
+後者は表示サービスを一時停止し、終了時には従来モジュールとサービスを復元します。
+
+```sh
+python3 tools/build_remote_driver.py
+python3 tools/test_drm_render_ioctl.py
+```
+
 BAR2とDMAのDRM全面更新を同じ条件で比較する場合は、次を実行します。リポジトリの
 最新KMSテストをホスト上の一時ディレクトリでビルドするため、古いテストバイナリを
 誤って使いません。測定前の`dma_upload`値と表示サービスは終了時に復元します。
@@ -191,9 +207,10 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
 
 - DRMの既定経路は、DMA対応FPGAでの全面更新にPCIe DMA、部分更新にCPUからBAR2への
   64-bit書込みを使用します。`dma_upload=0`の場合は全面更新もBAR2を使用します。
-  部分更新前のページ同期にはFPGAの2D blitを使用しますが、fillとコマンドキューは
-  通常描画へ未統合です。
-  GEMバッファ、fence、ユーザー空間描画APIへの本格統合も未実装です。
+  部分更新前のページ同期にはFPGAの2D blitを使用します。fill/blitはDRM master限定の
+  同期private ioctlとしてコマンドキュー、fence、MSIまで統合済みですが、通常の
+  Xorg描画が自動利用する段階ではありません。GEMバッファ単位の描画、非同期fence、
+  複数コマンド一括投入、安全な一般ユーザー向けAPIへの本格統合は未実装です。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は

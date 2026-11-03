@@ -19,10 +19,13 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
+#include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+
+#include "tarugx_drm.h"
 
 static bool dma_upload = true;
 module_param(dma_upload, bool, 0644);
@@ -36,6 +39,7 @@ struct tarugx {
 	struct pci_dev *pdev;
 	void __iomem *regs, *vram;
 	struct mutex dma_lock;
+	struct mutex render_lock;
 	void *dma_staging;
 	dma_addr_t dma_staging_addr;
 	atomic64_t page_flips;
@@ -48,9 +52,14 @@ struct tarugx {
 	atomic64_t blit_sync_failures;
 	atomic64_t dma_uploads;
 	atomic64_t dma_upload_failures;
+	atomic64_t render_commands;
+	atomic64_t render_failures;
 	bool dma_available;
+	bool render_available;
 	bool legacy_single_buffer;
 	wait_queue_head_t vblank_wait;
+	wait_queue_head_t render_wait;
+	u32 render_fence;
 };
 
 #define TGX_WIDTH 640
@@ -65,6 +74,12 @@ struct tarugx {
 #define TGX_REG_ACTIVE_BUFFER 0x28
 #define TGX_REG_VBLANK_TOGGLE 0x2c
 #define TGX_REG_IRQ_ENABLE 0x30
+#define TGX_IRQ_VBLANK BIT(0)
+#define TGX_IRQ_RENDER BIT(1)
+#define TGX_REG_FILL_ADDR 0x60
+#define TGX_REG_FILL_STRIDE 0x64
+#define TGX_REG_FILL_SIZE 0x68
+#define TGX_REG_FILL_COLOR 0x6c
 #define TGX_REG_BLIT_SRC 0x80
 #define TGX_REG_BLIT_DST 0x84
 #define TGX_REG_BLIT_SRC_STRIDE 0x88
@@ -75,6 +90,18 @@ struct tarugx {
 #define TGX_BLIT_STATUS_BUSY BIT(0)
 #define TGX_BLIT_STATUS_DONE BIT(1)
 #define TGX_BLIT_STATUS_ERROR BIT(2)
+#define TGX_REG_QUEUE_FENCE 0xa0
+#define TGX_REG_QUEUE_SUBMIT 0xa4
+#define TGX_REG_QUEUE_STATUS 0xa8
+#define TGX_REG_QUEUE_COMPLETED 0xac
+#define TGX_REG_QUEUE_ERROR_FENCE 0xb0
+#define TGX_QUEUE_LEVEL GENMASK(2, 0)
+#define TGX_QUEUE_READY BIT(3)
+#define TGX_QUEUE_ACTIVE BIT(4)
+#define TGX_QUEUE_ERROR BIT(5)
+#define TGX_QUEUE_OPCODE_FILL 1
+#define TGX_QUEUE_OPCODE_BLIT 2
+#define TGX_RENDER_TIMEOUT_MS 100
 #define TGX_REG_DMA_HOST_LO 0xc0
 #define TGX_REG_DMA_HOST_HI 0xc4
 #define TGX_REG_DMA_VRAM 0xc8
@@ -141,6 +168,146 @@ static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 	if (ret)
 		return ret;
 	return status & TGX_BLIT_STATUS_ERROR ? -EIO : 0;
+}
+
+static bool tgx_rect_valid(u32 x, u32 y, u32 width, u32 height)
+{
+	return width && height && x < TGX_WIDTH && y < TGX_HEIGHT &&
+		width <= TGX_WIDTH - x && height <= TGX_HEIGHT - y;
+}
+
+static u32 tgx_next_render_fence(struct tarugx *tgx)
+{
+	tgx->render_fence++;
+	if (!tgx->render_fence)
+		tgx->render_fence++;
+	return tgx->render_fence;
+}
+
+static int tgx_submit_render(struct tarugx *tgx, u32 opcode, u32 *fence_out)
+{
+	u32 fence, irq_mask, status;
+	long waited;
+	int ret = 0;
+
+	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	if (status & TGX_QUEUE_ERROR) {
+		writel(TGX_QUEUE_ERROR, tgx->regs + TGX_REG_QUEUE_STATUS);
+		status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	}
+	if (status & TGX_QUEUE_ERROR)
+		return -EIO;
+	if (!(status & TGX_QUEUE_READY))
+		return -EBUSY;
+
+	fence = tgx_next_render_fence(tgx);
+	irq_mask = readl(tgx->regs + TGX_REG_IRQ_ENABLE);
+	writel(irq_mask | TGX_IRQ_RENDER, tgx->regs + TGX_REG_IRQ_ENABLE);
+	writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
+	writel(opcode, tgx->regs + TGX_REG_QUEUE_SUBMIT);
+	readl(tgx->regs + TGX_REG_QUEUE_SUBMIT);
+
+	waited = wait_event_timeout(tgx->render_wait,
+		readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) == fence ||
+		readl(tgx->regs + TGX_REG_QUEUE_STATUS) & TGX_QUEUE_ERROR,
+		msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS));
+	writel(irq_mask, tgx->regs + TGX_REG_IRQ_ENABLE);
+	readl(tgx->regs + TGX_REG_IRQ_ENABLE);
+
+	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	if (status & TGX_QUEUE_ERROR) {
+		dev_warn_ratelimited(tgx->drm.dev,
+			"render command fence %u failed (error fence %u)\n",
+			fence, readl(tgx->regs + TGX_REG_QUEUE_ERROR_FENCE));
+		ret = -EIO;
+	} else if (!waited ||
+		   readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) != fence) {
+		ret = -ETIMEDOUT;
+	}
+	if (ret) {
+		atomic64_inc(&tgx->render_failures);
+		return ret;
+	}
+
+	atomic64_inc(&tgx->render_commands);
+	*fence_out = fence;
+	return 0;
+}
+
+static int tgx_ioctl_fill(struct drm_device *drm, void *data,
+			  struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_fill *args = data;
+	u32 active, address;
+	int idx, ret;
+
+	(void)file;
+	if (args->flags || args->pad ||
+	    !tgx_rect_valid(args->x, args->y, args->width, args->height))
+		return -EINVAL;
+	if (!tgx->render_available)
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&tgx->render_lock);
+	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	if (active > 1) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+	address = TGX_FB_BASE(active) + args->y * TGX_PITCH + args->x * 4;
+	writel(address, tgx->regs + TGX_REG_FILL_ADDR);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_FILL_STRIDE);
+	writel((args->height << 16) | args->width,
+	       tgx->regs + TGX_REG_FILL_SIZE);
+	writel(args->color, tgx->regs + TGX_REG_FILL_COLOR);
+	ret = tgx_submit_render(tgx, TGX_QUEUE_OPCODE_FILL, &args->fence);
+out_unlock:
+	mutex_unlock(&tgx->render_lock);
+	drm_dev_exit(idx);
+	return ret;
+}
+
+static int tgx_ioctl_blit(struct drm_device *drm, void *data,
+			  struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_blit *args = data;
+	u32 active, base;
+	int idx, ret;
+
+	(void)file;
+	if (args->flags ||
+	    !tgx_rect_valid(args->src_x, args->src_y,
+			    args->width, args->height) ||
+	    !tgx_rect_valid(args->dst_x, args->dst_y,
+			    args->width, args->height))
+		return -EINVAL;
+	if (!tgx->render_available)
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&tgx->render_lock);
+	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	if (active > 1) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+	base = TGX_FB_BASE(active);
+	writel(base + args->src_y * TGX_PITCH + args->src_x * 4,
+	       tgx->regs + TGX_REG_BLIT_SRC);
+	writel(base + args->dst_y * TGX_PITCH + args->dst_x * 4,
+	       tgx->regs + TGX_REG_BLIT_DST);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
+	writel((args->height << 16) | args->width,
+	       tgx->regs + TGX_REG_BLIT_SIZE);
+	ret = tgx_submit_render(tgx, TGX_QUEUE_OPCODE_BLIT, &args->fence);
+out_unlock:
+	mutex_unlock(&tgx->render_lock);
+	drm_dev_exit(idx);
+	return ret;
 }
 
 static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
@@ -245,6 +412,24 @@ static ssize_t dma_upload_failures_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(dma_upload_failures);
 
+static ssize_t render_commands_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->render_commands));
+}
+static DEVICE_ATTR_RO(render_commands);
+
+static ssize_t render_failures_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->render_failures));
+}
+static DEVICE_ATTR_RO(render_failures);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -311,6 +496,8 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_blit_sync_failures.attr,
 	&dev_attr_dma_uploads.attr,
 	&dev_attr_dma_upload_failures.attr,
+	&dev_attr_render_commands.attr,
+	&dev_attr_render_failures.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -328,6 +515,7 @@ static irqreturn_t tgx_irq(int irq, void *data)
 
 	atomic64_inc(&tgx->msi_interrupts);
 	wake_up_all(&tgx->vblank_wait);
+	wake_up_all(&tgx->render_wait);
 	return IRQ_HANDLED;
 }
 
@@ -418,6 +606,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		return;
 	if (!drm_dev_enter(&tgx->drm, &idx))
 		return;
+	mutex_lock(&tgx->render_lock);
 	/* A partial update starts from an exact copy of the active physical page.
 	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
 	 * the damage rectangle is guaranteed to contain new valid contents. */
@@ -495,6 +684,7 @@ upload_complete:
 		 * copying an entire frame while scanout is active. */
 		atomic64_inc(&tgx->flip_fallbacks);
 		atomic64_add(copied, &tgx->bytes_uploaded);
+		mutex_unlock(&tgx->render_lock);
 		drm_dev_exit(idx);
 		return;
 	}
@@ -547,6 +737,7 @@ upload_complete:
 		dev_warn_ratelimited(tgx->drm.dev,
 				     "VBlank wait timed out after flip to buffer %d\n",
 				     target_index);
+	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 }
 
@@ -574,6 +765,12 @@ static const struct drm_mode_config_funcs tgx_mode_config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 DEFINE_DRM_GEM_FOPS(tgx_fops);
+
+static const struct drm_ioctl_desc tgx_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(TARUGX_FILL, tgx_ioctl_fill, DRM_MASTER),
+	DRM_IOCTL_DEF_DRV(TARUGX_BLIT, tgx_ioctl_blit, DRM_MASTER),
+};
+
 static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
 					     struct dma_buf *dma_buf)
 {
@@ -584,6 +781,8 @@ static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &tgx_fops,
 	DRM_GEM_SHMEM_DRIVER_OPS,
+	.ioctls = tgx_ioctls,
+	.num_ioctls = ARRAY_SIZE(tgx_ioctls),
 	.gem_prime_import = tgx_prime_import,
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
@@ -596,7 +795,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	static const u32 formats[] = { DRM_FORMAT_XRGB8888 };
 	struct tarugx *tgx;
 	struct drm_device *drm;
-	u32 dma_status;
+	u32 dma_status, queue_status;
 	int ret;
 	ret = pcim_enable_device(pdev);
 	if (ret)
@@ -625,6 +824,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	drm = &tgx->drm;
 	tgx->pdev = pdev;
 	mutex_init(&tgx->dma_lock);
+	mutex_init(&tgx->render_lock);
 	tgx->regs = pcim_iomap_table(pdev)[0];
 	tgx->vram = pcim_iomap_table(pdev)[2];
 	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, TGX_FRAME_BYTES,
@@ -632,6 +832,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!tgx->dma_staging)
 		return -ENOMEM;
 	init_waitqueue_head(&tgx->vblank_wait);
+	init_waitqueue_head(&tgx->render_wait);
 	if (readl(tgx->regs) != 0x54475055)
 		return -ENODEV;
 	dma_status = readl(tgx->regs + TGX_REG_DMA_STATUS);
@@ -640,6 +841,11 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			 TGX_DMA_STATUS_REJECTED));
 	dev_info(&pdev->dev, "full-frame DMA uploads %s\n",
 		 tgx->dma_available ? "available" : "unavailable; using BAR2");
+	queue_status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
+	tgx->render_available = queue_status & TGX_QUEUE_READY;
+	tgx->render_fence = readl(tgx->regs + TGX_REG_QUEUE_COMPLETED);
+	dev_info(&pdev->dev, "2D render queue %s\n",
+		 tgx->render_available ? "available" : "unavailable");
 	pci_set_drvdata(pdev, tgx);
 	ret = devm_device_add_groups(&pdev->dev, tgx_groups);
 	if (ret)
@@ -669,7 +875,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			       "tarugx-vblank", tgx);
 	if (ret)
 		return ret;
-	writel(1, tgx->regs + TGX_REG_IRQ_ENABLE);
+	writel(TGX_IRQ_VBLANK, tgx->regs + TGX_REG_IRQ_ENABLE);
 	readl(tgx->regs);
 	ret = devm_add_action_or_reset(&pdev->dev, tgx_disable_msi, tgx);
 	if (ret)
