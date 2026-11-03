@@ -93,7 +93,7 @@ try:
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
                              'flip_timeouts', 'dma_upload_failures')}}
-    assert int(counters['render_commands']) == 10, counters
+    assert int(counters['render_commands']) == 490, counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     print(run.stdout, end='')

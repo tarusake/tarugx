@@ -12,6 +12,8 @@
 
 #include "tarugx_drm.h"
 
+#define STRESS_BATCHES 120
+
 static int expect_errno(int fd, unsigned long request, void *data, int error)
 {
     errno = 0;
@@ -63,8 +65,10 @@ int main(int argc, char **argv)
         },
     };
     struct drm_tarugx_wait wait;
-    struct timespec started, returned;
-    double submit_ms;
+    struct timespec started, returned, stress_started, stress_finished;
+    struct timespec cpu_started, cpu_finished;
+    double submit_ms, stress_s, cpu_s;
+    unsigned int iteration;
     int fd, other, result = 1;
 
     if (argc != 2) {
@@ -132,6 +136,29 @@ int main(int argc, char **argv)
     printf("DRM render ioctl PASS: master restriction, bounds, fill fence %u, "
            "blit fence %u, async four-command batch fence %u returned in "
            "%.3f ms\n", fill.fence, blit.fence, batch.fence, submit_ms);
+    clock_gettime(CLOCK_MONOTONIC, &stress_started);
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu_started);
+    for (iteration = 0; iteration < STRESS_BATCHES; iteration++) {
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch)) {
+            perror("DRM_IOCTL_TARUGX_SUBMIT during stress");
+            goto out_other;
+        }
+        wait.fence = batch.fence;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_WAIT, &wait)) {
+            perror("DRM_IOCTL_TARUGX_WAIT during stress");
+            goto out_other;
+        }
+    }
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu_finished);
+    clock_gettime(CLOCK_MONOTONIC, &stress_finished);
+    stress_s = stress_finished.tv_sec - stress_started.tv_sec +
+               (stress_finished.tv_nsec - stress_started.tv_nsec) / 1e9;
+    cpu_s = cpu_finished.tv_sec - cpu_started.tv_sec +
+            (cpu_finished.tv_nsec - cpu_started.tv_nsec) / 1e9;
+    printf("DRM async stress PASS: %u batches, %u commands, %.3f s, "
+           "%.2f batches/s, CPU %.1f%%\n", STRESS_BATCHES,
+           STRESS_BATCHES * 4, stress_s, STRESS_BATCHES / stress_s,
+           cpu_s * 100.0 / stress_s);
     if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch)) {
         perror("DRM_IOCTL_TARUGX_SUBMIT for postclose test");
         goto out_other;
