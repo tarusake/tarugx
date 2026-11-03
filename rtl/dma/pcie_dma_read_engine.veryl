@@ -195,8 +195,10 @@ module pcie_dma_read_engine #(
         4'd8: 32'hffff_ffff,
         default: 32'b0,
     };
-    assign fb_rsp_ready     = ((state == State::Run) || (state == State::Fail))
-        && (fb_outstanding != 0);
+    // Outstanding writes are created only in Run, Finish requires zero, and
+    // Fail drains them before returning Idle.  The state decode is therefore
+    // redundant and only lengthens the response-FIFO ready/clock-enable path.
+    assign fb_rsp_ready     = fb_outstanding != 0;
     assign fb_window_full   = (state == State::Run) && chunk_pending
         && (fb_outstanding >= 8);
     let fb_request_accept: logic = fb_req_valid && fb_req_ready;
