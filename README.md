@@ -313,6 +313,13 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
   64/32-bit書込みへフォールバックします。Completionから生成したDDR書込みは
   8要求までパイプライン化し、PCIe、DDR間のクロック境界も8段FIFOで接続しています。
+  scanout FIFOが半分以上埋まっている間だけ非表示側DDR要求を最大4回まとめる
+  FIFO-aware調停も追加しました。不足時は従来のround-robinへ即座に戻ります。
+  2026-11-04の1080p SRAM実機測定では、安定位相が64.15–64.35ms、DMA busy
+  3.94–3.95M cycleで従来値と同等でした。速度向上は確認できませんでしたが、
+  2D fill/blit、4-command batch、fence/MSI、120 batch（480 command）は失敗0、
+  scanout underflowとDMA/flip/VBlank timeoutも0でした。100MHzの最小setup余裕は
+  +0.104nsです。
   旧2要求版を使った2026-11-03のSRAM実機回帰では、1,228,800 byteのDMA転送5回が13.964–14.126ms
   （約87MB/s）で、直列経路の約53msから約3.8倍に改善しました。
   staging copyとVRAM読戻しを含むKMS試験でも、各120フレームがBAR2の
