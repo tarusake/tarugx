@@ -30,7 +30,6 @@ int main(int argc, char **argv)
 		.count = 4,
 		.flags = DRM_TARUGX_SUBMIT_ASYNC,
 	};
-	struct drm_tarugx_wait wait = { .timeout_ms = 1000 };
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
 	drmModeRes *resources = NULL;
 	drmModeConnector *connector = NULL;
@@ -113,11 +112,6 @@ int main(int argc, char **argv)
 			perror("fill VRAM GEM");
 			goto out;
 		}
-		wait.fence = submit.fence;
-		if (ioctl(fd, DRM_IOCTL_TARUGX_WAIT, &wait)) {
-			perror("wait VRAM GEM fill");
-			goto out;
-		}
 	}
 	handles[0] = vram.handle;
 	pitches[0] = vram.pitch;
@@ -133,7 +127,8 @@ int main(int argc, char **argv)
 	}
 	enabled = 1;
 	printf("VRAM GEM direct scanout PASS: %ux%u pitch=%u format=%s, "
-	       "no CPU shadow copy\n", vram.width, vram.height, vram.pitch,
+	       "implicit fence, no CPU shadow copy\n",
+	       vram.width, vram.height, vram.pitch,
 	       format == DRM_FORMAT_RGB565 ? "RGB565" : "XRGB8888");
 	if (hold_seconds) {
 		struct timespec remaining = { .tv_sec = hold_seconds };

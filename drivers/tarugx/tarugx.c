@@ -4,6 +4,7 @@
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-fence.h>
+#include <linux/dma-resv.h>
 #include <linux/iosys-map.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
@@ -839,6 +840,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	struct dma_fence *sync_fence = NULL;
 	struct tarugx_vram_object *object;
 	unsigned long irq_flags;
+	bool resv_locked = false;
 	bool async;
 	u32 i;
 	int idx, ret;
@@ -854,6 +856,8 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		syncobj = drm_syncobj_find(file, args->out_syncobj);
 		if (!syncobj)
 			return -ENOENT;
+	}
+	if (async) {
 		sync_fence = tgx_create_dma_fence(tgx);
 		if (!sync_fence) {
 			ret = -ENOMEM;
@@ -885,6 +889,15 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		ret = -ENODEV;
 		goto out_put;
 	}
+	if (sync_fence) {
+		ret = dma_resv_lock_interruptible(gem->resv, NULL);
+		if (ret)
+			goto out_dev;
+		resv_locked = true;
+		ret = dma_resv_reserve_fences(gem->resv, 1);
+		if (ret)
+			goto out_resv;
+	}
 	mutex_lock(&tgx->render_lock);
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
 				   object->node.start, object->pitch,
@@ -893,9 +906,12 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		tgx->render_async_gem = gem;
 		gem = NULL;
 		if (sync_fence) {
-			/* The syncobj takes its own reference.  The original reference
+			/* Reservation and optional syncobj take references.  The original
 			 * remains owned by the IRQ path until signal or teardown. */
-			drm_syncobj_replace_fence(syncobj, sync_fence);
+			dma_resv_add_fence(object->base.resv, sync_fence,
+					   DMA_RESV_USAGE_WRITE);
+			if (syncobj)
+				drm_syncobj_replace_fence(syncobj, sync_fence);
 			spin_lock_irqsave(&tgx->render_fence_lock, irq_flags);
 			WARN_ON(tgx->render_sync_fence);
 			tgx->render_sync_hw_fence = args->fence;
@@ -907,6 +923,10 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	mutex_unlock(&tgx->render_lock);
 	if (!ret)
 		tgx_update_sync_fence(tgx);
+out_resv:
+	if (resv_locked)
+		dma_resv_unlock(object->base.resv);
+out_dev:
 	drm_dev_exit(idx);
 out_put:
 	drm_gem_object_put(gem);
@@ -1503,8 +1523,15 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	mutex_lock(&tgx->render_lock);
 	if (tgx->render_async_valid) {
 		u32 pending_fence = tgx->render_async_fence;
+		u32 timeout_ms = TGX_RENDER_TIMEOUT_MS;
 
-		ret = tgx_reap_async(tgx, TGX_RENDER_TIMEOUT_MS);
+		/* prepare_fb waits the reservation WRITE fence for this exact GEM.
+		 * Reap non-blockingly here: a pending result means implicit sync did
+		 * not complete and the new scanout must not be exposed. */
+		if (vram_object && tgx->render_async_gem == gem)
+			timeout_ms = 0;
+
+		ret = tgx_reap_async(tgx, timeout_ms);
 		if (!tgx->render_async_owner && tgx->render_async_completed)
 			tgx_clear_async(tgx);
 		if (ret) {
@@ -1911,7 +1938,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 7,
+	.major = 0, .minor = 8,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)

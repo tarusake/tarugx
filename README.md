@@ -149,6 +149,11 @@ syncobj handleを指定できます。ドライバーは標準`dma_fence`を設�
 同じバッチを`drmSyncobjWait()`とprivate WAITの両方で回収し、496命令をfailure 0で
 完了しました。syncobjからexportした`sync_file`も`poll()`で完了を受信できます。
 存在しないsyncobj、同期submitとの組合せ、別fdのhandleも拒否します。
+ドライバー0.8以降はすべての非同期GEM submitの`dma_fence`を対象GEMのreservationへ
+WRITE fenceとして登録します。同じGEMをDRM framebufferへ設定すると`prepare_fb`が
+描画完了を自動的に待つため、アプリによる明示WAITなしで安全に直接scanoutできます。
+実機では4本のfill直後にmodesetし、implicit fence完了後の`direct_scanouts=1`、
+render／DMA failure 0を確認しました。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -272,7 +277,7 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
   直接scanout、binary syncobj出力まで実装済みです。標準DRM scheduler、timeline
-  syncobj、複数同時バッチ、GEM reservationへのimplicit fence統合は未実装です。
+  syncobj、複数同時バッチは未実装です。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
