@@ -23,7 +23,7 @@ module scanout_pipeline_tb;
   .clk(mem_clk),.rst_n(rst_n),.cpu_valid(1'b1),.cpu_ready(cpu_ready),.cpu_write(1'b0),
   .cpu_addr(24'd0),.cpu_wdata(256'b0),.cpu_wstrb(32'b0),.cpu_rsp_valid(cpu_rsp_valid),
   .cpu_rsp_ready(1'b1),.cpu_rsp_data(cpu_rsp_data),.cpu_rsp_error(cpu_rsp_error),
-  .scan_valid(scan_valid),.scan_ready(scan_ready),.scan_addr(scan_addr),
+  .scan_valid(scan_valid),.scan_urgent(scan_urgent),.scan_ready(scan_ready),.scan_addr(scan_addr),
   .scan_rsp_valid(scan_rsp_valid),.scan_rsp_ready(scan_rsp_ready),.scan_rsp_data(scan_rsp_data),.scan_rsp_error(scan_rsp_error),
   .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),.mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),
   .mem_rsp_valid(mem_rsp_valid),.mem_rsp_ready(mem_rsp_ready),.mem_rsp_data(mem_rsp_data),.mem_rsp_error(1'b0));

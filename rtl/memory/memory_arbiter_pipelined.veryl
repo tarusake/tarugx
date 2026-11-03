@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Round-robin admission, eight ordered ownership slots, one held command.
+/// FIFO-watermark burst admission, eight ordered ownership slots, one held command.
 module memory_arbiter_pipelined (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
@@ -14,6 +14,7 @@ module memory_arbiter_pipelined (
     cpu_rsp_data  : output logic<256>,
     cpu_rsp_error : output logic     ,
     scan_valid    : input  logic     ,
+    scan_urgent   : input  logic     ,
     scan_ready    : output logic     ,
     scan_addr     : input  logic<24> ,
     scan_rsp_valid: output logic     ,
@@ -33,6 +34,7 @@ module memory_arbiter_pipelined (
 ) {
     var issuing       : logic         ;
     var prefer_scan   : logic         ;
+    var urgent_grants : logic<4>      ;
     var owners        : logic      [8];
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -41,7 +43,12 @@ module memory_arbiter_pipelined (
     var scan_response_valid: logic    ;
     var response_data : logic<256>    ;
     var response_error: logic         ;
-    let choose_scan   : logic          = scan_valid && (!cpu_valid || prefer_scan);
+    // Retain round-robin service while the scanout FIFO is healthy.  Below its
+    // watermark, group up to eight reads before admitting a waiting writer.
+    // This reduces DDR read/write direction changes without starving DMA.
+    let choose_scan   : logic = scan_valid && (!cpu_valid
+        || (scan_urgent && (urgent_grants <: 8))
+        || (!scan_urgent && prefer_scan));
     let capacity      : logic          = !issuing && (count <: 8);
     assign scan_ready     = capacity && choose_scan;
     assign cpu_ready      = capacity && !choose_scan;
@@ -62,6 +69,7 @@ module memory_arbiter_pipelined (
         if_reset {
             issuing        = 0;
             prefer_scan    = 1;
+            urgent_grants  = 0;
             owners         = '{default: '0};
             head           = 0;
             tail           = 0;
@@ -83,10 +91,18 @@ module memory_arbiter_pipelined (
                 owners[tail] = choose_scan;
                 tail         = tail + 3'd1;
                 prefer_scan  = !choose_scan;
+                if choose_scan && scan_urgent && (urgent_grants <: 8) {
+                    urgent_grants = urgent_grants + 4'd1;
+                } else if !choose_scan {
+                    urgent_grants = 0;
+                }
                 mem_write    = !choose_scan && cpu_write;
                 mem_addr     = if choose_scan ? scan_addr : cpu_addr;
                 mem_wdata    = if choose_scan ? 256'b0 : cpu_wdata;
                 mem_wstrb    = if choose_scan ? 32'b0 : cpu_wstrb;
+            }
+            if !scan_urgent {
+                urgent_grants = 0;
             }
             if pop {
                 cpu_response_valid  = !owners[head];
