@@ -26,6 +26,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 
 files = {files!r}
 services = ['tarugx-main-display', 'tarugx-xorg', 'tarugx-desktop']
@@ -117,11 +118,14 @@ try:
         direct_output = direct.stdout
 
     attrs = device
+    dma_test_started = time.monotonic_ns()
+    (attrs/'dma_test').write_text(str(640 * 480 * 4))
+    dma_test_elapsed_ms = (time.monotonic_ns() - dma_test_started) / 1_000_000
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
                              'flip_timeouts', 'dma_upload_failures',
-                             'direct_scanouts')}}
+                             'direct_scanouts', 'dma_profile')}}
     assert int(counters['render_commands']) == 492, counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
@@ -129,7 +133,9 @@ try:
         (1 if gpu_version >= 0x00010001 else 0), counters
     print(run.stdout, end='')
     print(direct_output, end='')
-    print(json.dumps({{'readback': hex(source), 'counters': counters}}))
+    print(json.dumps({{'readback': hex(source),
+                      'dma_test_elapsed_ms': dma_test_elapsed_ms,
+                      'counters': counters}}))
 finally:
     if loaded_test_module:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)

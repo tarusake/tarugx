@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Integrates the one-outstanding DMA requester with the shared PCIe and VRAM paths.
+/// Integrates the multi-outstanding DMA requester with the shared PCIe and VRAM paths.
 module pcie_dma_subsystem #(
     param TIMEOUT_CYCLES: u32 = 1000000,
 ) (
@@ -14,6 +14,7 @@ module pcie_dma_subsystem #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    profile         : output logic<128>,
     rx_sop          : input  logic     ,
     rx_eop          : input  logic     ,
     rx_valid        : input  logic<8>  ,
@@ -78,12 +79,39 @@ module pcie_dma_subsystem #(
     // Isolate the PCIe hard-IP configuration bus from the DMA datapath.  The
     // BDF is stable after enumeration, so one cycle of latency is harmless.
     var requester_id_q  : logic<16> ;
+    var busy_cycles     : logic<32> ;
+    var tx_stall_cycles : logic<32> ;
+    var rx_stall_cycles : logic<32> ;
+    var mem_stall_cycles: logic<32> ;
+
+    assign profile = {mem_stall_cycles, rx_stall_cycles, tx_stall_cycles, busy_cycles};
 
     always_ff {
         if_reset {
             requester_id_q = 0;
+            busy_cycles      = 0;
+            tx_stall_cycles  = 0;
+            rx_stall_cycles  = 0;
+            mem_stall_cycles = 0;
         } else {
             requester_id_q = requester_id;
+            if cmd_valid && cmd_ready {
+                busy_cycles      = 0;
+                tx_stall_cycles  = 0;
+                rx_stall_cycles  = 0;
+                mem_stall_cycles = 0;
+            } else if busy {
+                busy_cycles += 1;
+                if |dma_tx_valid && !dma_tx_ready {
+                    tx_stall_cycles += 1;
+                }
+                if |dma_rx_valid && dma_rx_wait {
+                    rx_stall_cycles += 1;
+                }
+                if dma_fb_req_valid && !dma_fb_req_ready {
+                    mem_stall_cycles += 1;
+                }
+            }
         }
     }
 
