@@ -23,6 +23,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/gpu_scheduler.h>
@@ -1670,7 +1671,12 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 	gem = drm_gem_fb_get_obj(plane->fb, 0);
 	if (tgx->dma_only_scanout &&
 	    (!gem || (gem->funcs != &tgx_host_object_funcs &&
-		     gem->funcs != &tgx_vram_object_funcs)))
+		     gem->funcs != &tgx_vram_object_funcs &&
+		     !gem->import_attach)))
+		return -EINVAL;
+	if (tgx->dma_only_scanout && gem->funcs != &tgx_vram_object_funcs &&
+	    plane->fb->format->format == tgx->format &&
+	    plane->fb->pitches[0] != tgx->pitch)
 		return -EINVAL;
 	if (!gem || gem->funcs != &tgx_vram_object_funcs)
 		return 0;
@@ -1820,13 +1826,13 @@ static u32 tgx_pack_xrgb8888_pair(u64 pixels)
 }
 
 static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
-				    const struct tarugx_host_object *object,
+				    const void *source_vaddr,
 				    u32 source_pitch, u32 first_y, u32 last_y)
 {
 	u32 x, y;
 
 	for (y = first_y; y < last_y; y++) {
-		const __le32 *source = object->vaddr + y * source_pitch;
+		const __le32 *source = source_vaddr + y * source_pitch;
 		__le16 *destination = tgx->dma_staging + y * tgx->pitch;
 
 		/* dma_alloc_coherent() aligns the source, and both supported
@@ -1867,6 +1873,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_framebuffer *fb = state->fb;
 	struct drm_gem_object *gem;
 	struct tarugx_host_object *host_object = NULL;
+	struct drm_gem_dma_object *imported_object = NULL;
 	struct tarugx_vram_object *vram_object = NULL;
 	struct drm_rect damage, copy;
 	unsigned int x, y;
@@ -1878,9 +1885,12 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	int idx, target_index, ret = 0, vblank_ret = 0, mirror_ret;
 	u64 pixels;
 	u32 pixel;
-	bool direct_scanout = false, full_damage, did_flip_fallback = false;
+	bool direct_scanout = false, dma_source_available = false, full_damage;
+	bool did_flip_fallback = false;
 	bool mirror_damage = false;
 	bool convert_xrgb8888;
+	dma_addr_t source_dma_addr = 0;
+	const void *source_vaddr = NULL;
 	u64 update_started_ns, stage_started_ns;
 	u64 conversion_ns = 0, dma_ns = 0, vblank_wait_ns = 0;
 	if (!fb || !pipe->crtc.state->active)
@@ -1891,6 +1901,17 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
 	else if (gem && gem->funcs == &tgx_host_object_funcs)
 		host_object = container_of(gem, struct tarugx_host_object, base);
+	else if (gem && gem->import_attach)
+		imported_object = to_drm_gem_dma_obj(gem);
+	if (host_object) {
+		source_dma_addr = host_object->dma_addr;
+		source_vaddr = host_object->vaddr;
+		dma_source_available = true;
+	} else if (imported_object) {
+		source_dma_addr = imported_object->dma_addr;
+		source_vaddr = imported_object->vaddr;
+		dma_source_available = true;
+	}
 	convert_xrgb8888 = tgx->format == DRM_FORMAT_RGB565 &&
 		fb->format->format == DRM_FORMAT_XRGB8888;
 	/* A new FB must replace the single physical scanout buffer in full. */
@@ -1975,7 +1996,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	    (dma_upload || tgx->dma_only_scanout) &&
 	    tgx->dma_available) {
 		if (tgx->dma_only_scanout) {
-			if (!host_object) {
+			if (!dma_source_available || !source_vaddr) {
 				dev_err_ratelimited(tgx->drm.dev,
 					"1080p framebuffer is not DMA-backed\n");
 				mutex_unlock(&tgx->render_lock);
@@ -1992,7 +2013,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 			}
 			if (convert_xrgb8888) {
 				stage_started_ns = ktime_get_ns();
-				tgx_xrgb8888_to_rgb565(tgx, host_object,
+				tgx_xrgb8888_to_rgb565(tgx, source_vaddr,
 							 fb->pitches[0],
 							 dma_offset / tgx->pitch,
 							 (dma_offset + dma_length) /
@@ -2002,7 +2023,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		} else {
 			dma_length = tgx->frame_bytes;
 		}
-		if (!host_object)
+		if (!dma_source_available)
 			for (y = 0; y < tgx->height; y++)
 				iosys_map_memcpy_from(
 					tgx->dma_staging + y * tgx->pitch,
@@ -2013,7 +2034,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		stage_started_ns = ktime_get_ns();
 		ret = tgx_dma_transfer(tgx,
 				       (convert_xrgb8888 ? tgx->dma_staging_addr :
-				       host_object ? host_object->dma_addr :
+				       dma_source_available ? source_dma_addr :
 				       tgx->dma_staging_addr) + dma_offset,
 				       target + dma_offset, dma_length,
 				       tgx->dma_only_scanout ?
@@ -2131,7 +2152,7 @@ upload_complete:
 		stage_started_ns = ktime_get_ns();
 		mirror_ret = tgx_dma_transfer(tgx,
 				(convert_xrgb8888 ? tgx->dma_staging_addr :
-				 host_object->dma_addr) + mirror_offset,
+				 source_dma_addr) + mirror_offset,
 				previous_base + mirror_offset, mirror_length,
 				TGX_1080P_DMA_TIMEOUT_US);
 		dma_ns += ktime_get_ns() - stage_started_ns;
@@ -2306,13 +2327,9 @@ tgx_prime_import_sg_table(struct drm_device *drm,
 			  struct dma_buf_attachment *attach,
 			  struct sg_table *sgt)
 {
-	(void)drm;
-	(void)attach;
-	(void)sgt;
-	/* External scatter/gather buffers are not yet valid DMA scanout sources.
-	 * Standard drm_gem_prime_import() handles same-device self-import before
-	 * reaching this callback. */
-	return ERR_PTR(-EOPNOTSUPP);
+	if (drm_prime_get_contiguous_size(sgt) < attach->dmabuf->size)
+		return ERR_PTR(-EINVAL);
+	return drm_gem_dma_prime_import_sg_table_vmap(drm, attach, sgt);
 }
 static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC |
@@ -2327,7 +2344,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 14,
+	.major = 0, .minor = 15,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
