@@ -46,6 +46,90 @@ static double monotonic_seconds(void)
 	return now.tv_sec + now.tv_nsec / 1000000000.0;
 }
 
+static uint32_t property_id(int fd, uint32_t object_id, uint32_t object_type,
+			    const char *name)
+{
+	drmModeObjectProperties *properties;
+	uint32_t found = 0;
+
+	properties = drmModeObjectGetProperties(fd, object_id, object_type);
+	if (!properties)
+		return 0;
+	for (uint32_t i = 0; i < properties->count_props; i++) {
+		drmModePropertyRes *property =
+			drmModeGetProperty(fd, properties->props[i]);
+
+		if (property && !strcmp(property->name, name))
+			found = property->prop_id;
+		drmModeFreeProperty(property);
+		if (found)
+			break;
+	}
+	drmModeFreeObjectProperties(properties);
+	return found;
+}
+
+static int atomic_add_named(int fd, drmModeAtomicReq *request,
+			    uint32_t object_id, uint32_t object_type,
+			    const char *name, uint64_t value)
+{
+	uint32_t id = property_id(fd, object_id, object_type, name);
+
+	if (!id) {
+		fprintf(stderr, "missing atomic property %s\n", name);
+		return -1;
+	}
+	return drmModeAtomicAddProperty(request, object_id, id, value) < 0 ?
+		-1 : 0;
+}
+
+static int atomic_modeset(int fd, uint32_t connector, uint32_t crtc,
+			  uint32_t plane, uint32_t framebuffer,
+			  const drmModeModeInfo *mode, int in_fence_fd,
+			  int *out_fence_fd)
+{
+	drmModeAtomicReq *request = NULL;
+	uint32_t mode_blob = 0;
+	int ret = -1;
+
+	if (drmModeCreatePropertyBlob(fd, mode, sizeof(*mode), &mode_blob))
+		return -1;
+	request = drmModeAtomicAlloc();
+	if (!request)
+		goto out;
+#define ADD_ATOMIC(object, type, name, value) \
+	do { \
+		if (atomic_add_named(fd, request, object, type, name, value)) \
+			goto out; \
+	} while (0)
+	ADD_ATOMIC(connector, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", crtc);
+	ADD_ATOMIC(crtc, DRM_MODE_OBJECT_CRTC, "MODE_ID", mode_blob);
+	ADD_ATOMIC(crtc, DRM_MODE_OBJECT_CRTC, "ACTIVE", 1);
+	ADD_ATOMIC(crtc, DRM_MODE_OBJECT_CRTC, "OUT_FENCE_PTR",
+		   (uintptr_t)out_fence_fd);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "FB_ID", framebuffer);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "SRC_X", 0);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "SRC_W",
+		   (uint64_t)mode->hdisplay << 16);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "SRC_H",
+		   (uint64_t)mode->vdisplay << 16);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "CRTC_W", mode->hdisplay);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "CRTC_H", mode->vdisplay);
+	ADD_ATOMIC(plane, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD",
+		   (uint64_t)(int64_t)in_fence_fd);
+#undef ADD_ATOMIC
+	ret = drmModeAtomicCommit(fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET,
+				  NULL);
+out:
+	drmModeAtomicFree(request);
+	drmModeDestroyPropertyBlob(fd, mode_blob);
+	return ret;
+}
+
 static void fill_rect(uint8_t *pixels, uint32_t pitch, const drmModeClip *clip,
 		      uint32_t color, uint32_t bpp)
 {
@@ -76,6 +160,7 @@ int main(int argc, char **argv)
 		.fd_flags = O_RDWR | O_CLOEXEC,
 	};
 	drmModeRes *resources = NULL;
+	drmModePlaneRes *plane_resources = NULL;
 	drmModeConnector *connector = NULL;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
 	uint32_t external_framebuffer = 0, external_handle = 0;
@@ -93,7 +178,7 @@ int main(int argc, char **argv)
 	};
 	drmModeClip full_clip;
 	int fd = -1, heap_buffer_fd = -1, heap_fd = -1, import_fd = -1;
-	int prime_fd = -1, render_sync_file = -1, rc = 1;
+	int atomic_out_fence = -1, prime_fd = -1, render_sync_file = -1, rc = 1;
 
 	if (argc < 2 || argc > 4) {
 		fprintf(stderr,
@@ -116,12 +201,25 @@ int main(int argc, char **argv)
 		perror("open/master");
 		goto out;
 	}
+	if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1)) {
+		perror("enable atomic client capability");
+		goto out;
+	}
 	resources = drmModeGetResources(fd);
 	if (!resources || resources->count_crtcs != 1) {
 		fprintf(stderr, "expected exactly one CRTC\n");
 		goto out;
 	}
 	crtc = resources->crtcs[0];
+	plane_resources = drmModeGetPlaneResources(fd);
+	if (!plane_resources || plane_resources->count_planes != 1 ||
+	    !property_id(fd, plane_resources->planes[0],
+			 DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD") ||
+	    !property_id(fd, crtc, DRM_MODE_OBJECT_CRTC, "OUT_FENCE_PTR")) {
+		fputs("standard atomic fence properties are unavailable\n", stderr);
+		goto out;
+	}
+	puts("DRM atomic fence properties PASS: IN_FENCE_FD and OUT_FENCE_PTR available");
 	for (int i = 0; i < resources->count_connectors; i++) {
 		connector = drmModeGetConnector(fd, resources->connectors[i]);
 		if (connector && connector->connection == DRM_MODE_CONNECTED &&
@@ -281,10 +379,11 @@ int main(int argc, char **argv)
 				goto out;
 			}
 		}
-		if (drmModeSetCrtc(fd, crtc, external_framebuffer, 0, 0,
-				   &connector->connector_id, 1,
-				   &connector->modes[0])) {
-			perror("external PRIME modeset");
+		if (atomic_modeset(fd, connector->connector_id, crtc,
+				   plane_resources->planes[0], external_framebuffer,
+				   &connector->modes[0], render_sync_file,
+				   &atomic_out_fence)) {
+			perror("external PRIME atomic modeset");
 			goto out;
 		}
 		{
@@ -300,6 +399,19 @@ int main(int argc, char **argv)
 				goto out;
 			}
 		}
+		{
+			struct pollfd completed = {
+				.fd = atomic_out_fence,
+				.events = POLLIN,
+			};
+
+			if (atomic_out_fence < 0 || poll(&completed, 1, 1000) != 1 ||
+			    !(completed.revents & POLLIN)) {
+				fputs("atomic OUT_FENCE_PTR did not signal\n", stderr);
+				goto out;
+			}
+		}
+		puts("DRM atomic explicit sync PASS: IN_FENCE_FD waited and OUT_FENCE_PTR signaled");
 		puts("DRM PRIME implicit sync PASS: modeset waited for imported write fence");
 		puts("DRM PRIME external scanout PASS: contiguous dma-buf uploaded by PCIe DMA");
 	}
@@ -374,6 +486,8 @@ out:
 		drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE, &import_close);
 	if (render_sync_file >= 0)
 		close(render_sync_file);
+	if (atomic_out_fence >= 0)
+		close(atomic_out_fence);
 	if (render_syncobj && fd >= 0)
 		drmSyncobjDestroy(fd, render_syncobj);
 	if (render_handle && fd >= 0) {
@@ -409,6 +523,7 @@ out:
 	if (destroy.handle)
 		drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 	drmModeFreeConnector(connector);
+	drmModeFreePlaneResources(plane_resources);
 	drmModeFreeResources(resources);
 	if (fd >= 0)
 		close(fd);

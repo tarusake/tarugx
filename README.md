@@ -143,6 +143,10 @@ framebufferとして登録し、TaruGXのPCIe DMAでVRAMへ転送して1080p表�
 WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は完了となることを
 確認しました。KMSがPRIME reservation fenceを待ってからPCIe DMAを始めるため、
 外部producerが書込み中の画像を途中で表示しません。
+同じ未完了fenceをplaneの標準`IN_FENCE_FD`に設定し、CRTCの`OUT_FENCE_PTR`から
+完了sync_fileを取得するatomic modesetも実機で通しました。atomic commit後に入力fenceと
+出力fenceの両方がsignalされ、XRGB8888外部PRIME framebufferのDMA転送と表示まで
+完了します。これによりimplicit reservation fenceとexplicit atomic fenceの両経路を回帰で覆います。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、

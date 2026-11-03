@@ -92,7 +92,9 @@ try:
                              check=True, text=True, capture_output=True,
                              timeout=hold + 30)
         assert expected in run.stdout, run.stdout
+        assert 'DRM atomic fence properties PASS' in run.stdout, run.stdout
         assert 'DRM PRIME self-import PASS' in run.stdout, run.stdout
+        assert 'DRM atomic explicit sync PASS' in run.stdout, run.stdout
         assert 'DRM PRIME implicit sync PASS' in run.stdout, run.stdout
         assert 'DRM PRIME external scanout PASS' in run.stdout, run.stdout
         runs.append(run.stdout)
