@@ -4,7 +4,6 @@
 import argparse
 import json
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import time
@@ -95,8 +94,8 @@ class Backend:
             result = subprocess.run(
                 ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
                  c['TARUGX_SSH_USER']+'@'+c['TARUGX_HOST_IP'],
-                 "sudo -S -p '' python3 -c " + shlex.quote(code)],
-                input=c['TARUGX_SUDO_PASSWORD']+'\n', text=True,
+                 "sudo -S -p '' python3 -"],
+                input=c['TARUGX_SUDO_PASSWORD']+'\n'+code, text=True,
                 capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise RuntimeError('Host SSH timed out; no further action') from None
