@@ -27,6 +27,14 @@ case "$mode" in
         odiv0=5
         odiv1=1
         ;;
+    720p60)
+        # Use the same legal 740.625 MHz VCO divided by ten and two.
+        # 74.0625 MHz pixels produce 59.848485 Hz with CTA 720p totals.
+        mdiv=29
+        mfrac=5
+        odiv0=10
+        odiv1=2
+        ;;
     *)
         echo "Unsupported TARUGX_VIDEO_MODE: $mode" >&2
         exit 1

@@ -389,10 +389,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(mem_rsp_data),
         .mem_rsp_error(mem_rsp_error)
     );
-`ifdef TARUGX_VIDEO_1080P
-    // The link-only 1080p image must not clock the fixed 640x480 scanout at
-    // 148 MHz.  Remove it entirely and leave the DDR scan port idle so timing
-    // analysis measures only the physical 1080p output path.
+`ifdef TARUGX_VIDEO_LINK_TEST
+    // Link-only images remove DDR scanout so timing and hardware tests isolate
+    // the selected pixel clock, serializer and physical HDMI path.
     assign scan_valid = 1'b0;
     assign scan_addr = 24'b0;
     assign scan_rsp_ready = 1'b1;
@@ -427,13 +426,21 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_error(scan_rsp_error)
     );
 `endif
-`ifdef TARUGX_VIDEO_1080P
+`ifdef TARUGX_VIDEO_LINK_TEST
     wire pattern_vblank_toggle;
+`ifdef TARUGX_VIDEO_720P
+    tarugx_video_test_pattern_720p u_720p_pattern (
+        .clk(pixel_clk), .rst_n(pixel_reset[1]),
+        .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
+        .rgb(video_rgb), .vblank_toggle(pattern_vblank_toggle)
+    );
+`else
     tarugx_video_test_pattern_1080p u_1080p_pattern (
         .clk(pixel_clk), .rst_n(pixel_reset[1]),
         .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
         .rgb(video_rgb), .vblank_toggle(pattern_vblank_toggle)
     );
+`endif
     assign pixel_vblank_toggle = pattern_vblank_toggle;
 `else
     assign video_de = scan_video_de;
