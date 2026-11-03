@@ -7,6 +7,7 @@
 module dma_completion_rx (
     clk                 : input  clock     ,
     rst_n               : input  reset     ,
+    clear               : input  logic     ,
     rx_sop              : input  logic     ,
     rx_eop              : input  logic     ,
     rx_valid            : input  logic<8>  ,
@@ -128,6 +129,27 @@ module dma_completion_rx (
 
     always_ff {
         if_reset {
+            packet_active       = 0;
+            beat_pending        = 0;
+            beat_sop            = 0;
+            beat_eop            = 0;
+            beat_valid          = 0;
+            beat_data           = 0;
+            beat_error          = 0;
+            beat_tag_active     = 0;
+            words_remaining     = 0;
+            next_lower_address  = 0;
+            packet_tag          = 0;
+            chunk_pending       = 0;
+            chunk_has_data      = 0;
+            chunk_error         = 0;
+            chunk_status        = 0;
+            chunk_length        = 0;
+            chunk_byte_count    = 0;
+            chunk_lower_address = 0;
+            chunk_tag           = 0;
+            chunk_data          = 0;
+        } else if clear {
             packet_active       = 0;
             beat_pending        = 0;
             beat_sop            = 0;

@@ -7,6 +7,7 @@ module dma_tlp_tb;
  logic request_ready,request_error,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  tarugx_dma_read_request_tx tx(.*);
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;
+ logic clear=0;
  logic [15:0] expected_requester=16'h0100;logic [7:0] expected_tag=8'h5a;
  logic [3:0] active_valid=4'b0001;logic [31:0] active_tags=32'h0000005a;logic completion_ready=0;
  logic rx_wait,completion_valid,completion_has_data,completion_error;logic [2:0] completion_status;
@@ -74,6 +75,13 @@ module dma_tlp_tb;
   @(negedge clk);rx_valid=0;rx_sop=0;rx_eop=0;wait(completion_valid);#1;
   assert(completion_error&&!completion_has_data&&completion_status==1)else $fatal(1,"UR completion");
   completion_ready=1;tick();
+
+  // Starting a new DMA command discards a held chunk and partial packet.
+  @(negedge clk);completion_ready=0;clear=1;tick();@(negedge clk);clear=0;#1;
+  assert(!completion_valid&&!rx_wait)else $fatal(1,"completion receiver clear");
+  first_beat(6,0,'h20,0);wait(completion_valid);
+  @(negedge clk);clear=1;tick();@(negedge clk);clear=0;#1;
+  assert(!completion_valid&&!rx_wait)else $fatal(1,"partial packet clear");
   $display("DMA TLP codec: MRd64 and CplD up to 32 DWORDs, 4 KiB guard, stalls and errors PASS");$finish;
  end
  initial begin #500000;$fatal(1,"timeout");end

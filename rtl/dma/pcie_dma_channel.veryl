@@ -112,6 +112,7 @@ module pcie_dma_channel #(
     inst completion_rx: dma_completion_rx (
         clk,
         rst_n,
+        clear: cmd_valid && cmd_ready,
         rx_sop,
         rx_eop,
         rx_valid,
