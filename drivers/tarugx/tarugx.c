@@ -1146,7 +1146,7 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 	object = container_of(gem, struct tarugx_vram_object, base);
 	if (object->width != tgx->width || object->height != tgx->height ||
 	    object->pitch != tgx->pitch || plane->fb->pitches[0] != tgx->pitch ||
-	    plane->fb->offsets[0])
+	    plane->fb->offsets[0] || plane->fb->format->format != tgx->format)
 		return -EINVAL;
 	return 0;
 }
@@ -1211,20 +1211,24 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 {
 	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
 	struct tarugx_host_object *object;
-	u64 pitch, size;
+	u64 pitch, size, max_size;
 	int ret;
 
 	if (!tgx->dma_only_scanout)
 		return drm_gem_shmem_dumb_create(file, drm, args);
 	if (!args->width || args->width > tgx->width || !args->height ||
-	    args->height > tgx->height || args->bpp != tgx->cpp * 8)
+	    args->height > tgx->height ||
+	    (args->bpp != tgx->cpp * 8 &&
+	     !(tgx->format == DRM_FORMAT_RGB565 && args->bpp == 32)))
 		return -EINVAL;
 	pitch = DIV_ROUND_UP((u64)args->width * args->bpp, 8);
 	if (check_mul_overflow(pitch, (u64)args->height, &size))
 		return -EOVERFLOW;
 	size = PAGE_ALIGN(size);
+	max_size = PAGE_ALIGN((u64)tgx->width * tgx->height *
+			      max_t(u32, tgx->cpp, args->bpp / 8));
 	if (!pitch || pitch > U32_MAX || !size ||
-	    size > PAGE_ALIGN(tgx->frame_bytes))
+	    size > max_size)
 		return -EINVAL;
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object)
@@ -1251,6 +1255,27 @@ out_put:
 	return ret;
 }
 
+static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
+				    const struct tarugx_host_object *object,
+				    u32 source_pitch, u32 first_y, u32 last_y)
+{
+	u32 x, y;
+
+	for (y = first_y; y < last_y; y++) {
+		const __le32 *source = object->vaddr + y * source_pitch;
+		__le16 *destination = tgx->dma_staging + y * tgx->pitch;
+
+		for (x = 0; x < tgx->width; x++) {
+			u32 pixel = le32_to_cpu(source[x]);
+			u16 rgb565 = ((pixel >> 19) & 0x1f) << 11 |
+				     ((pixel >> 10) & 0x3f) << 5 |
+				     ((pixel >> 3) & 0x1f);
+
+			destination[x] = cpu_to_le16(rgb565);
+		}
+	}
+}
+
 static void tgx_update(struct drm_simple_display_pipe *pipe,
 		       struct drm_plane_state *old)
 {
@@ -1273,6 +1298,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	u32 pixel;
 	bool direct_scanout = false, full_damage, did_flip_fallback = false;
 	bool mirror_damage = false;
+	bool convert_xrgb8888;
 	if (!fb || !pipe->crtc.state->active)
 		return;
 	gem = drm_gem_fb_get_obj(fb, 0);
@@ -1280,6 +1306,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
 	else if (gem && gem->funcs == &tgx_host_object_funcs)
 		host_object = container_of(gem, struct tarugx_host_object, base);
+	convert_xrgb8888 = tgx->format == DRM_FORMAT_RGB565 &&
+		fb->format->format == DRM_FORMAT_XRGB8888;
 	/* A new FB must replace the single physical scanout buffer in full. */
 	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state))
 		damage = DRM_RECT_INIT(0, 0, tgx->width, tgx->height);
@@ -1369,6 +1397,12 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 				dma_offset = copy.y1 * tgx->pitch;
 				dma_length = (copy.y2 - copy.y1) * tgx->pitch;
 			}
+			if (convert_xrgb8888)
+				tgx_xrgb8888_to_rgb565(tgx, host_object,
+							 fb->pitches[0],
+							 dma_offset / tgx->pitch,
+							 (dma_offset + dma_length) /
+							 tgx->pitch);
 		} else {
 			dma_length = tgx->frame_bytes;
 		}
@@ -1381,7 +1415,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		ret = tgx_dma_transfer(tgx,
-				       (host_object ? host_object->dma_addr :
+				       (convert_xrgb8888 ? tgx->dma_staging_addr :
+				       host_object ? host_object->dma_addr :
 				       tgx->dma_staging_addr) + dma_offset,
 				       target + dma_offset, dma_length,
 				       tgx->dma_only_scanout ?
@@ -1486,7 +1521,8 @@ upload_complete:
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		mirror_ret = tgx_dma_transfer(tgx,
-				host_object->dma_addr + mirror_offset,
+				(convert_xrgb8888 ? tgx->dma_staging_addr :
+				 host_object->dma_addr) + mirror_offset,
 				previous_base + mirror_offset, mirror_length,
 				TGX_1080P_DMA_TIMEOUT_US);
 		mutex_unlock(&tgx->dma_lock);
@@ -1681,8 +1717,12 @@ static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
 static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	static const u32 xrgb8888_formats[] = { DRM_FORMAT_XRGB8888 };
-	static const u32 rgb565_formats[] = { DRM_FORMAT_RGB565 };
+	static const u32 rgb565_formats[] = {
+		DRM_FORMAT_XRGB8888,
+		DRM_FORMAT_RGB565,
+	};
 	const u32 *formats;
+	u32 format_count;
 	struct tarugx *tgx;
 	struct drm_device *drm;
 	u32 dma_status, gpu_version, queue_status;
@@ -1726,6 +1766,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx_configure_memory_and_mode(tgx, gpu_version);
 	formats = tgx->format == DRM_FORMAT_RGB565 ?
 		rgb565_formats : xrgb8888_formats;
+	format_count = tgx->format == DRM_FORMAT_RGB565 ?
+		ARRAY_SIZE(rgb565_formats) : ARRAY_SIZE(xrgb8888_formats);
 	tgx->active_fb_base_available =
 		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
 	dev_info(&pdev->dev,
@@ -1747,7 +1789,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = drmm_add_action_or_reset(drm, tgx_vram_mm_takedown, tgx);
 	if (ret)
 		return ret;
-	if (!tgx->dma_only_scanout) {
+	if (!tgx->dma_only_scanout || tgx->format == DRM_FORMAT_RGB565) {
 		tgx->dma_staging = dmam_alloc_coherent(&pdev->dev,
 						       tgx->frame_bytes,
 						       &tgx->dma_staging_addr,
@@ -1776,7 +1818,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	drm_connector_helper_add(&tgx->connector, &tgx_connector_helper);
 	ret = drm_simple_display_pipe_init(drm, &tgx->pipe, &tgx_pipe_funcs,
-			formats, 1, NULL, &tgx->connector);
+			formats, format_count, NULL, &tgx->connector);
 	if (ret)
 		return ret;
 	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
