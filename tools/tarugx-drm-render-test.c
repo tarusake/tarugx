@@ -76,6 +76,7 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_wait wait;
     struct drm_tarugx_vram_create vram = { .width = 640, .height = 480 };
+    struct drm_tarugx_vram_create other_vram = { .width = 32, .height = 32 };
     struct drm_tarugx_vram_create too_large = {
         .width = 640, .height = 480,
     };
@@ -95,6 +96,25 @@ int main(int argc, char **argv)
             },
         },
     };
+    struct drm_tarugx_vram_create render_vram = {
+        .width = 64, .height = 64,
+    };
+    struct drm_tarugx_submit_gem render_batch = {
+        .count = 2,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .commands = {
+            {
+                .opcode = DRM_TARUGX_OP_FILL,
+                .dst_x = 0, .dst_y = 0, .width = 32, .height = 16,
+                .color = 0xff6090d0,
+            },
+            {
+                .opcode = DRM_TARUGX_OP_BLIT,
+                .src_x = 0, .src_y = 0, .dst_x = 32, .dst_y = 0,
+                .width = 32, .height = 16,
+            },
+        },
+    };
     volatile uint32_t *vram_map;
     uint32_t fb_id = 0;
     uint32_t fb_handles[4] = { 0 };
@@ -104,10 +124,11 @@ int main(int argc, char **argv)
     struct timespec cpu_started, cpu_finished;
     double submit_ms, stress_s, cpu_s;
     unsigned int iteration;
-    int fd, other, result = 1;
+    int fd, other, render = -1, render_other = -1, result = 1;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s /dev/dri/cardN\n", argv[0]);
+    if (argc != 3) {
+        fprintf(stderr, "usage: %s /dev/dri/cardN /dev/dri/renderDN\n",
+                argv[0]);
         return 2;
     }
     fd = open(argv[1], O_RDWR | O_CLOEXEC);
@@ -129,8 +150,14 @@ int main(int argc, char **argv)
         goto out_other;
     if (expect_errno(other, DRM_IOCTL_TARUGX_SUBMIT, &batch, EACCES))
         goto out_other;
-    if (expect_errno(other, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram, EACCES))
+    if (ioctl(other, DRM_IOCTL_TARUGX_VRAM_CREATE, &other_vram)) {
+        perror("authenticated non-master VRAM create");
         goto out_other;
+    }
+    if (close_handle(other, other_vram.handle)) {
+        perror("close authenticated non-master VRAM GEM");
+        goto out_other;
+    }
     if (expect_errno(fd, DRM_IOCTL_TARUGX_FILL, &invalid, EINVAL))
         goto out_other;
     if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram)) {
@@ -217,6 +244,57 @@ int main(int argc, char **argv)
          "close lifetime, ENOSPC and reuse");
     }
 vram_gem_done:
+    render = open(argv[2], O_RDWR | O_CLOEXEC);
+    if (render < 0) {
+        perror("open TaruGX render node");
+        goto out_other;
+    }
+    if (expect_errno(render, DRM_IOCTL_TARUGX_FILL, &fill, EACCES))
+        goto out_render;
+    if (ioctl(render, DRM_IOCTL_TARUGX_VRAM_CREATE, &render_vram)) {
+        perror("render-node DRM_IOCTL_TARUGX_VRAM_CREATE");
+        goto out_render;
+    }
+    render_batch.handle = render_vram.handle;
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
+        perror("render-node DRM_IOCTL_TARUGX_SUBMIT_GEM");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    render_other = open(argv[2], O_RDWR | O_CLOEXEC);
+    if (render_other < 0) {
+        perror("open second TaruGX render node fd");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (expect_errno(render_other, DRM_IOCTL_TARUGX_SUBMIT_GEM,
+                     &render_batch, ENOENT)) {
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    wait = (struct drm_tarugx_wait) {
+        .fence = render_batch.fence,
+        .timeout_ms = 1000,
+    };
+    if (expect_errno(render_other, DRM_IOCTL_TARUGX_WAIT, &wait, EPERM)) {
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    close(render_other);
+    render_other = -1;
+    if (ioctl(render, DRM_IOCTL_TARUGX_WAIT, &wait)) {
+        perror("render-node DRM_IOCTL_TARUGX_WAIT");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (close_handle(render, render_vram.handle)) {
+        perror("close render-node VRAM GEM");
+        goto out_render;
+    }
+    close(render);
+    render = -1;
+    puts("DRM render node PASS: non-master GEM create, fenced fill/blit; "
+         "screen fill denied");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;
@@ -287,6 +365,12 @@ vram_gem_done:
     printf("DRM render postclose cleanup pending fence %u\n", batch.fence);
     result = 0;
 out_other:
+    close(other);
+    goto out_drop;
+out_render:
+    if (render_other >= 0)
+        close(render_other);
+    close(render);
     close(other);
 out_drop:
     drmDropMaster(fd);

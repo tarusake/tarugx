@@ -108,8 +108,8 @@ DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe 
 転送するため、不要な全画面DMAは行いません。
 
 2D fill/blitは`drivers/tarugx/tarugx_drm.h`のprivate DRM ioctlから利用できます。
-ioctlはDRM masterだけに許可し、任意のVRAMアドレスではなく現在の画面内の座標だけを
-受け付けます。ドライバーは表示中ページのアドレスへ変換してコマンドキューへ投入し、
+画面座標を対象にするfill/blit/submitはprimary nodeのDRM masterだけに許可します。
+ドライバーは表示中ページのアドレスへ変換してコマンドキューへ投入し、
 CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全性を優先した同期APIで、
 各呼出しは完了または100msのtimeoutまで待ちます。成功・失敗数はPCIデバイスの
 `render_commands`と`render_failures`属性で確認できます。
@@ -133,7 +133,11 @@ VRAM GEMへはmmapできません。実機では1,228,800 byteの作成、先頭
 surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲内に検査します。非同期命令中は
 ドライバーがGEM参照を保持するため、アプリが先にhandleやmmapを閉じてもfence完了までは
 領域を再割当しません。実機でGEMへのfill→blit、早期close、MSI fence、BAR2読戻し、
-完了後の再利用まで確認しています。
+完了後の再利用まで確認しています。ドライバー0.6以降はrender nodeを公開し、非master
+アプリも自分が所有するVRAM GEMだけを作成してfill/blitできます。画面座標ioctlはrender
+nodeから明示的に拒否し、別fdのGEM handleによるsubmitとfence回収もそれぞれ`ENOENT`、
+`EPERM`で拒否します。2026-11-04の実機回帰ではrender nodeを含む496命令、120バッチを
+render failure 0、プロセスCPU 0.6%で処理し、RGB565 GEMの直接scanoutにも復帰しました。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -252,11 +256,11 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
 
 - DRMの既定経路は、DMA対応FPGAでの全面更新にPCIe DMA、部分更新にCPUからBAR2への
   64-bit書込みを使用します。`dma_upload=0`の場合は全面更新もBAR2を使用します。
-  部分更新前のページ同期にはFPGAの2D blitを使用します。fill/blitはDRM master限定の
-  同期private ioctlとしてコマンドキュー、fence、MSIまで統合済みですが、通常の
-  Xorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
+  部分更新前のページ同期にはFPGAの2D blitを使用します。画面fill/blitはDRM master限定、
+  GEM対象fill/blitはrender node対応のprivate ioctlとしてコマンドキュー、fence、MSIまで
+  統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
-  直接scanoutまで実装済みですが、安全な一般ユーザー向けAPIへの本格統合は未実装です。
+  直接scanoutまで実装済みです。標準DRM scheduler、dma-fence、syncobjへの統合は未実装です。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。

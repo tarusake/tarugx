@@ -83,9 +83,15 @@ try:
              if (card/'device/vendor').exists() and
              (card/'device/vendor').read_text().strip() == '0x22c2']
     assert len(cards) == 1, f'expected one TaruGX card, got {{cards}}'
+    render_nodes = [node for node in Path('/sys/class/drm').glob('renderD*')
+                    if (node/'device/vendor').exists() and
+                    (node/'device/vendor').read_text().strip() == '0x22c2']
+    assert len(render_nodes) == 1, \
+        f'expected one TaruGX render node, got {{render_nodes}}'
     stage = 'render ioctl test'
     run = subprocess.run(
-        [str(test), '/dev/dri/'+cards[0].name],
+        [str(test), '/dev/dri/'+cards[0].name,
+         '/dev/dri/'+render_nodes[0].name],
         check=True, text=True, capture_output=True, timeout=30
     )
 
@@ -171,8 +177,8 @@ try:
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (494 if gpu_version >= 0x00010003 else
-         490 if gpu_version >= 0x00010002 else 492), counters
+        (496 if gpu_version >= 0x00010003 else
+         492 if gpu_version >= 0x00010002 else 494), counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \

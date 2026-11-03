@@ -14,6 +14,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_auth.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
@@ -491,7 +492,12 @@ static int tgx_ioctl_fill(struct drm_device *drm, void *data,
 	};
 	int idx, ret;
 
-	(void)file;
+	/* DRM_MASTER is not a render-node access barrier: DRM core deliberately
+	 * skips primary-node authentication there.  Screen-addressed commands
+	 * therefore need an explicit primary-master check in the driver. */
+	if (file->minor->type != DRM_MINOR_PRIMARY ||
+	    !drm_is_current_master(file))
+		return -EACCES;
 	if (args->flags || args->pad ||
 	    !tgx_rect_valid(args->x, args->y, args->width, args->height,
 			    tgx->width, tgx->height))
@@ -524,7 +530,9 @@ static int tgx_ioctl_blit(struct drm_device *drm, void *data,
 	};
 	int idx, ret;
 
-	(void)file;
+	if (file->minor->type != DRM_MINOR_PRIMARY ||
+	    !drm_is_current_master(file))
+		return -EACCES;
 	if (args->flags ||
 	    !tgx_rect_valid(args->src_x, args->src_y,
 			    args->width, args->height,
@@ -553,6 +561,9 @@ static int tgx_ioctl_submit(struct drm_device *drm, void *data,
 	u32 i;
 	int idx, ret;
 
+	if (file->minor->type != DRM_MINOR_PRIMARY ||
+	    !drm_is_current_master(file))
+		return -EACCES;
 	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS ||
 	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad)
 		return -EINVAL;
@@ -1739,9 +1750,12 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_FILL, tgx_ioctl_fill, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_BLIT, tgx_ioctl_blit, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT, tgx_ioctl_submit, DRM_MASTER),
-	DRM_IOCTL_DEF_DRV(TARUGX_WAIT, tgx_ioctl_wait, DRM_AUTH),
-	DRM_IOCTL_DEF_DRV(TARUGX_VRAM_CREATE, tgx_ioctl_vram_create, DRM_MASTER),
-	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM, tgx_ioctl_submit_gem, DRM_MASTER),
+	DRM_IOCTL_DEF_DRV(TARUGX_WAIT, tgx_ioctl_wait,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_VRAM_CREATE, tgx_ioctl_vram_create,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM, tgx_ioctl_submit_gem,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
 static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
@@ -1751,7 +1765,8 @@ static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
 	return ERR_PTR(-EOPNOTSUPP);
 }
 static const struct drm_driver tgx_driver = {
-	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
+	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC |
+		DRIVER_RENDER,
 	.fops = &tgx_fops,
 	.postclose = tgx_postclose,
 	.dumb_create = tgx_dumb_create,
@@ -1761,8 +1776,8 @@ static const struct drm_driver tgx_driver = {
 	.gem_prime_import = tgx_prime_import,
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
-	.date = "20261103",
-	.major = 0, .minor = 5,
+	.date = "20261104",
+	.major = 0, .minor = 6,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
