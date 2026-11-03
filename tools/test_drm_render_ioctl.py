@@ -40,6 +40,7 @@ old_module = Path(subprocess.run(
 old_copy = work/'tarugx-old.ko'
 shutil.copy2(old_module, old_copy)
 loaded_test_module = False
+stage = 'prepare'
 try:
     for name, contents in files.items():
         (work/name).write_bytes(base64.b64decode(contents))
@@ -73,11 +74,13 @@ try:
              if (card/'device/vendor').exists() and
              (card/'device/vendor').read_text().strip() == '0x22c2']
     assert len(cards) == 1, f'expected one TaruGX card, got {{cards}}'
+    stage = 'render ioctl test'
     run = subprocess.run(
         [str(test), '/dev/dri/'+cards[0].name],
         check=True, text=True, capture_output=True, timeout=30
     )
 
+    stage = 'BAR readback'
     with (device/'resource0').open('r+b', buffering=0) as regs_file, \
          mmap.mmap(regs_file.fileno(), 65536, flags=mmap.MAP_SHARED,
                    prot=mmap.PROT_READ | mmap.PROT_WRITE) as regs, \
@@ -111,6 +114,7 @@ try:
 
     direct_output = ''
     if gpu_version >= 0x00010001:
+        stage = 'direct scanout test'
         direct = subprocess.run(
             [str(scanout_test), '/dev/dri/'+cards[0].name],
             check=True, text=True, capture_output=True, timeout=30
@@ -120,6 +124,7 @@ try:
     attrs = device
     dma_samples = []
     for _ in range(5):
+        stage = 'DMA sample '+str(len(dma_samples) + 1)
         dma_test_started = time.monotonic_ns()
         (attrs/'dma_test').write_text(str(640 * 480 * 4))
         dma_test_elapsed_ms = (time.monotonic_ns() - dma_test_started) / 1_000_000
@@ -142,6 +147,16 @@ try:
     print(json.dumps({{'readback': hex(source),
                       'dma_samples': dma_samples,
                       'counters': counters}}))
+except Exception as error:
+    diagnostics = {{}}
+    device = Path('/sys/bus/pci/devices/0000:01:00.0')
+    for name in ('dma_profile', 'dma_upload_failures'):
+        if (device/name).exists():
+            diagnostics[name] = (device/name).read_text().strip()
+    print(json.dumps({{'error_type': type(error).__name__,
+                      'stage': stage,
+                      'error': str(error),
+                      'diagnostics': diagnostics}}))
 finally:
     if loaded_test_module:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
