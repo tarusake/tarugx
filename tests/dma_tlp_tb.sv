@@ -3,7 +3,7 @@
 module dma_tlp_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic request_valid=0;logic [15:0] requester_id=16'h0100;logic [7:0] request_tag=8'h5a;
- logic [63:0] host_address=64'h12345678_9abcdef0;logic [5:0] length_dw=1;logic tx_wait=0;
+ logic [63:0] host_address=64'h12345678_9abcdef0;logic [6:0] length_dw=1;logic tx_wait=0;
  logic request_ready,request_error,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  tarugx_dma_read_request_tx tx(.*);
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;
@@ -46,20 +46,24 @@ module dma_tlp_tb;
   assert(request_ready&&!request_error&&tx_sop&&tx_eop&&tx_valid==8'hf0)else $fatal(1,"request handshake");
   assert(tx_data[255:224]==32'h20000001&&tx_data[223:192]==32'h01005a0f)else $fatal(1,"request header 0/1");
   tx_wait=1;#1;assert(!request_ready&&tx_valid==8'hf0)else $fatal(1,"request stall");
-  tx_wait=0;length_dw=32;#1;assert(request_ready&&tx_data[255:224]==32'h20000020
-   &&tx_data[223:192]==32'h01005aff)else $fatal(1,"32 DWORD request");
+  tx_wait=0;length_dw=64;#1;assert(request_ready&&tx_data[255:224]==32'h20000040
+   &&tx_data[223:192]==32'h01005aff)else $fatal(1,"64 DWORD request");
   host_address[11:0]=12'hfc0;#1;assert(request_error&&!request_ready&&tx_valid==0)
    else $fatal(1,"4 KiB crossing request");
   host_address=64'h12345678_9abcdef0;
   host_address[0]=1;#1;assert(request_error&&!request_ready&&tx_valid==0)else $fatal(1,"unaligned request");
   request_valid=0;host_address[0]=0;
 
-  // A 32-DWORD CplD arrives as 5 + 8 + 8 + 8 + 3 payload DWORDs.
-  first_beat(32,0,'h10,0);consume(5,0,'h10);
+  // A 64-DWORD CplD arrives as 5 + seven lots of 8 + 3 payload DWORDs.
+  first_beat(64,0,'h10,0);consume(5,0,'h10);
   continuation(8,5,0);consume(8,5,'h24);
   continuation(8,13,0);consume(8,13,'h44);
   continuation(8,21,0);consume(8,21,'h64);
-  continuation(3,29,1);consume(3,29,'h04);
+  continuation(8,29,0);consume(8,29,'h04);
+  continuation(8,37,0);consume(8,37,'h24);
+  continuation(8,45,0);consume(8,45,'h44);
+  continuation(8,53,0);consume(8,53,'h64);
+  continuation(3,61,1);consume(3,61,'h04);
 
   // A held output chunk must backpressure the following raw beat.
   first_beat(6,0,'h20,0);wait(completion_valid);
@@ -82,7 +86,7 @@ module dma_tlp_tb;
   first_beat(6,0,'h20,0);wait(completion_valid);
   @(negedge clk);clear=1;tick();@(negedge clk);clear=0;#1;
   assert(!completion_valid&&!rx_wait)else $fatal(1,"partial packet clear");
-  $display("DMA TLP codec: MRd64 and CplD up to 32 DWORDs, 4 KiB guard, stalls and errors PASS");$finish;
+  $display("DMA TLP codec: MRd64 and CplD up to 64 DWORDs, 4 KiB guard, stalls and errors PASS");$finish;
  end
  initial begin #500000;$fatal(1,"timeout");end
 endmodule

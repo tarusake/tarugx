@@ -6,7 +6,7 @@ module dma_read_request_tx (
     requester_id : input  logic<16> ,
     request_tag  : input  logic<8>  ,
     host_address : input  logic<64> ,
-    length_dw    : input  logic<6>  ,
+    length_dw    : input  logic<7>  ,
     tx_wait      : input  logic     ,
     request_ready: output logic     ,
     request_error: output logic     ,
@@ -15,9 +15,9 @@ module dma_read_request_tx (
     tx_valid     : output logic<8>  ,
     tx_data      : output logic<256>,
 ) {
-    let request_bytes: logic<9> = (length_dw as 9) << 2;
+    let request_bytes: logic<10> = (length_dw as 10) << 2;
     let parameters_ok: logic = (host_address[1:0] == 0) && (length_dw != 0)
-        && (length_dw <= 6'd32)
+        && (length_dw <= 7'd64)
         && (({1'b0, host_address[11:0]} + (request_bytes as 13)) <= 13'd4096);
     let first_be     : logic<4> = 4'hf;
     let last_be      : logic<4> = if length_dw == 1 ? 4'h0 : 4'hf;

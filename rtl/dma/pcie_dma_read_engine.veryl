@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Eight-outstanding PCIe host-memory to VRAM DMA read engine.
 ///
-/// Requests are split at 4 KiB boundaries and may contain up to 32 DWORDs.
+/// Requests are split at 4 KiB boundaries and may contain up to 64 DWORDs.
 /// Eight tags may be active concurrently; Completion chunks
 /// are associated with their request slot and written through the 256-bit VRAM
 /// path. Completion packets may arrive in either tag order.
@@ -22,7 +22,7 @@ module pcie_dma_read_engine #(
     mrd_valid       : output logic     ,
     mrd_ready       : input  logic     ,
     mrd_host_address: output logic<64> ,
-    mrd_length_dw   : output logic<6>  ,
+    mrd_length_dw   : output logic<7>  ,
     mrd_tag         : output logic<8>  ,
     active_valid    : output logic<8>  ,
     active_tags     : output logic<64> ,
@@ -59,15 +59,15 @@ module pcie_dma_read_engine #(
     var request_pending   : logic     ;
     var request_host      : logic<64> ;
     var request_vram      : logic<32> ;
-    var request_length    : logic<6>  ;
+    var request_length    : logic<7>  ;
     var request_tag       : logic<8>  ;
     var request_slot      : logic<3>  ;
     var slot_valid        : logic<8>  ;
     var slot_tag          : logic<8>  [8];
     var slot_host         : logic<64> [8];
     var slot_vram         : logic<32> [8];
-    var slot_length       : logic<6>  [8];
-    var slot_done         : logic<6>  [8];
+    var slot_length       : logic<7>  [8];
+    var slot_done         : logic<7>  [8];
     var chunk_pending     : logic     ;
     var chunk_slot        : logic<3>  ;
     var chunk_words       : logic<256>;
@@ -86,13 +86,13 @@ module pcie_dma_read_engine #(
     var completion_lower  : logic<7>  ;
     var completion_words  : logic<256>;
 
-    // Only the final 128 bytes of a 4 KiB page can constrain a 128-byte MRd.
-    // Keeping both comparisons six bits wide avoids a long request-valid path.
-    let remaining_limit_dw: logic<6> = if |issue_remaining_dw[29:5] ?
-        6'd32 : issue_remaining_dw[5:0];
-    let page_limit_dw: logic<6> = if issue_host[11:7] == 5'b11111 ?
-        6'd32 - {1'b0, issue_host[6:2]} : 6'd32;
-    let next_request_dw: logic<6> = if remaining_limit_dw <: page_limit_dw ?
+    // Only the final 256 bytes of a 4 KiB page can constrain a 256-byte MRd.
+    // Keeping both comparisons seven bits wide avoids a long request-valid path.
+    let remaining_limit_dw: logic<7> = if |issue_remaining_dw[29:6] ?
+        7'd64 : {1'b0, issue_remaining_dw[5:0]};
+    let page_limit_dw: logic<7> = if issue_host[11:8] == 4'b1111 ?
+        7'd64 - {1'b0, issue_host[7:2]} : 7'd64;
+    let next_request_dw: logic<7> = if remaining_limit_dw <: page_limit_dw ?
         remaining_limit_dw : page_limit_dw;
     let command_end: logic<33> = (issue_vram as 33) + (length_bytes as 33);
     let command_ok: logic = (issue_host[1:0] == 0) && (issue_vram[1:0] == 0)
@@ -343,10 +343,10 @@ module pcie_dma_read_engine #(
                         chunk_index = chunk_index + write_word_count;
                         if chunk_left <= write_word_count {
                             chunk_pending = 0;
-                            if (slot_done[chunk_slot] + (chunk_total as 6)) >= slot_length[chunk_slot] {
+                            if (slot_done[chunk_slot] + (chunk_total as 7)) >= slot_length[chunk_slot] {
                                 slot_valid[chunk_slot] = 0;
                             } else {
-                                slot_done[chunk_slot] = slot_done[chunk_slot] + (chunk_total as 6);
+                                slot_done[chunk_slot] = slot_done[chunk_slot] + (chunk_total as 7);
                             }
                         }
                     }
