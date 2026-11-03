@@ -160,6 +160,8 @@ struct tarugx_vram_object {
 #define TGX_DMA_STATUS_READY BIT(4)
 #define TGX_DMA_TEST_BYTES 64
 #define TGX_DMA_TEST_VRAM (2 * TGX_LEGACY_FRAME_BYTES)
+#define TGX_DMA_TIMEOUT_US 2000000
+#define TGX_1080P_DMA_TIMEOUT_US 30000000
 
 static u32 tgx_fb_base(const struct tarugx *tgx, u32 index)
 {
@@ -1206,7 +1208,9 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		ret = tgx_dma_transfer(tgx, tgx->dma_staging_addr, target,
-				       tgx->frame_bytes, 2000000);
+				       tgx->frame_bytes,
+				       tgx->dma_only_scanout ?
+				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
 		mutex_unlock(&tgx->dma_lock);
 		if (!ret) {
 			atomic64_inc(&tgx->dma_uploads);
