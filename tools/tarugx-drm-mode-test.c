@@ -23,6 +23,14 @@ static uint32_t color(unsigned band)
 	return colors[band % 6];
 }
 
+static double monotonic_seconds(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return now.tv_sec + now.tv_nsec / 1000000000.0;
+}
+
 int main(int argc, char **argv)
 {
 	struct drm_mode_create_dumb create = { .bpp = 32 };
@@ -34,6 +42,7 @@ int main(int argc, char **argv)
 	uint32_t framebuffer = 0, crtc = 0;
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
+	double modeset_started, modeset_seconds;
 	int fd = -1, rc = 1;
 
 	if (argc < 2 || argc > 3) {
@@ -97,14 +106,16 @@ int main(int argc, char **argv)
 		for (unsigned x = 0; x < create.width; x++)
 			row[x] = color((uint64_t)y * 6 / create.height);
 	}
+	modeset_started = monotonic_seconds();
 	if (drmModeSetCrtc(fd, crtc, framebuffer, 0, 0,
 			   &connector->connector_id, 1, &connector->modes[0])) {
 		perror("modeset");
 		goto out;
 	}
-	printf("DRM mode PASS: %ux%u pitch=%u size=%llu hold=%us\n",
+	modeset_seconds = monotonic_seconds() - modeset_started;
+	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs hold=%us\n",
 	       create.width, create.height, create.pitch,
-	       (unsigned long long)create.size, hold_seconds);
+	       (unsigned long long)create.size, modeset_seconds, hold_seconds);
 	fflush(stdout);
 	{
 		struct timespec remaining = { .tv_sec = hold_seconds };

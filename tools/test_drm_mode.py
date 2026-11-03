@@ -69,11 +69,13 @@ try:
     assert expected in run.stdout, run.stdout
     counters = {{name: int((device/name).read_text()) for name in (
         'dma_uploads', 'dma_upload_failures', 'flip_timeouts', 'page_flips')}}
+    dma_profile = (device/'dma_profile').read_text().strip()
     assert counters['dma_uploads'] >= 1, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
     print(run.stdout, end='')
-    print(json.dumps({{'expected': expected, 'counters': counters}}))
+    print(json.dumps({{'expected': expected, 'counters': counters,
+                      'dma_profile': dma_profile}}))
 finally:
     if loaded_test_module:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
