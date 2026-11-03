@@ -172,6 +172,14 @@ try:
                       'counters': counters}}))
 except Exception as error:
     diagnostics = {{}}
+    if 'run' in locals():
+        diagnostics['test_returncode'] = run.returncode
+        diagnostics['test_stdout'] = run.stdout[-2000:]
+        diagnostics['test_stderr'] = run.stderr[-2000:]
+    elif isinstance(error, subprocess.CalledProcessError):
+        diagnostics['test_returncode'] = error.returncode
+        diagnostics['test_stdout'] = (error.stdout or '')[-2000:]
+        diagnostics['test_stderr'] = (error.stderr or '')[-2000:]
     device = Path('/sys/bus/pci/devices/0000:01:00.0')
     for name in ('dma_profile', 'dma_upload_failures'):
         if (device/name).exists():
