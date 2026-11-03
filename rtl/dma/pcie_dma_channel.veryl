@@ -38,7 +38,7 @@ module pcie_dma_channel #(
     var mrd_valid       : logic    ;
     var mrd_ready       : logic    ;
     var mrd_host_address: logic<64>;
-    var mrd_length_dw   : logic<5> ;
+    var mrd_length_dw   : logic<6> ;
     var mrd_tag         : logic<8> ;
     var active_valid    : logic<4> ;
     var active_tags     : logic<32>;
