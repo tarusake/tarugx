@@ -5,6 +5,7 @@ module scanout_prefetch_reader_tb;
  logic enable=0;logic [31:0] fb_base=0,fb_stride=2560;
  logic config_error,mem_valid,mem_ready=0,mem_rsp_valid=0,mem_rsp_ready;
  logic active_buffer;
+ logic [31:0] active_fb_base;
  logic [21:0] mem_addr;logic [255:0] mem_rsp_data=0;
  logic mem_rsp_error=0,out_valid,out_ready=0,out_error;
  logic [15:0] out_index;logic [255:0] out_data;
@@ -13,6 +14,7 @@ module scanout_prefetch_reader_tb;
  task frame(input int base,input int pitch,input bit modify_config);
   for(int i=0;i<38400;i++) begin
    while(!mem_valid) tick();
+   assert(active_fb_base==32'(base)) else $fatal(1,"active base %h",active_fb_base);
    assert(mem_addr==22'(base+(i/80)*pitch+(i%80)*32)) else $fatal(1,"address %0d %h",i,mem_addr);
    if(i%991==0) repeat(3) begin tick();assert(mem_valid && !out_valid) else $fatal;end
    @(negedge clk);mem_ready=1;tick();@(negedge clk);mem_ready=0;

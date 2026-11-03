@@ -9,6 +9,7 @@ module scanout_prefetch_reader (
     fb_stride    : input  logic<32> ,
     config_error : output logic     ,
     active_buffer: output logic     ,
+    active_fb_base: output logic<32>,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
     mem_addr     : output logic<22> ,
@@ -71,6 +72,7 @@ module scanout_prefetch_reader (
             out_index      = 0;
             config_error   = 0;
             active_buffer  = 0;
+            active_fb_base = 0;
             data           = '{default: '0};
             errors         = '{default: '0};
             config_pending = 0;
@@ -92,7 +94,8 @@ module scanout_prefetch_reader (
                     config_error   = !valid_config;
                     if valid_config {
                         active        = 1;
-                        active_buffer = pending_base != 0;
+                        active_buffer  = pending_base != 0;
+                        active_fb_base = pending_base;
                         issued        = 0;
                         row           = 0;
                         column        = 0;

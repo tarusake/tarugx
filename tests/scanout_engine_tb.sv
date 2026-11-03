@@ -6,6 +6,7 @@ module scanout_engine_tb;
  logic enable=1;logic [31:0] fb_base=0,fb_stride=2560;
  logic config_error,mem_valid,mem_ready,mem_rsp_valid=0,mem_rsp_ready;
  logic active_buffer;
+ logic [31:0] active_fb_base;
  logic [21:0] mem_addr;logic [255:0] mem_rsp_data=0;logic mem_rsp_error=0;
  logic [25:0] settings=26'h1000000;
  logic de,hsync,vsync,underflow,vblank_toggle;logic [23:0] rgb;

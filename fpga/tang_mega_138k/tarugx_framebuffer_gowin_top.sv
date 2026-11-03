@@ -50,6 +50,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     logic [4:0] ltssm;
     wire [31:0] display_ctrl, display_color;
     wire active_buffer;
+    wire [31:0] active_fb_base;
     wire vblank_toggle;
     wire msi_req, msi_status, msi_ack;
     wire [1:0] msi_enable;
@@ -203,7 +204,8 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .fb_req_addr(fb_req_addr), .fb_req_wdata(fb_req_wdata), .fb_req_wstrb(fb_req_wstrb),
         .fb_rsp_valid(fb_rsp_valid), .fb_rsp_ready(fb_rsp_ready),
         .fb_rsp_rdata(cpu_response[31:0]), .fb_rsp_error(cpu_response[32]),
-        .active_buffer(active_buffer), .vblank_toggle(vblank_toggle),
+        .active_buffer(active_buffer), .active_fb_base(active_fb_base),
+        .vblank_toggle(vblank_toggle),
         .irq_enable(msi_enable),
         .fill_busy(fill_busy), .fill_done(fill_done), .fill_error(fill_error),
         .fill_command(fill_command), .fill_start(fill_start),
@@ -228,6 +230,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [23:0] video_rgb;
     wire underflow, config_error;
     wire mem_active_buffer;
+    wire [31:0] mem_active_fb_base;
     wire pixel_vblank_toggle;
     wire [63:0] fault_snapshot;
     wire [64:0] memory_settings;
@@ -392,6 +395,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]), .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
         .config_error(config_error), .active_buffer(mem_active_buffer),
+        .active_fb_base(mem_active_fb_base),
         .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
         .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
         .rgb(video_rgb), .underflow(underflow), .vblank_toggle(pixel_vblank_toggle),
@@ -408,6 +412,11 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
         .src_config(mem_active_buffer), .dst_config(active_buffer)
+    );
+    tarugx_display_config_cdc #(.WIDTH(32)) u_active_fb_base_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
+        .src_config(mem_active_fb_base), .dst_config(active_fb_base)
     );
     tarugx_display_config_cdc #(.WIDTH(1)) u_vblank_toggle_cdc (
         .src_clk(pixel_clk), .src_rst_n(pixel_reset[1]),

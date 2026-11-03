@@ -61,6 +61,7 @@ struct tarugx {
 	atomic64_t render_queue_peak;
 	bool dma_available;
 	bool render_available;
+	bool active_fb_base_available;
 	bool legacy_single_buffer;
 	wait_queue_head_t vblank_wait;
 	wait_queue_head_t render_wait;
@@ -89,6 +90,7 @@ struct tarugx_vram_object {
 #define TGX_FB_BASE(n) ((n) * TGX_FRAME_BYTES)
 #define TGX_VRAM_BYTES SZ_4M
 #define TGX_VRAM_GEM_BASE TGX_FB_BASE(2)
+#define TGX_REG_GPU_VERSION 0x04
 #define TGX_REG_DISPLAY_CTRL 0x10
 #define TGX_REG_FB_BASE 0x1c
 #define TGX_REG_FB_STRIDE 0x20
@@ -96,6 +98,8 @@ struct tarugx_vram_object {
 #define TGX_REG_ACTIVE_BUFFER 0x28
 #define TGX_REG_VBLANK_TOGGLE 0x2c
 #define TGX_REG_IRQ_ENABLE 0x30
+#define TGX_REG_ACTIVE_FB_BASE 0x34
+#define TGX_GPU_VERSION_ACTIVE_FB_BASE 0x00010001
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -188,6 +192,16 @@ static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 	if (ret)
 		return ret;
 	return status & TGX_BLIT_STATUS_ERROR ? -EIO : 0;
+}
+
+static u32 tgx_active_fb_base(struct tarugx *tgx)
+{
+	u32 active;
+
+	if (tgx->active_fb_base_available)
+		return readl(tgx->regs + TGX_REG_ACTIVE_FB_BASE);
+	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	return active <= 1 ? TGX_FB_BASE(active) : U32_MAX;
 }
 
 static bool tgx_rect_valid(u32 x, u32 y, u32 width, u32 height,
@@ -396,11 +410,11 @@ static int tgx_execute_screen_commands(struct tarugx *tgx,
 				       struct drm_file *async_owner,
 				       u32 *fence_out)
 {
-	u32 active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	u32 active = tgx_active_fb_base(tgx);
 
-	if (active > 1)
+	if (active > TGX_VRAM_BYTES - TGX_FRAME_BYTES)
 		return -EIO;
-	return tgx_execute_commands(tgx, commands, count, TGX_FB_BASE(active),
+	return tgx_execute_commands(tgx, commands, count, active,
 				    TGX_PITCH, async_owner, fence_out);
 }
 
@@ -974,7 +988,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_rect damage, copy;
 	unsigned int x, y;
 	u64 copied;
-	u32 active, target;
+	u32 active, active_base, target;
 	s64 vblank_before;
 	long wait_ret;
 	int idx, target_index, ret = 0, vblank_ret = 0;
@@ -1009,21 +1023,31 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	/* A partial update starts from an exact copy of the active physical page.
 	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
 	 * the damage rectangle is guaranteed to contain new valid contents. */
-	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	active_base = tgx_active_fb_base(tgx);
+	if (active_base > TGX_VRAM_BYTES - TGX_FRAME_BYTES) {
+		dev_warn_ratelimited(tgx->drm.dev,
+				     "invalid active framebuffer base %#x\n",
+				     active_base);
+		mutex_unlock(&tgx->render_lock);
+		drm_dev_exit(idx);
+		return;
+	}
+	active = active_base == TGX_FB_BASE(0) ? 0 :
+		 active_base == TGX_FB_BASE(1) ? 1 : U32_MAX;
 	target_index = tgx->legacy_single_buffer && active <= 1 ?
-		active : (active == 0 ? 1 : 0);
+		active : (active_base == TGX_FB_BASE(0) ? 1 : 0);
 	target = TGX_FB_BASE(target_index);
 	copy = damage;
 	full_damage = copy.x1 == 0 && copy.y1 == 0 &&
 		copy.x2 == TGX_WIDTH && copy.y2 == TGX_HEIGHT;
 	if (!full_damage && !tgx->legacy_single_buffer) {
-		ret = tgx_blit_copy_frame(tgx, TGX_FB_BASE(active), target);
+		ret = tgx_blit_copy_frame(tgx, active_base, target);
 		if (ret) {
 			atomic64_inc(&tgx->blit_sync_failures);
 			dev_warn_ratelimited(tgx->drm.dev,
 					     "frame sync blit failed: %d; using CPU copy\n",
 					     ret);
-			tgx_cpu_copy_frame(tgx, TGX_FB_BASE(active), target);
+			tgx_cpu_copy_frame(tgx, active_base, target);
 		} else {
 			atomic64_inc(&tgx->blit_syncs);
 		}
@@ -1099,11 +1123,13 @@ upload_complete:
 	 * extra frame.  A pre-commit interrupt cannot satisfy both conditions. */
 	wait_ret = wait_event_timeout(tgx->vblank_wait,
 			atomic64_read(&tgx->msi_interrupts) != vblank_before &&
-			readl(tgx->regs + TGX_REG_ACTIVE_BUFFER) == target_index,
+			tgx_active_fb_base(tgx) == target,
 			msecs_to_jiffies(100));
 	if (!wait_ret) {
-		active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
-		if (active == target_index)
+		active_base = tgx_active_fb_base(tgx);
+		active = active_base == TGX_FB_BASE(0) ? 0 :
+			 active_base == TGX_FB_BASE(1) ? 1 : U32_MAX;
+		if (active_base == target)
 			vblank_ret = 1;
 		else {
 			ret = -ETIMEDOUT;
@@ -1129,8 +1155,8 @@ upload_complete:
 	atomic64_add(copied, &tgx->bytes_uploaded);
 	if (ret)
 		dev_warn_ratelimited(tgx->drm.dev,
-				     "page flip to buffer %d timed out (active %u)%s\n",
-				     target_index, active,
+					     "page flip to buffer %d timed out (active base %#x)%s\n",
+					     target_index, active_base,
 				     did_flip_fallback ? "; copied to active page" : "");
 	else if (vblank_ret)
 		dev_warn_ratelimited(tgx->drm.dev,
@@ -1226,7 +1252,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	static const u32 formats[] = { DRM_FORMAT_XRGB8888 };
 	struct tarugx *tgx;
 	struct drm_device *drm;
-	u32 dma_status, queue_status;
+	u32 dma_status, gpu_version, queue_status;
 	int ret;
 	ret = pcim_enable_device(pdev);
 	if (ret)
@@ -1272,6 +1298,12 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	init_waitqueue_head(&tgx->render_wait);
 	if (readl(tgx->regs) != 0x54475055)
 		return -ENODEV;
+	gpu_version = readl(tgx->regs + TGX_REG_GPU_VERSION);
+	tgx->active_fb_base_available =
+		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
+	dev_info(&pdev->dev, "GPU version %u.%u, 32-bit active FB base %s\n",
+		 gpu_version >> 16, gpu_version & 0xffff,
+		 tgx->active_fb_base_available ? "available" : "unavailable");
 	dma_status = readl(tgx->regs + TGX_REG_DMA_STATUS);
 	tgx->dma_available = (dma_status & TGX_DMA_STATUS_READY) &&
 		!(dma_status & (TGX_DMA_STATUS_BUSY | TGX_DMA_STATUS_ERROR |

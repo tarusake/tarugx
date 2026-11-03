@@ -12,6 +12,7 @@ module gpu_registers (
     req_wdata      : input  logic<32> ,
     req_wstrb      : input  logic<4>  ,
     active_buffer  : input  logic     ,
+    active_fb_base : input  logic<32> ,
     vblank_toggle  : input  logic     ,
     fill_busy      : input  logic     ,
     fill_done      : input  logic     ,
@@ -53,7 +54,7 @@ module gpu_registers (
     dma_cmd_valid   : output logic    ,
 ) {
     const GPU_ID           : logic<32> = 32'h5447_5055;
-    const GPU_VERSION      : logic<32> = 32'h0001_0000;
+    const GPU_VERSION      : logic<32> = 32'h0001_0001;
     const GPU_STATUS       : logic<32> = 32'h0000_0001;
     var   fill_addr        : logic<32>;
     var   fill_stride      : logic<32>;
@@ -114,6 +115,7 @@ module gpu_registers (
                 14'h000a: rsp_rdata = {31'b0, active_buffer};
                 14'h000b: rsp_rdata = {31'b0, vblank_toggle};
                 14'h000c: rsp_rdata = {30'b0, irq_enable};
+                14'h000d: rsp_rdata = active_fb_base;
                 14'h0018: rsp_rdata = fill_addr;
                 14'h0019: rsp_rdata = fill_stride;
                 14'h001a: rsp_rdata = fill_size;

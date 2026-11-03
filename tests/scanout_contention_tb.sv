@@ -12,7 +12,7 @@ module scanout_contention_tb;
  logic config_error,de,hsync,vsync,underflow,vblank_toggle;logic [23:0] rgb;logic [63:0] fault_snapshot;
  tarugx_scanout_engine scan(
   .mem_clk(mem_clk),.mem_rst_n(rst_n),.enable(1'b1),.fb_base(32'b0),.fb_stride(32'd2560),
-  .config_error(config_error),.active_buffer(),.scan_urgent(scan_urgent),
+  .config_error(config_error),.active_buffer(),.active_fb_base(),.scan_urgent(scan_urgent),
   .mem_valid(scan_valid),.mem_ready(scan_ready),.mem_addr(scan_addr),
   .mem_rsp_valid(scan_rsp_valid),.mem_rsp_ready(scan_rsp_ready),.mem_rsp_data(scan_rsp_data),.mem_rsp_error(scan_rsp_error),
   .pixel_clk(pixel_clk),.pixel_rst_n(rst_n),.settings(26'h1000000),

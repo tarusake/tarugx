@@ -22,6 +22,7 @@ module bar0_tlp_bridge_end_to_end {
     var unsupported    : logic     ;
     var malformed      : logic     ;
     var active_buffer  : logic     ;
+    var active_fb_base : logic<32> ;
     var vblank_toggle  : logic     ;
     var fill_busy      : logic     ;
     var fill_done      : logic     ;
@@ -79,6 +80,7 @@ module bar0_tlp_bridge_end_to_end {
         unsupported      ,
         malformed        ,
         active_buffer    ,
+        active_fb_base   ,
         vblank_toggle    ,
         fill_busy        ,
         fill_done        ,
@@ -127,6 +129,7 @@ module bar0_tlp_bridge_end_to_end {
         rx_payload_dw0 = 0;
         tx_ready       = 0;
         active_buffer  = 0;
+        active_fb_base = 0;
         vblank_toggle  = 0;
         fill_busy      = 0;
         fill_done      = 0;

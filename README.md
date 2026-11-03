@@ -133,6 +133,13 @@ surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲�
 領域を再割当しません。実機でGEMへのfill→blit、早期close、MSI fence、BAR2読戻し、
 完了後の再利用まで確認しています。VRAM GEMをscanoutへ直接指定する接続はまだ未実装です。
 
+GPU version 1.1以降は、BAR0の`ACTIVE_FB_BASE`（offset `0x34`）から、scanoutが
+フレーム境界で採用した32-bit VRAM先頭アドレスを読み出せます。従来の
+`ACTIVE_BUFFER`（offset `0x28`）は固定2ページとの互換用に残します。Linuxドライバーは
+version 1.1以降では完全なアドレスでページフリップ完了を確認し、version 1.0では従来の
+0/1ページ判定へ自動的に戻ります。これは任意のVRAM GEMを直接scanoutするための
+レジスタ境界で、RTLシミュレーション済み、実機SRAM更新は未実施です。
+
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
 後者は表示サービスを一時停止し、終了時には従来モジュールとサービスを復元します。
