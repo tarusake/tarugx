@@ -1713,6 +1713,26 @@ static void tgx_host_object_vunmap(struct drm_gem_object *gem,
 	iosys_map_clear(map);
 }
 
+static struct sg_table *
+tgx_host_object_get_sg_table(struct drm_gem_object *gem)
+{
+	struct tarugx_host_object *object =
+		container_of(gem, struct tarugx_host_object, base);
+	struct sg_table *sgt;
+	int ret;
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt)
+		return ERR_PTR(-ENOMEM);
+	ret = dma_get_sgtable(gem->dev->dev, sgt, object->vaddr,
+			      object->dma_addr, gem->size);
+	if (ret) {
+		kfree(sgt);
+		return ERR_PTR(ret);
+	}
+	return sgt;
+}
+
 static int tgx_host_object_mmap(struct drm_gem_object *gem,
 				struct vm_area_struct *vma)
 {
@@ -1733,6 +1753,8 @@ static int tgx_host_object_mmap(struct drm_gem_object *gem,
 
 static const struct drm_gem_object_funcs tgx_host_object_funcs = {
 	.free = tgx_host_object_free,
+	.export = drm_gem_prime_export,
+	.get_sg_table = tgx_host_object_get_sg_table,
 	.vmap = tgx_host_object_vmap,
 	.vunmap = tgx_host_object_vunmap,
 	.mmap = tgx_host_object_mmap,
@@ -2279,10 +2301,17 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
-static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
-					     struct dma_buf *dma_buf)
+static struct drm_gem_object *
+tgx_prime_import_sg_table(struct drm_device *drm,
+			  struct dma_buf_attachment *attach,
+			  struct sg_table *sgt)
 {
-	/* Initial driver accepts its own CPU buffers only; no imported DMA BOs. */
+	(void)drm;
+	(void)attach;
+	(void)sgt;
+	/* External scatter/gather buffers are not yet valid DMA scanout sources.
+	 * Standard drm_gem_prime_import() handles same-device self-import before
+	 * reaching this callback. */
 	return ERR_PTR(-EOPNOTSUPP);
 }
 static const struct drm_driver tgx_driver = {
@@ -2291,14 +2320,14 @@ static const struct drm_driver tgx_driver = {
 	.fops = &tgx_fops,
 	.postclose = tgx_postclose,
 	.dumb_create = tgx_dumb_create,
-	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
+	.gem_prime_import_sg_table = tgx_prime_import_sg_table,
 	.ioctls = tgx_ioctls,
 	.num_ioctls = ARRAY_SIZE(tgx_ioctls),
-	.gem_prime_import = tgx_prime_import,
+	.gem_prime_import = drm_gem_prime_import,
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 13,
+	.major = 0, .minor = 14,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -2331,7 +2360,8 @@ static int tgx_scheduler_init(struct tarugx *tgx)
 	int ret;
 
 	tgx->render_sched_list[0] = &tgx->render_sched;
-	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL, 1, 1,
+	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL,
+			     DRM_SCHED_PRIORITY_COUNT, 1,
 			     0, msecs_to_jiffies(200), NULL, NULL,
 			     "tarugx-render", tgx->drm.dev);
 	if (ret)
