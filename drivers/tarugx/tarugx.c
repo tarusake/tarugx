@@ -74,6 +74,15 @@ struct tarugx {
 	u32 render_async_commands;
 	int render_async_result;
 	struct drm_gem_object *render_async_gem;
+	const struct drm_display_mode *mode;
+	u32 width;
+	u32 height;
+	u32 pitch;
+	u32 frame_bytes;
+	u32 vram_bytes;
+	u32 vram_gem_base;
+	u32 vram_gem_bytes;
+	bool dma_only_scanout;
 };
 
 struct tarugx_vram_object {
@@ -84,13 +93,16 @@ struct tarugx_vram_object {
 	u32 pitch;
 };
 
-#define TGX_WIDTH 640
-#define TGX_HEIGHT 480
-#define TGX_PITCH (TGX_WIDTH * 4)
-#define TGX_FRAME_BYTES (TGX_PITCH * TGX_HEIGHT)
-#define TGX_FB_BASE(n) ((n) * TGX_FRAME_BYTES)
-#define TGX_VRAM_BYTES SZ_4M
-#define TGX_VRAM_GEM_BASE TGX_FB_BASE(2)
+#define TGX_BAR2_BYTES SZ_4M
+#define TGX_LEGACY_WIDTH 640
+#define TGX_LEGACY_HEIGHT 480
+#define TGX_LEGACY_PITCH (TGX_LEGACY_WIDTH * 4)
+#define TGX_LEGACY_FRAME_BYTES (TGX_LEGACY_PITCH * TGX_LEGACY_HEIGHT)
+#define TGX_1080P_WIDTH 1920
+#define TGX_1080P_HEIGHT 1080
+#define TGX_1080P_PITCH (TGX_1080P_WIDTH * 4)
+#define TGX_1080P_FRAME_BYTES (TGX_1080P_PITCH * TGX_1080P_HEIGHT)
+#define TGX_DDR_BYTES SZ_16M
 #define TGX_REG_GPU_VERSION 0x04
 #define TGX_REG_DISPLAY_CTRL 0x10
 #define TGX_REG_FB_BASE 0x1c
@@ -101,6 +113,7 @@ struct tarugx_vram_object {
 #define TGX_REG_IRQ_ENABLE 0x30
 #define TGX_REG_ACTIVE_FB_BASE 0x34
 #define TGX_GPU_VERSION_ACTIVE_FB_BASE 0x00010001
+#define TGX_GPU_VERSION_1080P60 0x00010002
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -146,7 +159,12 @@ struct tarugx_vram_object {
 #define TGX_DMA_STATUS_REJECTED BIT(3)
 #define TGX_DMA_STATUS_READY BIT(4)
 #define TGX_DMA_TEST_BYTES 64
-#define TGX_DMA_TEST_VRAM TGX_FB_BASE(2)
+#define TGX_DMA_TEST_VRAM (2 * TGX_LEGACY_FRAME_BYTES)
+
+static u32 tgx_fb_base(const struct tarugx *tgx, u32 index)
+{
+	return index * tgx->frame_bytes;
+}
 
 static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 			    u32 vram_address, u32 length_bytes,
@@ -155,6 +173,9 @@ static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 	u32 status;
 	int ret;
 
+	if (!length_bytes || length_bytes > tgx->vram_bytes ||
+	    vram_address > tgx->vram_bytes - length_bytes)
+		return -EINVAL;
 	status = readl(tgx->regs + TGX_REG_DMA_STATUS);
 	if (!(status & TGX_DMA_STATUS_READY) ||
 	    status & (TGX_DMA_STATUS_BUSY | TGX_DMA_STATUS_REJECTED))
@@ -193,9 +214,10 @@ static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 		return -EBUSY;
 	writel(source, tgx->regs + TGX_REG_BLIT_SRC);
 	writel(target, tgx->regs + TGX_REG_BLIT_DST);
-	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
-	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
-	writel((TGX_HEIGHT << 16) | TGX_WIDTH, tgx->regs + TGX_REG_BLIT_SIZE);
+	writel(tgx->pitch, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
+	writel(tgx->pitch, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
+	writel((tgx->height << 16) | tgx->width,
+	       tgx->regs + TGX_REG_BLIT_SIZE);
 	writel(1, tgx->regs + TGX_REG_BLIT_COMMAND);
 	readl(tgx->regs + TGX_REG_BLIT_COMMAND);
 	ret = readl_poll_timeout(tgx->regs + TGX_REG_BLIT_STATUS, status,
@@ -214,7 +236,7 @@ static u32 tgx_active_fb_base(struct tarugx *tgx)
 	if (tgx->active_fb_base_available)
 		return readl(tgx->regs + TGX_REG_ACTIVE_FB_BASE);
 	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
-	return active <= 1 ? TGX_FB_BASE(active) : U32_MAX;
+	return active <= 1 ? tgx_fb_base(tgx, active) : U32_MAX;
 }
 
 static bool tgx_rect_valid(u32 x, u32 y, u32 width, u32 height,
@@ -425,10 +447,10 @@ static int tgx_execute_screen_commands(struct tarugx *tgx,
 {
 	u32 active = tgx_active_fb_base(tgx);
 
-	if (active > TGX_VRAM_BYTES - TGX_FRAME_BYTES)
+	if (active > tgx->vram_bytes - tgx->frame_bytes)
 		return -EIO;
 	return tgx_execute_commands(tgx, commands, count, active,
-				    TGX_PITCH, async_owner, fence_out);
+				    tgx->pitch, async_owner, fence_out);
 }
 
 static int tgx_ioctl_fill(struct drm_device *drm, void *data,
@@ -449,7 +471,7 @@ static int tgx_ioctl_fill(struct drm_device *drm, void *data,
 	(void)file;
 	if (args->flags || args->pad ||
 	    !tgx_rect_valid(args->x, args->y, args->width, args->height,
-			    TGX_WIDTH, TGX_HEIGHT))
+			    tgx->width, tgx->height))
 		return -EINVAL;
 	if (!tgx->render_available)
 		return -EOPNOTSUPP;
@@ -483,10 +505,10 @@ static int tgx_ioctl_blit(struct drm_device *drm, void *data,
 	if (args->flags ||
 	    !tgx_rect_valid(args->src_x, args->src_y,
 			    args->width, args->height,
-			    TGX_WIDTH, TGX_HEIGHT) ||
+			    tgx->width, tgx->height) ||
 	    !tgx_rect_valid(args->dst_x, args->dst_y,
 			    args->width, args->height,
-			    TGX_WIDTH, TGX_HEIGHT))
+			    tgx->width, tgx->height))
 		return -EINVAL;
 	if (!tgx->render_available)
 		return -EOPNOTSUPP;
@@ -513,7 +535,7 @@ static int tgx_ioctl_submit(struct drm_device *drm, void *data,
 		return -EINVAL;
 	for (i = 0; i < args->count; i++)
 		if (!tgx_command_valid(&args->commands[i],
-				       TGX_WIDTH, TGX_HEIGHT))
+				       tgx->width, tgx->height))
 			return -EINVAL;
 	if (!tgx->render_available)
 		return -EOPNOTSUPP;
@@ -638,13 +660,13 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	u64 size;
 	int ret;
 
-	if (!args->width || args->width > TGX_WIDTH || !args->height ||
-	    args->height > TGX_HEIGHT || args->flags || args->pad)
+	if (!args->width || args->width > tgx->width || !args->height ||
+	    args->height > tgx->height || args->flags || args->pad)
 		return -EINVAL;
 	args->pitch = args->width * 4;
 	size = PAGE_ALIGN((u64)args->pitch * args->height);
-	if (size > TGX_VRAM_BYTES - TGX_VRAM_GEM_BASE)
-		return -EINVAL;
+	if (size > tgx->vram_gem_bytes)
+		return -ENOSPC;
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object)
 		return -ENOMEM;
@@ -734,10 +756,10 @@ static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 {
 	u32 offset;
 
-	for (offset = 0; offset < TGX_FRAME_BYTES; offset += 4)
+	for (offset = 0; offset < tgx->frame_bytes; offset += 4)
 		writel(readl(tgx->vram + source + offset),
 		       tgx->vram + target + offset);
-	readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+	readl(tgx->vram + target + tgx->frame_bytes - 4);
 }
 
 static ssize_t page_flips_show(struct device *dev,
@@ -918,7 +940,8 @@ static ssize_t dma_test_store(struct device *dev,
 		return ret;
 	if (length == 1)
 		length = TGX_DMA_TEST_BYTES;
-	if (!length || length > TGX_FRAME_BYTES || (length & 3))
+	if (!length || length > tgx->frame_bytes ||
+	    length > TGX_BAR2_BYTES - TGX_DMA_TEST_VRAM || (length & 3))
 		return -EINVAL;
 	if (!mutex_trylock(&tgx->dma_lock))
 		return -EBUSY;
@@ -978,10 +1001,17 @@ static struct attribute *tgx_attrs[] = {
 };
 ATTRIBUTE_GROUPS(tgx);
 
-static const struct drm_display_mode tgx_mode = {
+static const struct drm_display_mode tgx_mode_640x480 = {
 	DRM_MODE("640x480", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 		 25188, 640, 656, 752, 800, 0, 480, 490, 492, 525, 0,
 		 DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC)
+};
+
+static const struct drm_display_mode tgx_mode_1920x1080 = {
+	DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+		 148438, 1920, 2008, 2052, 2200, 0,
+		 1080, 1084, 1089, 1125, 0,
+		 DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC)
 };
 
 static irqreturn_t tgx_irq(int irq, void *data)
@@ -1014,7 +1044,9 @@ static void tgx_disable_msi(void *data)
 
 static int tgx_get_modes(struct drm_connector *connector)
 {
-	struct drm_display_mode *mode = drm_mode_duplicate(connector->dev, &tgx_mode);
+	struct tarugx *tgx = container_of(connector, struct tarugx, connector);
+	struct drm_display_mode *mode = drm_mode_duplicate(connector->dev,
+							  tgx->mode);
 	if (!mode)
 		return 0;
 	drm_mode_probed_add(connector, mode);
@@ -1042,7 +1074,9 @@ static const struct drm_connector_funcs tgx_connector_funcs = {
 static enum drm_mode_status tgx_mode_valid(struct drm_simple_display_pipe *pipe,
 					 const struct drm_display_mode *mode)
 {
-	return drm_mode_equal(mode, &tgx_mode) ? MODE_OK : MODE_BAD;
+	struct tarugx *tgx = container_of(pipe, struct tarugx, pipe);
+
+	return drm_mode_equal(mode, tgx->mode) ? MODE_OK : MODE_BAD;
 }
 
 static int tgx_check(struct drm_simple_display_pipe *pipe,
@@ -1054,7 +1088,8 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 
 	crtc->no_vblank = true;
 	if (plane->fb && (plane->src_x || plane->src_y ||
-	    plane->fb->width != 640 || plane->fb->height != 480))
+	    plane->fb->width != tgx->width ||
+	    plane->fb->height != tgx->height))
 		return -EINVAL;
 	if (!plane->fb)
 		return 0;
@@ -1064,8 +1099,8 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 	if (!tgx->active_fb_base_available || tgx->legacy_single_buffer)
 		return -EOPNOTSUPP;
 	object = container_of(gem, struct tarugx_vram_object, base);
-	if (object->width != TGX_WIDTH || object->height != TGX_HEIGHT ||
-	    object->pitch != TGX_PITCH || plane->fb->pitches[0] != TGX_PITCH ||
+	if (object->width != tgx->width || object->height != tgx->height ||
+	    object->pitch != tgx->pitch || plane->fb->pitches[0] != tgx->pitch ||
 	    plane->fb->offsets[0])
 		return -EINVAL;
 	return 0;
@@ -1096,8 +1131,9 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	if (gem && gem->funcs == &tgx_vram_object_funcs)
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
 	/* A new FB must replace the single physical scanout buffer in full. */
-	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state))
-		damage = DRM_RECT_INIT(0, 0, 640, 480);
+	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state) ||
+	    tgx->dma_only_scanout)
+		damage = DRM_RECT_INIT(0, 0, tgx->width, tgx->height);
 	else if (!drm_atomic_helper_damage_merged(old, state, &damage))
 		return;
 	if (!drm_dev_enter(&tgx->drm, &idx))
@@ -1122,7 +1158,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
 	 * the damage rectangle is guaranteed to contain new valid contents. */
 	active_base = tgx_active_fb_base(tgx);
-	if (active_base > TGX_VRAM_BYTES - TGX_FRAME_BYTES) {
+	if (active_base > tgx->vram_bytes - tgx->frame_bytes) {
 		dev_warn_ratelimited(tgx->drm.dev,
 				     "invalid active framebuffer base %#x\n",
 				     active_base);
@@ -1130,23 +1166,23 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		drm_dev_exit(idx);
 		return;
 	}
-	active = active_base == TGX_FB_BASE(0) ? 0 :
-		 active_base == TGX_FB_BASE(1) ? 1 : U32_MAX;
+	active = active_base == tgx_fb_base(tgx, 0) ? 0 :
+		 active_base == tgx_fb_base(tgx, 1) ? 1 : U32_MAX;
 	if (vram_object) {
 		direct_scanout = true;
 		target = vram_object->node.start;
 		target_index = -1;
 		copied = 0;
 		/* Flush userspace write-combine stores before changing scanout. */
-		readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+		readl(tgx->vram + target + tgx->frame_bytes - 4);
 		goto upload_complete;
 	}
 	target_index = tgx->legacy_single_buffer && active <= 1 ?
-		active : (active_base == TGX_FB_BASE(0) ? 1 : 0);
-	target = TGX_FB_BASE(target_index);
+		active : (active_base == tgx_fb_base(tgx, 0) ? 1 : 0);
+	target = tgx_fb_base(tgx, target_index);
 	copy = damage;
 	full_damage = copy.x1 == 0 && copy.y1 == 0 &&
-		copy.x2 == TGX_WIDTH && copy.y2 == TGX_HEIGHT;
+		copy.x2 == tgx->width && copy.y2 == tgx->height;
 	if (!full_damage && !tgx->legacy_single_buffer) {
 		ret = tgx_blit_copy_frame(tgx, active_base, target);
 		if (ret) {
@@ -1161,21 +1197,30 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		ret = 0;
 	}
 	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * 4;
-	if (full_damage && dma_upload && tgx->dma_available) {
-		for (y = 0; y < TGX_HEIGHT; y++)
-			iosys_map_memcpy_from(tgx->dma_staging + y * TGX_PITCH,
+	if (full_damage && (dma_upload || tgx->dma_only_scanout) &&
+	    tgx->dma_available) {
+		for (y = 0; y < tgx->height; y++)
+			iosys_map_memcpy_from(tgx->dma_staging + y * tgx->pitch,
 					      &shadow->data[0],
-					      y * fb->pitches[0], TGX_PITCH);
+					      y * fb->pitches[0], tgx->pitch);
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		ret = tgx_dma_transfer(tgx, tgx->dma_staging_addr, target,
-				       TGX_FRAME_BYTES, 2000000);
+				       tgx->frame_bytes, 2000000);
 		mutex_unlock(&tgx->dma_lock);
 		if (!ret) {
 			atomic64_inc(&tgx->dma_uploads);
 			goto upload_complete;
 		}
 		atomic64_inc(&tgx->dma_upload_failures);
+		if (tgx->dma_only_scanout) {
+			dev_err_ratelimited(tgx->drm.dev,
+				"frame DMA upload failed: %d; no safe BAR fallback\n",
+				ret);
+			mutex_unlock(&tgx->render_lock);
+			drm_dev_exit(idx);
+			return;
+		}
 		dev_warn_ratelimited(tgx->drm.dev,
 				     "frame DMA upload failed: %d; using BAR writes\n",
 				     ret);
@@ -1189,24 +1234,24 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 			iosys_map_memcpy_from(&pixel, &shadow->data[0],
 					     y * fb->pitches[0] + x * 4, 4);
 			writel(le32_to_cpu((__force __le32)pixel),
-			       tgx->vram + target + y * TGX_PITCH + x * 4);
+			       tgx->vram + target + y * tgx->pitch + x * 4);
 			x++;
 		}
 		for (; x + 1 < copy.x2; x += 2) {
 			iosys_map_memcpy_from(&pixels, &shadow->data[0],
 					     y * fb->pitches[0] + x * 4, 8);
 			writeq(le64_to_cpu((__force __le64)pixels),
-			       tgx->vram + target + y * TGX_PITCH + x * 4);
+			       tgx->vram + target + y * tgx->pitch + x * 4);
 		}
 		if (x < copy.x2) {
 			iosys_map_memcpy_from(&pixel, &shadow->data[0],
 					     y * fb->pitches[0] + x * 4, 4);
 			writel(le32_to_cpu((__force __le32)pixel),
-			       tgx->vram + target + y * TGX_PITCH + x * 4);
+			       tgx->vram + target + y * tgx->pitch + x * 4);
 		}
 	}
 	/* BAR2 read orders the preceding posted writes through the DDR path. */
-	readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+	readl(tgx->vram + target + tgx->frame_bytes - 4);
 upload_complete:
 	if (tgx->legacy_single_buffer) {
 		/* Legacy hardware scans a fixed page.  Updating only the damage
@@ -1220,7 +1265,7 @@ upload_complete:
 	}
 	vblank_before = atomic64_read(&tgx->msi_interrupts);
 	writel(target, tgx->regs + TGX_REG_FB_BASE);
-	writel(TGX_PITCH, tgx->regs + TGX_REG_FB_STRIDE);
+	writel(tgx->pitch, tgx->regs + TGX_REG_FB_STRIDE);
 	writel(1, tgx->regs + TGX_REG_FB_COMMIT);
 	readl(tgx->regs);
 	writel(1, tgx->regs + TGX_REG_DISPLAY_CTRL);
@@ -1234,8 +1279,8 @@ upload_complete:
 			msecs_to_jiffies(100));
 	if (!wait_ret) {
 		active_base = tgx_active_fb_base(tgx);
-		active = active_base == TGX_FB_BASE(0) ? 0 :
-			 active_base == TGX_FB_BASE(1) ? 1 : U32_MAX;
+		active = active_base == tgx_fb_base(tgx, 0) ? 0 :
+			 active_base == tgx_fb_base(tgx, 1) ? 1 : U32_MAX;
 		if (active_base == target)
 			vblank_ret = 1;
 		else {
@@ -1244,9 +1289,9 @@ upload_complete:
 			 * handshake.  Preserve a usable display after a power cycle by
 			 * copying the completed inactive page onto the page that legacy
 			 * hardware keeps scanning out. */
-			if (active <= 1) {
+			if (active <= 1 && !tgx->dma_only_scanout) {
 				tgx_cpu_copy_frame(tgx, target,
-						   TGX_FB_BASE(active));
+						   tgx_fb_base(tgx, active));
 				atomic64_inc(&tgx->flip_fallbacks);
 				tgx->legacy_single_buffer = true;
 				did_flip_fallback = true;
@@ -1298,6 +1343,32 @@ static const struct drm_mode_config_funcs tgx_mode_config_funcs = {
 	.atomic_check = drm_atomic_helper_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
+
+static void tgx_configure_memory_and_mode(struct tarugx *tgx,
+					  u32 gpu_version)
+{
+	if (gpu_version >= TGX_GPU_VERSION_1080P60) {
+		tgx->mode = &tgx_mode_1920x1080;
+		tgx->width = TGX_1080P_WIDTH;
+		tgx->height = TGX_1080P_HEIGHT;
+		tgx->pitch = TGX_1080P_PITCH;
+		tgx->frame_bytes = TGX_1080P_FRAME_BYTES;
+		tgx->vram_bytes = TGX_DDR_BYTES;
+		tgx->vram_gem_base = TGX_BAR2_BYTES;
+		tgx->vram_gem_bytes = 0;
+		tgx->dma_only_scanout = true;
+		return;
+	}
+
+	tgx->mode = &tgx_mode_640x480;
+	tgx->width = TGX_LEGACY_WIDTH;
+	tgx->height = TGX_LEGACY_HEIGHT;
+	tgx->pitch = TGX_LEGACY_PITCH;
+	tgx->frame_bytes = TGX_LEGACY_FRAME_BYTES;
+	tgx->vram_bytes = TGX_BAR2_BYTES;
+	tgx->vram_gem_base = 2 * TGX_LEGACY_FRAME_BYTES;
+	tgx->vram_gem_bytes = TGX_BAR2_BYTES - tgx->vram_gem_base;
+}
 DEFINE_DRM_GEM_FOPS(tgx_fops);
 
 static void tgx_postclose(struct drm_device *drm, struct drm_file *file)
@@ -1378,8 +1449,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = devm_add_action_or_reset(&pdev->dev, tgx_clear_bus_master, pdev);
 	if (ret)
 		return ret;
-	if (pci_resource_len(pdev, 0) != 65536 ||
-	    pci_resource_len(pdev, 2) != 4194304)
+	if (pci_resource_len(pdev, 0) != SZ_64K ||
+	    pci_resource_len(pdev, 2) != TGX_BAR2_BYTES)
 		return -ENODEV;
 	ret = pcim_iomap_regions(pdev, BIT(0) | BIT(2), "tarugx");
 	if (ret)
@@ -1392,26 +1463,20 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	mutex_init(&tgx->dma_lock);
 	mutex_init(&tgx->render_lock);
 	mutex_init(&tgx->vram_lock);
-	drm_mm_init(&tgx->vram_mm, TGX_VRAM_GEM_BASE,
-		    TGX_VRAM_BYTES - TGX_VRAM_GEM_BASE);
-	ret = drmm_add_action_or_reset(drm, tgx_vram_mm_takedown, tgx);
-	if (ret)
-		return ret;
 	tgx->regs = pcim_iomap_table(pdev)[0];
 	tgx->vram = pcim_iomap_table(pdev)[2];
-	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, TGX_FRAME_BYTES,
-					       &tgx->dma_staging_addr, GFP_KERNEL);
-	if (!tgx->dma_staging)
-		return -ENOMEM;
 	init_waitqueue_head(&tgx->vblank_wait);
 	init_waitqueue_head(&tgx->render_wait);
 	if (readl(tgx->regs) != 0x54475055)
 		return -ENODEV;
 	gpu_version = readl(tgx->regs + TGX_REG_GPU_VERSION);
+	tgx_configure_memory_and_mode(tgx, gpu_version);
 	tgx->active_fb_base_available =
 		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
-	dev_info(&pdev->dev, "GPU version %u.%u, 32-bit active FB base %s\n",
+	dev_info(&pdev->dev,
+		 "GPU version %u.%u, %ux%u, 32-bit active FB base %s\n",
 		 gpu_version >> 16, gpu_version & 0xffff,
+		 tgx->width, tgx->height,
 		 tgx->active_fb_base_available ? "available" : "unavailable");
 	dma_status = readl(tgx->regs + TGX_REG_DMA_STATUS);
 	tgx->dma_available = (dma_status & TGX_DMA_STATUS_READY) &&
@@ -1419,6 +1484,18 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			 TGX_DMA_STATUS_REJECTED));
 	dev_info(&pdev->dev, "full-frame DMA uploads %s\n",
 		 tgx->dma_available ? "available" : "unavailable; using BAR2");
+	if (tgx->dma_only_scanout && !tgx->dma_available)
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "1080p scanout requires host-to-VRAM DMA\n");
+	drm_mm_init(&tgx->vram_mm, tgx->vram_gem_base,
+		    tgx->vram_gem_bytes);
+	ret = drmm_add_action_or_reset(drm, tgx_vram_mm_takedown, tgx);
+	if (ret)
+		return ret;
+	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, tgx->frame_bytes,
+					       &tgx->dma_staging_addr, GFP_KERNEL);
+	if (!tgx->dma_staging)
+		return -ENOMEM;
 	queue_status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 	tgx->render_available = queue_status & TGX_QUEUE_READY;
 	tgx->render_fence = readl(tgx->regs + TGX_REG_QUEUE_COMPLETED);
@@ -1432,8 +1509,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		return ret;
 	drm->mode_config.funcs = &tgx_mode_config_funcs;
-	drm->mode_config.min_width = drm->mode_config.max_width = 640;
-	drm->mode_config.min_height = drm->mode_config.max_height = 480;
+	drm->mode_config.min_width = drm->mode_config.max_width = tgx->width;
+	drm->mode_config.min_height = drm->mode_config.max_height = tgx->height;
 	ret = drm_connector_init(drm, &tgx->connector, &tgx_connector_funcs,
 				 DRM_MODE_CONNECTOR_HDMIA);
 	if (ret)
