@@ -17,6 +17,17 @@
 
 enum { W = 640, H = 480, FRAMES = 120 };
 
+enum {
+    REG_ACTIVE_BUFFER = 0x28,
+    REG_FILL_ADDR = 0x60,
+    REG_FILL_STRIDE = 0x64,
+    REG_FILL_SIZE = 0x68,
+    REG_FILL_COLOR = 0x6c,
+    REG_FILL_COMMAND = 0x70,
+    REG_FILL_STATUS = 0x74,
+    FRAME_BYTES = W * H * 4,
+};
+
 struct buffer {
     uint32_t handle, pitch, fb;
     uint64_t size;
@@ -169,11 +180,70 @@ static int run_phase(int fd, struct buffer *b, int dma)
     return 0;
 }
 
+static void write_reg(volatile uint32_t *regs, unsigned offset, uint32_t value)
+{
+    regs[offset / 4] = value;
+    __sync_synchronize();
+    (void)regs[offset / 4];
+}
+
+static int fill(volatile uint32_t *regs, uint32_t address, unsigned width,
+                unsigned height, uint32_t color)
+{
+    double deadline = now() + 2.0;
+    const struct timespec pause = { .tv_nsec = 50000 };
+    uint32_t status;
+
+    do {
+        status = regs[REG_FILL_STATUS / 4];
+        if (status & 1)
+            nanosleep(&pause, NULL);
+    } while ((status & 1) && now() < deadline);
+    if (status & 1)
+        return -1;
+    write_reg(regs, REG_FILL_ADDR, address);
+    write_reg(regs, REG_FILL_STRIDE, W * 4);
+    write_reg(regs, REG_FILL_SIZE, height << 16 | width);
+    write_reg(regs, REG_FILL_COLOR, color);
+    write_reg(regs, REG_FILL_COMMAND, 1);
+    do {
+        status = regs[REG_FILL_STATUS / 4];
+        if (!(status & 2))
+            nanosleep(&pause, NULL);
+    } while (!(status & 2) && now() < deadline);
+    return (status & 6) == 2 ? 0 : -1;
+}
+
+static int run_fill_phase(volatile uint32_t *regs)
+{
+    uint32_t base = (regs[REG_ACTIVE_BUFFER / 4] & 1) * FRAME_BYTES;
+    double wall_start = now(), cpu_start = cpu_now();
+
+    for (unsigned frame = 0; frame < FRAMES; frame++) {
+        unsigned x = frame * 11 % (W - 80);
+        uint32_t shade = 0x00001820 + ((frame & 15) << 8);
+        if (fill(regs, base, W, H, shade) ||
+            fill(regs, base + (160 * W + x) * 4, 80, 160, 0x00ffffff)) {
+            fprintf(stderr, "FPGA fill failed on frame %u\n", frame);
+            return -1;
+        }
+    }
+    double elapsed = now() - wall_start;
+    double cpu = cpu_now() - cpu_start;
+    printf("FILL: %d frames, %.3f s, %.2f fps, %.2f ms/frame, "
+           "process CPU %.1f%%\n", FRAMES, elapsed, FRAMES / elapsed,
+           elapsed * 1000 / FRAMES, elapsed ? cpu * 100 / elapsed : 0);
+    fflush(stdout);
+    sleep(1);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *parameter = "/sys/module/tarugx/parameters/dma_upload";
-    int fd = -1, rc = EXIT_FAILURE, master = 0, enabled = 0;
+    int fd = -1, regfd = -1, rc = EXIT_FAILURE, master = 0, enabled = 0;
     char original = '1';
+    volatile uint32_t *regs = MAP_FAILED;
     drmModeRes *res = NULL;
     drmModeConnector *connector = NULL;
     struct buffer b = {0};
@@ -213,6 +283,17 @@ int main(int argc, char **argv)
         perror("KMS setup");
         goto out;
     }
+    regfd = open("/sys/bus/pci/devices/0000:01:00.0/resource0",
+                 O_RDWR | O_SYNC | O_CLOEXEC);
+    if (regfd < 0) {
+        perror("BAR0 open");
+        goto out;
+    }
+    regs = mmap(NULL, 64 * 1024, PROT_READ | PROT_WRITE, MAP_SHARED, regfd, 0);
+    if (regs == MAP_FAILED) {
+        perror("BAR0 mmap");
+        goto out;
+    }
     paint(&b, 0, 0);
     if (drmModeSetCrtc(fd, crtc, b.fb, 0, 0, &connector->connector_id, 1,
                        &connector->modes[0])) {
@@ -220,9 +301,10 @@ int main(int argc, char **argv)
         goto out;
     }
     enabled = 1;
-    puts("Watch the monitor: red BAR phase, then blue DMA phase.");
+    puts("Watch the monitor: red BAR, blue DMA, then green FPGA FILL.");
     if (set_dma(parameter, 0) || run_phase(fd, &b, 0) ||
-        set_dma(parameter, 1) || run_phase(fd, &b, 1))
+        set_dma(parameter, 1) || run_phase(fd, &b, 1) ||
+        run_fill_phase(regs))
         goto out;
     rc = EXIT_SUCCESS;
 
@@ -231,6 +313,10 @@ out:
         perror("restore dma_upload");
     if (enabled)
         drmModeSetCrtc(fd, crtc, 0, 0, 0, NULL, 0, NULL);
+    if (regs != MAP_FAILED)
+        munmap((void *)regs, 64 * 1024);
+    if (regfd >= 0)
+        close(regfd);
     destroy_buffer(fd, &b);
     if (connector)
         drmModeFreeConnector(connector);
