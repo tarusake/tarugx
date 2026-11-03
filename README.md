@@ -258,15 +258,17 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   version 1.2を検出すると1920×1080を優先モードとして公開し、8,294,400 byteの
   XRGB8888 dumb bufferをPCIe DMAで内部16MiB DDRへ転送します。専用実機試験で
   `dma_uploads=1`、DMA失敗0、flip timeout 0、6色帯のHDMI画像を確認しました。
+  同じ8,294,400 byteのmodesetは30.355ms（CPU stagingコピー込み、約273MB/s）、
+  FPGA DMA busyは1,538,605 cycle（100MHzで15.386ms）でした。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とし、
   現時点のdamage更新は安全な全面DMAへ昇格します。したがって表示は正しいものの、
   更新性能と1080p用VRAM GEM管理は今後の課題です。
-- PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
-  対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
+- PCIe DMAは最大8要求を異なるtagで並列発行し、Completionの到着順に関係なく
+  対応するVRAM位置へ書き込みます。各要求は4KiB境界を越えない最大64 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
   64/32-bit書込みへフォールバックします。Completionから生成したDDR書込みは
   8要求までパイプライン化し、PCIe、DDR間のクロック境界も8段FIFOで接続しています。
-  2要求版を使った2026-11-03のSRAM実機回帰では、1,228,800 byteのDMA転送5回が13.964–14.126ms
+  旧2要求版を使った2026-11-03のSRAM実機回帰では、1,228,800 byteのDMA転送5回が13.964–14.126ms
   （約87MB/s）で、直列経路の約53msから約3.8倍に改善しました。
   staging copyとVRAM読戻しを含むKMS試験でも、各120フレームがBAR2の
   8.443/8.438秒に対してDMAは6.443/6.438秒で、DMA全面更新241回の失敗は0でした。
