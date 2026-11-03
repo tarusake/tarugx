@@ -75,11 +75,13 @@ try:
         'vblank_timeouts', 'page_flips')}}
     dma_profile = (device/'dma_profile').read_text().strip()
     pages_synced = int((device/'physical_pages_synced').read_text())
-    assert counters['dma_uploads'] >= 5, counters
+    assert counters['dma_uploads'] >= 6, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
-    assert counters['page_flips'] >= 3, counters
-    assert pages_synced == 1, pages_synced
+    assert counters['page_flips'] >= 4, counters
+    # The final active full-frame upload deliberately leaves the old physical
+    # page stale, so the next partial update must reconstruct it.
+    assert pages_synced == 0, pages_synced
     print(run.stdout, end='')
     print(json.dumps({{'expected': expected, 'counters': counters,
                       'dma_profile': dma_profile,

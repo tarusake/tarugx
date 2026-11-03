@@ -54,11 +54,12 @@ int main(int argc, char **argv)
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
 	double modeset_started, modeset_seconds, dirty_started;
-	double dirty_seconds[2];
+	double dirty_seconds[3];
 	drmModeClip clips[2] = {
 		{120, 120, 440, 200},
 		{900, 700, 1100, 701},
 	};
+	drmModeClip full_clip;
 	int fd = -1, rc = 1;
 
 	if (argc < 2 || argc > 3) {
@@ -143,10 +144,18 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	dirty_seconds[1] = monotonic_seconds() - dirty_started;
-	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs dirty1=%.6fs dirty2=%.6fs hold=%us\n",
+	full_clip = (drmModeClip){0, 0, create.width, create.height};
+	fill_rect(pixels, create.pitch, &full_clip, 0x00204080);
+	dirty_started = monotonic_seconds();
+	if (drmModeDirtyFB(fd, framebuffer, &full_clip, 1)) {
+		perror("active full dirty framebuffer");
+		goto out;
+	}
+	dirty_seconds[2] = monotonic_seconds() - dirty_started;
+	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs dirty1=%.6fs dirty2=%.6fs active_full=%.6fs hold=%us\n",
 	       create.width, create.height, create.pitch,
 	       (unsigned long long)create.size, modeset_seconds,
-	       dirty_seconds[0], dirty_seconds[1], hold_seconds);
+	       dirty_seconds[0], dirty_seconds[1], dirty_seconds[2], hold_seconds);
 	fflush(stdout);
 	{
 		struct timespec remaining = { .tv_sec = hold_seconds };
