@@ -87,19 +87,25 @@ try:
         gem_first = struct.unpack_from('<I', vram, gem_base)[0]
         gem_last = struct.unpack_from('<I', vram,
                                       gem_base + 640*480*4 - 4)[0]
+        gem_fill = struct.unpack_from('<I', vram,
+                                      gem_base + (10*640+10)*4)[0]
+        gem_blit = struct.unpack_from('<I', vram,
+                                      gem_base + (10*640+100)*4)[0]
     assert source == 0xff2050d0 and copied == source, \
         f'readback mismatch source={{source:#x}} copied={{copied:#x}}'
     assert batch_a == 0xff40c060 and batch_b == 0xffd08020, \
         f'batch readback mismatch a={{batch_a:#x}} b={{batch_b:#x}}'
     assert gem_first == 0xfeed1234 and gem_last == 0xcafe5678, \
         f'VRAM GEM raw readback mismatch first={{gem_first:#x}} last={{gem_last:#x}}'
+    assert gem_fill == 0xff30b070 and gem_blit == gem_fill, \
+        f'VRAM GEM 2D mismatch fill={{gem_fill:#x}} blit={{gem_blit:#x}}'
 
     attrs = device
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
                              'flip_timeouts', 'dma_upload_failures')}}
-    assert int(counters['render_commands']) == 490, counters
+    assert int(counters['render_commands']) == 492, counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     print(run.stdout, end='')

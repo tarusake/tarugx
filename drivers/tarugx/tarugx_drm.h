@@ -65,10 +65,23 @@ struct drm_tarugx_wait {
 };
 
 struct drm_tarugx_vram_create {
-	__u64 size;
+	__u32 width;
+	__u32 height;
 	__u32 flags;
 	__u32 handle;
+	__u32 pitch;
+	__u32 pad;
+	__u64 size;
 	__u64 mmap_offset;
+};
+
+struct drm_tarugx_submit_gem {
+	__u32 handle;
+	__u32 count;
+	__u32 flags;
+	__u32 fence;
+	__u32 pad[4];
+	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
 };
 
 #define DRM_TARUGX_FILL 0x00
@@ -76,6 +89,7 @@ struct drm_tarugx_vram_create {
 #define DRM_TARUGX_SUBMIT 0x02
 #define DRM_TARUGX_WAIT 0x03
 #define DRM_TARUGX_VRAM_CREATE 0x04
+#define DRM_TARUGX_SUBMIT_GEM 0x05
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -88,5 +102,8 @@ struct drm_tarugx_vram_create {
 #define DRM_IOCTL_TARUGX_VRAM_CREATE \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_VRAM_CREATE, \
 		 struct drm_tarugx_vram_create)
+#define DRM_IOCTL_TARUGX_SUBMIT_GEM \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM, \
+		 struct drm_tarugx_submit_gem)
 
 #endif

@@ -127,7 +127,11 @@ DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine m
 `drm_mm`が画面用2ページより後ろの約1.66MiBだけを管理します。表示ページや他の
 VRAM GEMへはmmapできません。実機では1,228,800 byteの作成、先頭／末尾のmmap読書き、
 容量不足時の`ENOSPC`、handle解放後の領域再利用をBAR2読戻しまで確認しています。
-この段階ではVRAM GEMを2D命令の対象やscanoutへ指定するAPIはまだ接続していません。
+`DRM_IOCTL_TARUGX_SUBMIT_GEM`では、このhandleを非同期fill/blitの対象にできます。
+surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲内に検査します。非同期命令中は
+ドライバーがGEM参照を保持するため、アプリが先にhandleやmmapを閉じてもfence完了までは
+領域を再割当しません。実機でGEMへのfill→blit、早期close、MSI fence、BAR2読戻し、
+完了後の再利用まで確認しています。VRAM GEMをscanoutへ直接指定する接続はまだ未実装です。
 
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
@@ -227,8 +231,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   部分更新前のページ同期にはFPGAの2D blitを使用します。fill/blitはDRM master限定の
   同期private ioctlとしてコマンドキュー、fence、MSIまで統合済みですが、通常の
   Xorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
-  複数コマンド一括投入までは実装済みですが、GEM handleを2D命令やscanoutの対象に
-  する接続と、安全な一般ユーザー向けAPIへの本格統合は未実装です。
+  複数コマンド一括投入、GEM handleを対象にしたfill/blitまでは実装済みですが、
+  VRAM GEMの直接scanoutと、安全な一般ユーザー向けAPIへの本格統合は未実装です。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
