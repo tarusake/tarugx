@@ -71,14 +71,19 @@ try:
                          timeout=hold + 30)
     assert expected in run.stdout, run.stdout
     counters = {{name: int((device/name).read_text()) for name in (
-        'dma_uploads', 'dma_upload_failures', 'flip_timeouts', 'page_flips')}}
+        'dma_uploads', 'dma_upload_failures', 'flip_timeouts',
+        'vblank_timeouts', 'page_flips')}}
     dma_profile = (device/'dma_profile').read_text().strip()
-    assert counters['dma_uploads'] >= 1, counters
+    pages_synced = int((device/'physical_pages_synced').read_text())
+    assert counters['dma_uploads'] >= 5, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
+    assert counters['page_flips'] >= 3, counters
+    assert pages_synced == 1, pages_synced
     print(run.stdout, end='')
     print(json.dumps({{'expected': expected, 'counters': counters,
-                      'dma_profile': dma_profile}}))
+                      'dma_profile': dma_profile,
+                      'physical_pages_synced': pages_synced}}))
 except Exception as error:
     device = Path('/sys/bus/pci/devices/0000:01:00.0')
     diagnostics = {{'stage': stage, 'error_type': type(error).__name__,

@@ -31,6 +31,17 @@ static double monotonic_seconds(void)
 	return now.tv_sec + now.tv_nsec / 1000000000.0;
 }
 
+static void fill_rect(uint8_t *pixels, uint32_t pitch, const drmModeClip *clip,
+		      uint32_t color)
+{
+	for (uint32_t y = clip->y1; y < clip->y2; y++) {
+		uint32_t *row = (uint32_t *)(pixels + y * pitch);
+
+		for (uint32_t x = clip->x1; x < clip->x2; x++)
+			row[x] = color;
+	}
+}
+
 int main(int argc, char **argv)
 {
 	struct drm_mode_create_dumb create = { .bpp = 32 };
@@ -42,7 +53,12 @@ int main(int argc, char **argv)
 	uint32_t framebuffer = 0, crtc = 0;
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
-	double modeset_started, modeset_seconds;
+	double modeset_started, modeset_seconds, dirty_started;
+	double dirty_seconds[2];
+	drmModeClip clips[2] = {
+		{120, 120, 440, 200},
+		{900, 700, 1100, 701},
+	};
 	int fd = -1, rc = 1;
 
 	if (argc < 2 || argc > 3) {
@@ -113,9 +129,24 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	modeset_seconds = monotonic_seconds() - modeset_started;
-	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs hold=%us\n",
+	fill_rect(pixels, create.pitch, &clips[0], 0x00ffffff);
+	dirty_started = monotonic_seconds();
+	if (drmModeDirtyFB(fd, framebuffer, &clips[0], 1)) {
+		perror("first dirty framebuffer");
+		goto out;
+	}
+	dirty_seconds[0] = monotonic_seconds() - dirty_started;
+	fill_rect(pixels, create.pitch, &clips[1], 0x00ff8000);
+	dirty_started = monotonic_seconds();
+	if (drmModeDirtyFB(fd, framebuffer, &clips[1], 1)) {
+		perror("second dirty framebuffer");
+		goto out;
+	}
+	dirty_seconds[1] = monotonic_seconds() - dirty_started;
+	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs dirty1=%.6fs dirty2=%.6fs hold=%us\n",
 	       create.width, create.height, create.pitch,
-	       (unsigned long long)create.size, modeset_seconds, hold_seconds);
+	       (unsigned long long)create.size, modeset_seconds,
+	       dirty_seconds[0], dirty_seconds[1], hold_seconds);
 	fflush(stdout);
 	{
 		struct timespec remaining = { .tv_sec = hold_seconds };
