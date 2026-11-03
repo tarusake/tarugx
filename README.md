@@ -170,12 +170,11 @@ syncobjなしの非0 pointも拒否し、全508 command、render failure 0でし
 ドライバー0.11ではこの待ちを標準DRM schedulerへ移し、ioctlを待たせず依存解決とFPGA投入を
 専用workerで行います。schedulerのfinished fenceをGEM reservationと出力syncobjへ公開し、
 4 entityでCPUからの投入を受けつつ、hardware credit 1でFPGAアクセスを安全に直列実行します。
-1920×1080全面blitのproducer 3本と、最後のpoint 22へ依存するbatchを同時に
-queueした実機回帰では、4本目のioctlが3回連続で0.008ms、0.011ms、0.013msで
-復帰し、software queue peak 4、point 23まで順序どおり完了しました。各回とも
-全507 command、render failure 0で、moduleの
-remove→再probe後もDMA 12回、page flip 8回、全timeout 0でした。4 jobまでの
-即時投入を実機確認済みです。FPGA側の実行は引き続き1 batchずつです。
+1920×1080全面blitのproducer 15本と、最後のpoint 34へ依存するbatchを同時に
+queueした実機回帰では、16本目のioctlが0.009msで復帰し、software queue peak 16、
+point 35まで順序どおり完了しました。全519 command、render failure 0です。
+4 entityの各queueに複数jobを積めるため、16 jobまでの即時投入を実機確認済みです。
+FPGA側の実行は引き続き1 batchずつです。
 ドライバー0.12ではscheduler backendがFPGAコマンド投入後に専用の親fenceを返し、
 render MSIでこれをsignalする構成にしました。これによりworkerは全面blitの完了まで
 占有されません。4 batch依存テスト2回とremove→reprobe、通常表示回帰を実機で通し、
@@ -303,7 +302,7 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
   直接scanout、binary／timeline syncobj入出力、標準DRM schedulerによる非同期入力fence待ち、
-  4 jobの同時software queueを実機確認済みで、schedulerは4 entity／hardware credit 1です。
+  16 jobの同時software queueを実機確認済みで、schedulerは4 entity／hardware credit 1です。
   backendはFPGA完了のMSI fenceを返すため、workerを実行完了まで占有しません。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
