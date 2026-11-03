@@ -100,6 +100,10 @@ MSI受信回数を確認できます。古いFlashイメージでページ切替
 確認でき、blitが失敗した場合だけCPUによるVRAM内コピーへフォールバックします。
 `update_profile`は直近の更新について、全体、XRGB8888→RGB565変換、PCIe DMA、
 VBlank待ちの時間をそれぞれnsで表示します。
+ドライバーremove／shutdown開始時はrender fence待ちとVBlank待ちの両方へ終了状態を
+公開して即時に起床させます。IRQ停止後に100ms timeoutまで古いBARを参照し続けないため、
+SRAM更新やPCIe再列挙時のteardownを短く安全にします。2026-11-04に更新版自身の
+remove→再probeを2回連続で通し、各回のDMA 6回、page flip 4回、全timeout 0を確認しました。
 DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe DMAで非表示
 ページへ転送します。`dma_upload=0`モジュールパラメーターで64-bit BAR2書込みへ
 切り替えられます。DMA非対応の旧FPGAはprobe時に検出し、自動的にBAR2を使用します。

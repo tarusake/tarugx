@@ -72,6 +72,7 @@ struct tarugx {
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
 	bool physical_pages_synced;
+	bool removing;
 	wait_queue_head_t vblank_wait;
 	wait_queue_head_t render_wait;
 	u32 render_fence;
@@ -327,6 +328,8 @@ static int tgx_wait_render(struct tarugx *tgx, u32 fence, u32 timeout_ms)
 	u32 status;
 	long waited;
 
+	if (READ_ONCE(tgx->removing))
+		return -ENODEV;
 	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 	if (status & TGX_QUEUE_ERROR) {
 		dev_warn_ratelimited(tgx->drm.dev,
@@ -339,9 +342,12 @@ static int tgx_wait_render(struct tarugx *tgx, u32 fence, u32 timeout_ms)
 	if (!timeout_ms)
 		return -EAGAIN;
 	waited = wait_event_timeout(tgx->render_wait,
+		READ_ONCE(tgx->removing) ||
 		readl(tgx->regs + TGX_REG_QUEUE_COMPLETED) == fence ||
 		readl(tgx->regs + TGX_REG_QUEUE_STATUS) & TGX_QUEUE_ERROR,
 		msecs_to_jiffies(timeout_ms));
+	if (READ_ONCE(tgx->removing))
+		return -ENODEV;
 	status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 	if (status & TGX_QUEUE_ERROR) {
 		dev_warn_ratelimited(tgx->drm.dev,
@@ -1556,10 +1562,16 @@ upload_complete:
 	 * extra frame.  A pre-commit interrupt cannot satisfy both conditions. */
 	stage_started_ns = ktime_get_ns();
 	wait_ret = wait_event_timeout(tgx->vblank_wait,
-			atomic64_read(&tgx->msi_interrupts) != vblank_before &&
-			tgx_active_fb_base(tgx) == target,
+			READ_ONCE(tgx->removing) ||
+			(atomic64_read(&tgx->msi_interrupts) != vblank_before &&
+			 tgx_active_fb_base(tgx) == target),
 			msecs_to_jiffies(100));
 	vblank_wait_ns += ktime_get_ns() - stage_started_ns;
+	if (READ_ONCE(tgx->removing)) {
+		mutex_unlock(&tgx->render_lock);
+		drm_dev_exit(idx);
+		return;
+	}
 	if (!wait_ret) {
 		active_base = tgx_active_fb_base(tgx);
 		active = active_base == tgx_fb_base(tgx, 0) ? 0 :
@@ -1918,9 +1930,21 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	return drm_dev_register(drm, 0);
 }
 
+static void tgx_stop_waiters(struct tarugx *tgx)
+{
+	/* No waiter may rely on an IRQ or touch BAR registers after teardown
+	 * begins.  Publish removal before masking MSI, then wake both classes of
+	 * waiter so they return immediately instead of reaching their timeout. */
+	WRITE_ONCE(tgx->removing, true);
+	wake_up_all(&tgx->render_wait);
+	wake_up_all(&tgx->vblank_wait);
+}
+
 static void tgx_remove(struct pci_dev *pdev)
 {
 	struct tarugx *tgx = pci_get_drvdata(pdev);
+
+	tgx_stop_waiters(tgx);
 	writel(0, tgx->regs + TGX_REG_IRQ_ENABLE);
 	readl(tgx->regs);
 	synchronize_irq(pci_irq_vector(pdev, 0));
@@ -1930,6 +1954,8 @@ static void tgx_remove(struct pci_dev *pdev)
 static void tgx_shutdown(struct pci_dev *pdev)
 {
 	struct tarugx *tgx = pci_get_drvdata(pdev);
+
+	tgx_stop_waiters(tgx);
 	writel(0, tgx->regs + TGX_REG_IRQ_ENABLE);
 	readl(tgx->regs);
 	drm_atomic_helper_shutdown(&tgx->drm);
