@@ -131,7 +131,13 @@ VRAM GEMへはmmapできません。実機では1,228,800 byteの作成、先頭
 surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲内に検査します。非同期命令中は
 ドライバーがGEM参照を保持するため、アプリが先にhandleやmmapを閉じてもfence完了までは
 領域を再割当しません。実機でGEMへのfill→blit、早期close、MSI fence、BAR2読戻し、
-完了後の再利用まで確認しています。VRAM GEMをscanoutへ直接指定する接続はまだ未実装です。
+完了後の再利用まで確認しています。
+
+GPU version 1.1以降では、640×480・XRGB8888・pitch 2560のVRAM GEMを標準DRM
+framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
+atomic checkはVRAM GEMの実寸、pitch、offsetとFPGA機能版を検査し、旧FPGAでは
+`EOPNOTSUPP`として従来のDMA/BAR転送だけを使用します。成功回数はPCIデバイスの
+`direct_scanouts`属性で確認でき、直接表示では`bytes_uploaded`は増えません。
 
 GPU version 1.1以降は、BAR0の`ACTIVE_FB_BASE`（offset `0x34`）から、scanoutが
 フレーム境界で採用した32-bit VRAM先頭アドレスを読み出せます。従来の
@@ -238,8 +244,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   部分更新前のページ同期にはFPGAの2D blitを使用します。fill/blitはDRM master限定の
   同期private ioctlとしてコマンドキュー、fence、MSIまで統合済みですが、通常の
   Xorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
-  複数コマンド一括投入、GEM handleを対象にしたfill/blitまでは実装済みですが、
-  VRAM GEMの直接scanoutと、安全な一般ユーザー向けAPIへの本格統合は未実装です。
+  複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
+  直接scanoutまで実装済みですが、安全な一般ユーザー向けAPIへの本格統合は未実装です。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は

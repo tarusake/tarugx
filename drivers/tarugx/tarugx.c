@@ -59,6 +59,7 @@ struct tarugx {
 	atomic64_t render_commands;
 	atomic64_t render_failures;
 	atomic64_t render_queue_peak;
+	atomic64_t direct_scanouts;
 	bool dma_available;
 	bool render_available;
 	bool active_fb_base_available;
@@ -591,8 +592,28 @@ static void tgx_vram_object_free(struct drm_gem_object *gem)
 	kfree(object);
 }
 
+static int tgx_vram_object_vmap(struct drm_gem_object *gem,
+				struct iosys_map *map)
+{
+	struct tarugx_vram_object *object =
+		container_of(gem, struct tarugx_vram_object, base);
+	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
+
+	iosys_map_set_vaddr_iomem(map, tgx->vram + object->node.start);
+	return 0;
+}
+
+static void tgx_vram_object_vunmap(struct drm_gem_object *gem,
+				   struct iosys_map *map)
+{
+	(void)gem;
+	iosys_map_clear(map);
+}
+
 static const struct drm_gem_object_funcs tgx_vram_object_funcs = {
 	.free = tgx_vram_object_free,
+	.vmap = tgx_vram_object_vmap,
+	.vunmap = tgx_vram_object_vunmap,
 	.mmap = tgx_vram_object_mmap,
 };
 
@@ -827,6 +848,15 @@ static ssize_t render_queue_peak_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(render_queue_peak);
 
+static ssize_t direct_scanouts_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->direct_scanouts));
+}
+static DEVICE_ATTR_RO(direct_scanouts);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -896,6 +926,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_render_commands.attr,
 	&dev_attr_render_failures.attr,
 	&dev_attr_render_queue_peak.attr,
+	&dev_attr_direct_scanouts.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -971,9 +1002,25 @@ static enum drm_mode_status tgx_mode_valid(struct drm_simple_display_pipe *pipe,
 static int tgx_check(struct drm_simple_display_pipe *pipe,
 		    struct drm_plane_state *plane, struct drm_crtc_state *crtc)
 {
+	struct tarugx *tgx = container_of(pipe, struct tarugx, pipe);
+	struct drm_gem_object *gem;
+	struct tarugx_vram_object *object;
+
 	crtc->no_vblank = true;
 	if (plane->fb && (plane->src_x || plane->src_y ||
 	    plane->fb->width != 640 || plane->fb->height != 480))
+		return -EINVAL;
+	if (!plane->fb)
+		return 0;
+	gem = drm_gem_fb_get_obj(plane->fb, 0);
+	if (!gem || gem->funcs != &tgx_vram_object_funcs)
+		return 0;
+	if (!tgx->active_fb_base_available || tgx->legacy_single_buffer)
+		return -EOPNOTSUPP;
+	object = container_of(gem, struct tarugx_vram_object, base);
+	if (object->width != TGX_WIDTH || object->height != TGX_HEIGHT ||
+	    object->pitch != TGX_PITCH || plane->fb->pitches[0] != TGX_PITCH ||
+	    plane->fb->offsets[0])
 		return -EINVAL;
 	return 0;
 }
@@ -985,6 +1032,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_plane_state *state = pipe->plane.state;
 	struct drm_shadow_plane_state *shadow = to_drm_shadow_plane_state(state);
 	struct drm_framebuffer *fb = state->fb;
+	struct drm_gem_object *gem;
+	struct tarugx_vram_object *vram_object = NULL;
 	struct drm_rect damage, copy;
 	unsigned int x, y;
 	u64 copied;
@@ -994,9 +1043,12 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	int idx, target_index, ret = 0, vblank_ret = 0;
 	u64 pixels;
 	u32 pixel;
-	bool full_damage, did_flip_fallback = false;
+	bool direct_scanout = false, full_damage, did_flip_fallback = false;
 	if (!fb || !pipe->crtc.state->active)
 		return;
+	gem = drm_gem_fb_get_obj(fb, 0);
+	if (gem && gem->funcs == &tgx_vram_object_funcs)
+		vram_object = container_of(gem, struct tarugx_vram_object, base);
 	/* A new FB must replace the single physical scanout buffer in full. */
 	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state))
 		damage = DRM_RECT_INIT(0, 0, 640, 480);
@@ -1034,6 +1086,15 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	}
 	active = active_base == TGX_FB_BASE(0) ? 0 :
 		 active_base == TGX_FB_BASE(1) ? 1 : U32_MAX;
+	if (vram_object) {
+		direct_scanout = true;
+		target = vram_object->node.start;
+		target_index = -1;
+		copied = 0;
+		/* Flush userspace write-combine stores before changing scanout. */
+		readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+		goto upload_complete;
+	}
 	target_index = tgx->legacy_single_buffer && active <= 1 ?
 		active : (active_base == TGX_FB_BASE(0) ? 1 : 0);
 	target = TGX_FB_BASE(target_index);
@@ -1152,16 +1213,18 @@ upload_complete:
 		atomic64_inc(&tgx->vblank_timeouts);
 	else
 		atomic64_inc(&tgx->page_flips);
+	if (!ret && direct_scanout)
+		atomic64_inc(&tgx->direct_scanouts);
 	atomic64_add(copied, &tgx->bytes_uploaded);
 	if (ret)
 		dev_warn_ratelimited(tgx->drm.dev,
-					     "page flip to buffer %d timed out (active base %#x)%s\n",
-					     target_index, active_base,
+				     "page flip to base %#x timed out (active base %#x)%s\n",
+				     target, active_base,
 				     did_flip_fallback ? "; copied to active page" : "");
 	else if (vblank_ret)
 		dev_warn_ratelimited(tgx->drm.dev,
-				     "VBlank wait timed out after flip to buffer %d\n",
-				     target_index);
+				     "VBlank wait timed out after flip to base %#x\n",
+				     target);
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 }
@@ -1235,7 +1298,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261103",
-	.major = 0, .minor = 4,
+	.major = 0, .minor = 5,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)

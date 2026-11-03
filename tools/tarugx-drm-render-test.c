@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm_fourcc.h>
 
 #include "tarugx_drm.h"
 
@@ -94,6 +96,10 @@ int main(int argc, char **argv)
         },
     };
     volatile uint32_t *vram_map;
+    uint32_t fb_id = 0;
+    uint32_t fb_handles[4] = { 0 };
+    uint32_t fb_pitches[4] = { 0 };
+    uint32_t fb_offsets[4] = { 0 };
     struct timespec started, returned, stress_started, stress_finished;
     struct timespec cpu_started, cpu_finished;
     double submit_ms, stress_s, cpu_s;
@@ -147,6 +153,22 @@ int main(int argc, char **argv)
         close_handle(fd, vram.handle);
         goto out_other;
     }
+    fb_handles[0] = vram.handle;
+    fb_pitches[0] = vram.pitch;
+    if (drmModeAddFB2(fd, 640, 480, DRM_FORMAT_XRGB8888,
+                      fb_handles, fb_pitches, fb_offsets, &fb_id, 0)) {
+        perror("drmModeAddFB2 for VRAM GEM");
+        munmap((void *)vram_map, vram.size);
+        close_handle(fd, vram.handle);
+        goto out_other;
+    }
+    if (drmModeRmFB(fd, fb_id)) {
+        perror("drmModeRmFB for VRAM GEM");
+        munmap((void *)vram_map, vram.size);
+        close_handle(fd, vram.handle);
+        goto out_other;
+    }
+    fb_id = 0;
     if (expect_errno(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &too_large, ENOSPC)) {
         munmap((void *)vram_map, vram.size);
         close_handle(fd, vram.handle);
@@ -183,8 +205,8 @@ int main(int argc, char **argv)
         perror("close reallocated VRAM GEM");
         goto out_other;
     }
-    puts("VRAM GEM PASS: mmap/readback, async fill/blit, close lifetime, "
-         "ENOSPC and reuse");
+    puts("VRAM GEM PASS: mmap/readback, DRM framebuffer, async fill/blit, "
+         "close lifetime, ENOSPC and reuse");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;

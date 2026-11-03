@@ -53,6 +53,13 @@ try:
         '-I'+str(work), '-I/usr/include/libdrm',
         str(work/'tarugx-drm-render-test.c'), '-ldrm', '-o', str(test)
     ], check=True, timeout=45)
+    scanout_test = work/'tarugx-drm-vram-scanout-test'
+    subprocess.run([
+        'cc', '-O2', '-Wall', '-Wextra', '-Werror',
+        '-I'+str(work), '-I/usr/include/libdrm',
+        str(work/'tarugx-drm-vram-scanout-test.c'),
+        '-ldrm', '-o', str(scanout_test)
+    ], check=True, timeout=45)
 
     subprocess.run(['systemctl', 'stop', *services], check=True, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
@@ -76,6 +83,7 @@ try:
          (device/'resource2').open('r+b', buffering=0) as vram_file, \
          mmap.mmap(vram_file.fileno(), 4194304, flags=mmap.MAP_SHARED,
                    prot=mmap.PROT_READ | mmap.PROT_WRITE) as vram:
+        gpu_version = struct.unpack_from('<I', regs, 0x04)[0]
         active = struct.unpack_from('<I', regs, 0x28)[0]
         assert active in (0, 1), f'invalid active buffer {{active}}'
         base = active * 640 * 480 * 4
@@ -100,15 +108,27 @@ try:
     assert gem_fill == 0xff30b070 and gem_blit == gem_fill, \
         f'VRAM GEM 2D mismatch fill={{gem_fill:#x}} blit={{gem_blit:#x}}'
 
+    direct_output = ''
+    if gpu_version >= 0x00010001:
+        direct = subprocess.run(
+            [str(scanout_test), '/dev/dri/'+cards[0].name],
+            check=True, text=True, capture_output=True, timeout=30
+        )
+        direct_output = direct.stdout
+
     attrs = device
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
-                             'flip_timeouts', 'dma_upload_failures')}}
+                             'flip_timeouts', 'dma_upload_failures',
+                             'direct_scanouts')}}
     assert int(counters['render_commands']) == 492, counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
+    assert int(counters['direct_scanouts']) == \
+        (1 if gpu_version >= 0x00010001 else 0), counters
     print(run.stdout, end='')
+    print(direct_output, end='')
     print(json.dumps({{'readback': hex(source), 'counters': counters}}))
 finally:
     if loaded_test_module:
@@ -130,6 +150,9 @@ def main() -> None:
         "tarugx_drm.h": encoded(driver / "tarugx_drm.h"),
         "tarugx-drm-render-test.c": encoded(
             ROOT / "tools" / "tarugx-drm-render-test.c"
+        ),
+        "tarugx-drm-vram-scanout-test.c": encoded(
+            ROOT / "tools" / "tarugx-drm-vram-scanout-test.c"
         ),
     }
     print(Backend().remote(
