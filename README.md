@@ -173,9 +173,10 @@ python3 tools/benchmark_drm_upload.py
 python3 tools/run_performance_demo.py
 ```
 
-2要求DMA版の2026-11-03実測では、BAR2が14.99fps・66.70ms/frame・CPU 81.0%、
-DMAが19.99fps・50.03ms/frame・CPU 34.5%、FPGA fillが147.56fps・
-6.78ms/frame・CPU 14.1%、queue＋blitが759.90fps・1.32ms/frame・CPU 15.5%
+8要求DMA・DDR書込み8要求パイプライン版の2026-11-03実測では、BAR2が
+14.99fps・66.70ms/frame・CPU 77.1%、DMAが59.97fps・16.68ms/frame・
+CPU 29.7%、FPGA fillが147.16fps・6.80ms/frame・CPU 14.0%、
+queue＋blitが766.50fps・1.30ms/frame・CPU 15.0%
 でした。fillは全画面消去と80×160矩形描画、queue＋blitは80×160矩形の消去とVRAM内コピー
 の2命令を1フレームとして測定しており、処理面積が異なるためFPSの単純比較はできません。
 
