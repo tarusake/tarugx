@@ -177,8 +177,8 @@ try:
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (498 if gpu_version >= 0x00010003 else
-         494 if gpu_version >= 0x00010002 else 496), counters
+        (502 if gpu_version >= 0x00010003 else
+         498 if gpu_version >= 0x00010002 else 500), counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \

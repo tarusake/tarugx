@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,11 @@
 #include "tarugx_drm.h"
 
 #define STRESS_BATCHES 120
+
+_Static_assert(sizeof(struct drm_tarugx_submit_gem) == 224,
+               "submit GEM ABI size changed");
+_Static_assert(offsetof(struct drm_tarugx_submit_gem, commands) == 32,
+               "submit GEM command offset changed");
 
 static int close_handle(int fd, uint32_t handle)
 {
@@ -121,6 +127,8 @@ int main(int argc, char **argv)
     volatile uint32_t *vram_map;
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
+    uint32_t timeline_syncobj = 0;
+    uint64_t timeline_point = 7;
     uint32_t fb_handles[4] = { 0 };
     uint32_t fb_pitches[4] = { 0 };
     uint32_t fb_offsets[4] = { 0 };
@@ -269,8 +277,21 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
+    invalid_sync_batch = render_batch;
+    invalid_sync_batch.handle = render_vram.handle;
+    invalid_sync_batch.out_point = timeline_point;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM,
+                     &invalid_sync_batch, EINVAL)) {
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
     if (drmSyncobjCreate(render, 0, &syncobj)) {
         perror("drmSyncobjCreate");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (drmSyncobjCreate(render, 0, &timeline_syncobj)) {
+        perror("drmSyncobjCreate timeline");
         close_handle(render, render_vram.handle);
         goto out_render;
     }
@@ -333,11 +354,55 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
-    /* A standard syncobj wait must be sufficient to submit the next batch;
-     * userspace must not need the private WAIT ioctl to clear driver state. */
-    render_batch.out_syncobj = 0;
+    /* A standard binary syncobj wait must be sufficient to submit a timeline
+     * batch; userspace must not need the private WAIT ioctl to clear state. */
+    render_batch.out_syncobj = timeline_syncobj;
+    render_batch.out_point = timeline_point;
     if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
-        perror("render-node resubmit after syncobj wait");
+        perror("render-node timeline submit after binary syncobj wait");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (drmSyncobjTimelineWait(render, &timeline_syncobj, &timeline_point, 1,
+                               INT64_MAX, 0, NULL)) {
+        perror("drmSyncobjTimelineWait");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    timeline_point = 0;
+    if (drmSyncobjQuery(render, &timeline_syncobj, &timeline_point, 1) ||
+        timeline_point < 7) {
+        fprintf(stderr, "timeline query did not reach point 7 (point=%llu)\n",
+                (unsigned long long)timeline_point);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    timeline_point = 11;
+    render_batch.out_point = timeline_point;
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
+        perror("render-node second timeline submit");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    if (drmSyncobjTimelineWait(render, &timeline_syncobj, &timeline_point, 1,
+                               INT64_MAX, 0, NULL)) {
+        perror("drmSyncobjTimelineWait second point");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    timeline_point = 0;
+    if (drmSyncobjQuery(render, &timeline_syncobj, &timeline_point, 1) ||
+        timeline_point < 11) {
+        fprintf(stderr, "timeline query did not reach point 11 (point=%llu)\n",
+                (unsigned long long)timeline_point);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    /* Reap the completed timeline-backed record on the next private submit. */
+    render_batch.out_syncobj = 0;
+    render_batch.out_point = 0;
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
+        perror("render-node resubmit after timeline wait");
         close_handle(render, render_vram.handle);
         goto out_render;
     }
@@ -356,10 +421,16 @@ vram_gem_done:
         goto out_render;
     }
     syncobj = 0;
+    if (drmSyncobjDestroy(render, timeline_syncobj)) {
+        perror("drmSyncobjDestroy timeline");
+        goto out_render;
+    }
+    timeline_syncobj = 0;
     close(render);
     render = -1;
-    puts("DRM render node PASS: non-master GEM create, syncobj/sync_file "
-         "resubmit + private fence fill/blit; screen fill denied");
+    puts("DRM render node PASS: non-master GEM create, binary/multi-point timeline "
+         "syncobj + sync_file resubmit and private fence fill/blit; "
+         "screen fill denied");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;
@@ -439,6 +510,8 @@ out_render:
         close(render_other);
     if (syncobj)
         drmSyncobjDestroy(render, syncobj);
+    if (timeline_syncobj)
+        drmSyncobjDestroy(render, timeline_syncobj);
     close(render);
     close(other);
 out_drop:

@@ -4,6 +4,7 @@
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-fence.h>
+#include <linux/dma-fence-chain.h>
 #include <linux/dma-resv.h>
 #include <linux/iosys-map.h>
 #include <linux/interrupt.h>
@@ -841,6 +842,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	struct drm_gem_object *gem;
 	struct drm_syncobj *syncobj = NULL;
 	struct dma_fence *sync_fence = NULL;
+	struct dma_fence_chain *sync_chain = NULL;
 	struct tarugx_vram_object *object;
 	unsigned long irq_flags;
 	bool resv_locked = false;
@@ -849,11 +851,11 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	int idx, ret;
 
 	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS ||
-	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad[0] ||
-	    args->pad[1] || args->pad[2])
+	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad)
 		return -EINVAL;
 	async = args->flags & DRM_TARUGX_SUBMIT_ASYNC;
-	if (args->out_syncobj && !async)
+	if ((args->out_syncobj && !async) ||
+	    (args->out_point && (!args->out_syncobj || !async)))
 		return -EINVAL;
 	if (args->out_syncobj) {
 		syncobj = drm_syncobj_find(file, args->out_syncobj);
@@ -865,6 +867,13 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		if (!sync_fence) {
 			ret = -ENOMEM;
 			goto out_syncobj;
+		}
+		if (args->out_point) {
+			sync_chain = dma_fence_chain_alloc();
+			if (!sync_chain) {
+				ret = -ENOMEM;
+				goto out_fence;
+			}
 		}
 	}
 	gem = drm_gem_object_lookup(file, args->handle);
@@ -913,8 +922,16 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 			 * remains owned by the IRQ path until signal or teardown. */
 			dma_resv_add_fence(object->base.resv, sync_fence,
 					   DMA_RESV_USAGE_WRITE);
-			if (syncobj)
-				drm_syncobj_replace_fence(syncobj, sync_fence);
+			if (syncobj) {
+				if (args->out_point) {
+					drm_syncobj_add_point(syncobj, sync_chain,
+							      sync_fence,
+							      args->out_point);
+					sync_chain = NULL;
+				} else {
+					drm_syncobj_replace_fence(syncobj, sync_fence);
+				}
+			}
 			spin_lock_irqsave(&tgx->render_fence_lock, irq_flags);
 			WARN_ON(tgx->render_sync_fence);
 			tgx->render_sync_hw_fence = args->fence;
@@ -934,6 +951,8 @@ out_dev:
 out_put:
 	drm_gem_object_put(gem);
 out_fence:
+	if (sync_chain)
+		dma_fence_chain_free(sync_chain);
 	if (sync_fence)
 		dma_fence_put(sync_fence);
 out_syncobj:
@@ -1944,7 +1963,7 @@ static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
 }
 static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC |
-		DRIVER_RENDER | DRIVER_SYNCOBJ,
+		DRIVER_RENDER | DRIVER_SYNCOBJ | DRIVER_SYNCOBJ_TIMELINE,
 	.fops = &tgx_fops,
 	.postclose = tgx_postclose,
 	.dumb_create = tgx_dumb_create,
@@ -1955,7 +1974,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 8,
+	.major = 0, .minor = 9,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
