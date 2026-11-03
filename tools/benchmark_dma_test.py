@@ -14,6 +14,7 @@ import json
 import mmap
 from pathlib import Path
 import struct
+import sys
 import time
 
 device = Path('/sys/bus/pci/devices/0000:01:00.0')
@@ -22,6 +23,18 @@ assert (device/'vendor').read_text().strip() == '0x22c2'
 assert (device/'device').read_text().strip() == '0x1100'
 assert (device/'driver').resolve().name == 'tarugx'
 length = 640 * 480 * 4
+
+with (device/'resource0').open('rb', buffering=0) as regs_file, \
+     mmap.mmap(regs_file.fileno(), 65536, flags=mmap.MAP_SHARED,
+               prot=mmap.PROT_READ) as regs:
+    gpu_version = struct.unpack_from('<I', regs, 0x04)[0]
+if gpu_version >= 0x00010002:
+    print(json.dumps({
+        'supported': False,
+        'gpu_version': hex(gpu_version),
+        'reason': 'the BAR2-readable diagnostic window overlaps 1080p scanout',
+    }))
+    sys.exit(0)
 
 def samples(count):
     result = []
@@ -49,6 +62,7 @@ with (device/'resource0').open('r+b', buffering=0) as regs_file, \
 
 assert all(sample['error_code'] == 0 for sample in scanout_on + scanout_off)
 print(json.dumps({
+    'supported': True,
     'bytes': length,
     'display_ctrl': hex(display_ctrl),
     'scanout_on': scanout_on,
@@ -60,6 +74,9 @@ print(json.dumps({
 def main() -> None:
     output = Backend().remote(REMOTE, "benchmark diagnostic DMA", timeout=60)
     result = json.loads(output)
+    if not result["supported"]:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
 
     def summary(samples):
         busy = [int(re.search(r"busy_cycles=(\d+)", sample["profile"])[1])

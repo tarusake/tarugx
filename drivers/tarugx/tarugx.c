@@ -963,6 +963,12 @@ static ssize_t dma_test_store(struct device *dev,
 		return ret;
 	if (length == 1)
 		length = TGX_DMA_TEST_BYTES;
+	/* The diagnostic window follows two legacy scanout pages.  A 1080p
+	 * page covers that address, so writing there would visibly corrupt the
+	 * active framebuffer.  Refuse the test unless both scanout pages end at
+	 * or before the fixed BAR2-readable diagnostic window. */
+	if (TGX_DMA_TEST_VRAM < 2 * tgx->frame_bytes)
+		return -EOPNOTSUPP;
 	if (!length || length > tgx->frame_bytes ||
 	    length > TGX_BAR2_BYTES - TGX_DMA_TEST_VRAM || (length & 3))
 		return -EINVAL;

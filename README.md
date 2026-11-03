@@ -298,8 +298,10 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   173,192–175,995 cycle（1.73–1.76ms、約700MB/s）、scanout中は
   676,848–679,282 cycle（6.77–6.79ms）でした。1080p表示中の全面更新では
   DMA busyが従来約4.29M cycleから3.94–4.01M cycleへ約7–8%減り、失敗と
-  flip/VBlank timeoutはいずれも0でした。`tools/benchmark_dma_test.py`で表示ON/OFFを
-  同条件測定できます。表示制御は例外時も元へ戻します。
+  flip/VBlank timeoutはいずれも0でした。診断DMAの固定VRAM位置は640x480の2ページ
+  直後にあるため、1080pではscanoutと重なります。ドライバーは1080pで`dma_test`を
+  `EOPNOTSUPP`として拒否し、`tools/benchmark_dma_test.py`も書込み前に停止します。
+  640x480版では同ツールで表示ON/OFFを同条件測定でき、表示制御は例外時も元へ戻します。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
   64/32-bit書込みへフォールバックします。Completionから生成したDDR書込みは
   8要求までパイプライン化し、PCIe、DDR間のクロック境界も8段FIFOで接続しています。
