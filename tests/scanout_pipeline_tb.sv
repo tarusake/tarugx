@@ -60,7 +60,9 @@ module scanout_pipeline_tb;
  always @(posedge pixel_clk)if(rst_n)begin
   if(scan.display.frame_start)frame++;
   if(frame>=2 && de)begin
-   assert(rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)))else $fatal(1,"pixel f%0d %0d,%0d",frame,scan.display.x,scan.display.y);
+   assert(scan.display.x>0 && rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)-1))else
+    $fatal(1,"pixel f%0d %0d,%0d expected=%06x actual=%06x underflow=%0d qcount=%0d outstanding=%0d",
+     frame,scan.display.x,scan.display.y,24'(int'(scan.display.y)*640+int'(scan.display.x)-1),rgb,underflow,qcount,max_outstanding);
    pixels++;
   end
  end

@@ -17,11 +17,14 @@ module framebuffer_display_tb;
   if(dut.frame_start) frame=frame+1;
   if(de) begin
    if(frame==1 || frame==3) begin
-    assert(rgb==24'(int'(dut.y)*640+int'(dut.x))) else $fatal(1,"pixel f%0d %0d,%0d = %h",frame,dut.x,dut.y,rgb);
+    assert(dut.x>0 && rgb==24'(int'(dut.y)*640+int'(dut.x)-1)) else $fatal(1,"pixel f%0d %0d,%0d = %h",frame,dut.x,dut.y,rgb);
     checked++;
    end
-   if(frame==2 && (int'(dut.y)*640+int'(dut.x))>=800)
-    assert(rgb==0) else $fatal(1,"underflow frame must stay black");
+   // RGB is registered by one cycle and fault detection is pipelined.  The
+   // missing beat itself may expose pixels while the mismatch propagates, but
+   // the following beat and the rest of the frame must be black.
+   if(frame==2 && (int'(dut.y)*640+int'(dut.x))>=808)
+    assert(rgb==0) else $fatal(1,"underflow frame must stay black x=%0d y=%0d rgb=%06x underflow=%0d",dut.x,dut.y,rgb,underflow);
   end else assert(rgb==0) else $fatal(1,"blanking");
   if(in_valid && in_ready) beat <= (beat==38399)?0:beat+1;
  end

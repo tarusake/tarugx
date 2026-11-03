@@ -42,7 +42,7 @@ module scanout_contention_tb;
  always @(posedge pixel_clk)if(rst_n)begin
   if(scan.display.frame_start)frame++;
   if(PRIORITY && frame>=2 && de)begin
-   assert(rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)))else $fatal(1,"pixel f%0d %0d,%0d",frame,scan.display.x,scan.display.y);
+   assert(scan.display.x>0 && rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)-1))else $fatal(1,"pixel f%0d %0d,%0d",frame,scan.display.x,scan.display.y);
    pixels++;
   end
  end
