@@ -1295,7 +1295,20 @@ static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
 		const __le32 *source = object->vaddr + y * source_pitch;
 		__le16 *destination = tgx->dma_staging + y * tgx->pitch;
 
-		for (x = 0; x < tgx->width; x++) {
+		/* dma_alloc_coherent() aligns the source, and both supported
+		 * scanout pitches are multiples of eight.  Convert two independent
+		 * 32-bit pixel lanes with one set of 64-bit shifts, then pack the
+		 * two RGB565 results into one store. */
+		for (x = 0; x + 1 < tgx->width; x += 2) {
+			u64 pixels = le64_to_cpu(*(const __le64 *)&source[x]);
+			u64 converted = ((pixels >> 8) & 0x0000f8000000f800ULL) |
+					((pixels >> 5) & 0x000007e0000007e0ULL) |
+					((pixels >> 3) & 0x0000001f0000001fULL);
+			u32 packed = (u32)converted | (u32)(converted >> 16);
+
+			*(__le32 *)&destination[x] = cpu_to_le32(packed);
+		}
+		if (x < tgx->width) {
 			u32 pixel = le32_to_cpu(source[x]);
 			u16 rgb565 = ((pixel >> 19) & 0x1f) << 11 |
 				     ((pixel >> 10) & 0x3f) << 5 |
