@@ -66,6 +66,7 @@ struct tarugx {
 	bool render_available;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
+	bool physical_pages_synced;
 	wait_queue_head_t vblank_wait;
 	wait_queue_head_t render_wait;
 	u32 render_fence;
@@ -100,6 +101,8 @@ struct tarugx_host_object {
 	void *vaddr;
 	dma_addr_t dma_addr;
 };
+
+static const struct drm_gem_object_funcs tgx_host_object_funcs;
 
 #define TGX_BAR2_BYTES SZ_4M
 #define TGX_LEGACY_WIDTH 640
@@ -933,6 +936,16 @@ static ssize_t direct_scanouts_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(direct_scanouts);
 
+static ssize_t physical_pages_synced_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", tgx->physical_pages_synced);
+}
+static DEVICE_ATTR_RO(physical_pages_synced);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -1006,6 +1019,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_render_failures.attr,
 	&dev_attr_render_queue_peak.attr,
 	&dev_attr_direct_scanouts.attr,
+	&dev_attr_physical_pages_synced.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -1104,6 +1118,9 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 	if (!plane->fb)
 		return 0;
 	gem = drm_gem_fb_get_obj(plane->fb, 0);
+	if (tgx->dma_only_scanout &&
+	    (!gem || gem->funcs != &tgx_host_object_funcs))
+		return -EINVAL;
 	if (!gem || gem->funcs != &tgx_vram_object_funcs)
 		return 0;
 	if (!tgx->active_fb_base_available || tgx->legacy_single_buffer)
@@ -1228,13 +1245,15 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_rect damage, copy;
 	unsigned int x, y;
 	u64 copied;
-	u32 active, active_base, target;
+	u32 active, active_base, target, previous_base;
+	u32 dma_offset = 0, dma_length = 0;
 	s64 vblank_before;
 	long wait_ret;
-	int idx, target_index, ret = 0, vblank_ret = 0;
+	int idx, target_index, ret = 0, vblank_ret = 0, mirror_ret;
 	u64 pixels;
 	u32 pixel;
 	bool direct_scanout = false, full_damage, did_flip_fallback = false;
+	bool mirror_damage = false;
 	if (!fb || !pipe->crtc.state->active)
 		return;
 	gem = drm_gem_fb_get_obj(fb, 0);
@@ -1243,8 +1262,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	else if (gem && gem->funcs == &tgx_host_object_funcs)
 		host_object = container_of(gem, struct tarugx_host_object, base);
 	/* A new FB must replace the single physical scanout buffer in full. */
-	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state) ||
-	    tgx->dma_only_scanout)
+	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state))
 		damage = DRM_RECT_INIT(0, 0, tgx->width, tgx->height);
 	else if (!drm_atomic_helper_damage_merged(old, state, &damage))
 		return;
@@ -1270,6 +1288,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
 	 * the damage rectangle is guaranteed to contain new valid contents. */
 	active_base = tgx_active_fb_base(tgx);
+	previous_base = active_base;
 	if (active_base > tgx->vram_bytes - tgx->frame_bytes) {
 		dev_warn_ratelimited(tgx->drm.dev,
 				     "invalid active framebuffer base %#x\n",
@@ -1295,7 +1314,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	copy = damage;
 	full_damage = copy.x1 == 0 && copy.y1 == 0 &&
 		copy.x2 == tgx->width && copy.y2 == tgx->height;
-	if (!full_damage && !tgx->legacy_single_buffer) {
+	if (!full_damage && !tgx->legacy_single_buffer &&
+	    !tgx->dma_only_scanout) {
 		ret = tgx_blit_copy_frame(tgx, active_base, target);
 		if (ret) {
 			atomic64_inc(&tgx->blit_sync_failures);
@@ -1309,8 +1329,28 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		ret = 0;
 	}
 	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * 4;
-	if (full_damage && (dma_upload || tgx->dma_only_scanout) &&
+	if ((full_damage || tgx->dma_only_scanout) &&
+	    (dma_upload || tgx->dma_only_scanout) &&
 	    tgx->dma_available) {
+		if (tgx->dma_only_scanout) {
+			if (!host_object) {
+				dev_err_ratelimited(tgx->drm.dev,
+					"1080p framebuffer is not DMA-backed\n");
+				mutex_unlock(&tgx->render_lock);
+				drm_dev_exit(idx);
+				return;
+			}
+			mirror_damage = !full_damage;
+			if (full_damage || !tgx->physical_pages_synced) {
+				dma_offset = 0;
+				dma_length = tgx->frame_bytes;
+			} else {
+				dma_offset = copy.y1 * tgx->pitch;
+				dma_length = (copy.y2 - copy.y1) * tgx->pitch;
+			}
+		} else {
+			dma_length = tgx->frame_bytes;
+		}
 		if (!host_object)
 			for (y = 0; y < tgx->height; y++)
 				iosys_map_memcpy_from(
@@ -1320,14 +1360,16 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		ret = tgx_dma_transfer(tgx,
-				       host_object ? host_object->dma_addr :
-				       tgx->dma_staging_addr, target,
-				       tgx->frame_bytes,
+				       (host_object ? host_object->dma_addr :
+				       tgx->dma_staging_addr) + dma_offset,
+				       target + dma_offset, dma_length,
 				       tgx->dma_only_scanout ?
 				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
 		mutex_unlock(&tgx->dma_lock);
 		if (!ret) {
 			atomic64_inc(&tgx->dma_uploads);
+			if (tgx->dma_only_scanout && full_damage)
+				tgx->physical_pages_synced = false;
 			goto upload_complete;
 		}
 		atomic64_inc(&tgx->dma_upload_failures);
@@ -1414,6 +1456,27 @@ upload_complete:
 				tgx->legacy_single_buffer = true;
 				did_flip_fallback = true;
 			}
+		}
+	}
+	if (!ret && mirror_damage) {
+		u32 mirror_offset = copy.y1 * tgx->pitch;
+		u32 mirror_length = (copy.y2 - copy.y1) * tgx->pitch;
+
+		dma_wmb();
+		mutex_lock(&tgx->dma_lock);
+		mirror_ret = tgx_dma_transfer(tgx,
+				host_object->dma_addr + mirror_offset,
+				previous_base + mirror_offset, mirror_length,
+				TGX_1080P_DMA_TIMEOUT_US);
+		mutex_unlock(&tgx->dma_lock);
+		if (mirror_ret) {
+			tgx->physical_pages_synced = false;
+			atomic64_inc(&tgx->dma_upload_failures);
+			dev_warn_ratelimited(tgx->drm.dev,
+				"damage mirror DMA failed: %d\n", mirror_ret);
+		} else {
+			tgx->physical_pages_synced = true;
+			atomic64_inc(&tgx->dma_uploads);
 		}
 	}
 	if (ret)
