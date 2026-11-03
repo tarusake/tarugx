@@ -1223,7 +1223,8 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 	if (check_mul_overflow(pitch, (u64)args->height, &size))
 		return -EOVERFLOW;
 	size = PAGE_ALIGN(size);
-	if (!pitch || pitch > U32_MAX || !size || size > tgx->frame_bytes)
+	if (!pitch || pitch > U32_MAX || !size ||
+	    size > PAGE_ALIGN(tgx->frame_bytes))
 		return -EINVAL;
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
 	if (!object)
