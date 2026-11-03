@@ -90,7 +90,7 @@ def decode(line):
                               "reset_active": (recovery >> 2) & 1}
     if version == 0x46523037:
         status["phy_recovery"] = True
-    if version in (0x46523036, 0x46523037):
+    if version in (0x46523036, 0x46523037) and not pipeline_diagnostics:
         trace = (payload >> 176) & ((1 << 56) - 1)
         status["reset_scope"] = dict(zip(
             ("flags", "before", "during_high", "during_low", "after_high", "after_low", "current"),

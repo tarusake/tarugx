@@ -23,6 +23,7 @@ class DecodeTest(unittest.TestCase):
             min_level_upper_estimate=7, max_level_upper_estimate=511))
         self.assertTrue(data["fault_captured"])
         self.assertEqual((data["x"], data["y"]), (800, 717))
+        self.assertNotIn("reset_scope", data)
 
     def test_fr16_pipeline_fault_layout(self):
         data=decoder.decode("D1110X46523136" + "0" * 64)
