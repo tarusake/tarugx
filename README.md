@@ -286,8 +286,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
   現在のGPU version 1.3はDDR scanoutをRGB565（pitch 3840、4,147,200 byte）にし、
   32bit版に対して表示読出し帯域を半減しています。現在の3:1 urgent調停版の
-  合成結果はSetup +0.075ns、Hold +0.136ns、Recovery +1.724ns、Removal
-  +0.338nsでした。DRMはRGB565を直接
+  合成結果はSetup +0.186ns、Hold +0.133ns、Recovery +0.670ns、Removal
+  +0.264nsでした。DRMはRGB565を直接
   DMAできるほか、標準Xorgが作るXRGB8888 coherent GEMをCPUでRGB565 stagingへ
   変換してからDMAします。これによりXfceを1920×1080で表示でき、RGB565直接更新は
   `active_full=46.743ms`、XRGB8888変換経路は`active_full=47.616ms`でした。
@@ -309,9 +309,15 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   VBlank境界に同期するため全面更新時間は約28msのままですが、CPUが変換に拘束される
   時間を約4.2ms削減しています。XRGB8888 7回とRGB565 3回の連続回帰では、DMA失敗、
   flip timeout、VBlank timeoutはいずれも0でした。
+  DDR調停器には、下流`ready`を上流へ組合せで戻さない2段コマンドキューを追加しました。
+  3:1 scanout優先を維持しながら、待ちのない区間では8要求を8クロック連続発行できます。
+  2026-11-04のSRAM実機では、XRGB8888全面更新のDMAが従来の約11.05–11.17msから
+  10.44–10.48msへ約6%短縮し、DDR待ちは約66.7万cycleから約57.7万cycleへ減少しました。
+  XRGB8888 5回とRGB565 3回の連続回帰はDMA 48回、page flip 32回で失敗・timeout 0、
+  さらに2D 498 command、120非同期batch、VRAM GEM直接scanoutも失敗0でした。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とします。
   配布済み0.1.0ドライバーへ戻すとGPU 1.2の1080p SRAM版を扱えず黒画面になるため、
-  1080p実験中は作業ツリーの0.5.0ドライバーを使用してください。
+  1080p実験中は作業ツリーの0.8.0ドライバーを使用してください。
   全面更新後は2物理ページを未同期として扱い、最初のdamageで非表示ページを全面
   再構築してから変更行を旧表示ページへ反映します。以後は変更された縦範囲だけを
   非表示ページへDMA、VBlank flip、旧表示ページへmirror DMAするため、両ページの
