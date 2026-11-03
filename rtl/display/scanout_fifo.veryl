@@ -2,26 +2,27 @@
 /// FWFT FIFO: error bit, frame beat index, eight XRGB8888 pixels.
 /// Both domains must reset together; the caller must synchronize reset release.
 module scanout_fifo #(
-    param DEPTH: u32 = 512,
+    param DEPTH      : u32 = 512,
+    param INDEX_WIDTH: u32 = 16 ,
 ) (
     src_clk     : input  'src clock     ,
     src_rst_n   : input  'src reset     ,
     src_valid   : input  'src logic     ,
     src_ready   : output 'src logic     ,
     src_buffered: output 'src logic     , // At least half the FIFO, conservative UI estimate.
-    src_data    : input  'src logic<273>,
+    src_data    : input  'src logic<257 + INDEX_WIDTH>,
     dst_clk     : input  'dst clock     ,
     dst_rst_n   : input  'dst reset     ,
     dst_valid   : output 'dst logic     ,
     dst_ready   : input  'dst logic     ,
-    dst_data    : output 'dst logic<273>,
+    dst_data    : output 'dst logic<257 + INDEX_WIDTH>,
 ) {
     var full : 'src logic;
     var empty: 'dst logic;
     assign src_ready = !full;
     assign dst_valid = !empty;
     inst fifo: $std::async_fifo::<$std::synchronizer_basic> #(
-        WIDTH    : 273      ,
+        WIDTH    : 257 + INDEX_WIDTH,
         DEPTH               ,
         THRESHOLD: DEPTH / 2,
     ) (
