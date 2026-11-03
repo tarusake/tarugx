@@ -1447,6 +1447,15 @@ out_put:
 	return ret;
 }
 
+static u32 tgx_pack_xrgb8888_pair(u64 pixels)
+{
+	u64 converted = ((pixels >> 8) & 0x0000f8000000f800ULL) |
+			((pixels >> 5) & 0x000007e0000007e0ULL) |
+			((pixels >> 3) & 0x0000001f0000001fULL);
+
+	return (u32)converted | (u32)(converted >> 16);
+}
+
 static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
 				    const struct tarugx_host_object *object,
 				    u32 source_pitch, u32 first_y, u32 last_y)
@@ -1459,16 +1468,21 @@ static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
 
 		/* dma_alloc_coherent() aligns the source, and both supported
 		 * scanout pitches are multiples of eight.  Convert two independent
-		 * 32-bit pixel lanes with one set of 64-bit shifts, then pack the
-		 * two RGB565 results into one store. */
-		for (x = 0; x + 1 < tgx->width; x += 2) {
-			u64 pixels = le64_to_cpu(*(const __le64 *)&source[x]);
-			u64 converted = ((pixels >> 8) & 0x0000f8000000f800ULL) |
-					((pixels >> 5) & 0x000007e0000007e0ULL) |
-					((pixels >> 3) & 0x0000001f0000001fULL);
-			u32 packed = (u32)converted | (u32)(converted >> 16);
+		 * pairs of 32-bit pixels, then store four RGB565 results at once. */
+		for (x = 0; x + 3 < tgx->width; x += 4) {
+			u64 first = le64_to_cpu(*(const __le64 *)&source[x]);
+			u64 second = le64_to_cpu(*(const __le64 *)&source[x + 2]);
+			u64 packed = tgx_pack_xrgb8888_pair(first) |
+				(u64)tgx_pack_xrgb8888_pair(second) << 32;
 
-			*(__le32 *)&destination[x] = cpu_to_le32(packed);
+			*(__le64 *)&destination[x] = cpu_to_le64(packed);
+		}
+		if (x + 1 < tgx->width) {
+			u64 pixels = le64_to_cpu(*(const __le64 *)&source[x]);
+
+			*(__le32 *)&destination[x] =
+				cpu_to_le32(tgx_pack_xrgb8888_pair(pixels));
+			x += 2;
 		}
 		if (x < tgx->width) {
 			u32 pixel = le32_to_cpu(source[x]);
