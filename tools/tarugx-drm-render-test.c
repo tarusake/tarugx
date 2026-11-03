@@ -46,7 +46,7 @@ int main(int argc, char **argv)
         .width = 32, .height = 16,
     };
     struct drm_tarugx_fill invalid = {
-        .x = 639, .y = 0, .width = 2, .height = 1,
+        .x = UINT32_MAX, .y = 0, .width = 2, .height = 1,
     };
     struct drm_tarugx_submit batch = {
         .count = 4,

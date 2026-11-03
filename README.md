@@ -292,6 +292,14 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   201.528msかかり、直接DMAの16.041msより約12.6倍遅いため採用していません。
 - PCIe DMAは最大8要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は4KiB境界を越えない最大64 DWORDです。
+  Completion TLPの先頭5 DWORDと後続8 DWORDチャンクは、EOPまで512-bitバッファで
+  32-byte境界へ再パックします。典型的な64 DWORD TLPのDDR書込みは16回から8回へ
+  半減します。2026-11-04の1,228,800-byte実機測定では、scanout停止時のDMA busyが
+  173,192–175,995 cycle（1.73–1.76ms、約700MB/s）、scanout中は
+  676,848–679,282 cycle（6.77–6.79ms）でした。1080p表示中の全面更新では
+  DMA busyが従来約4.29M cycleから3.94–4.01M cycleへ約7–8%減り、失敗と
+  flip/VBlank timeoutはいずれも0でした。`tools/benchmark_dma_test.py`で表示ON/OFFを
+  同条件測定できます。表示制御は例外時も元へ戻します。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
   64/32-bit書込みへフォールバックします。Completionから生成したDDR書込みは
   8要求までパイプライン化し、PCIe、DDR間のクロック境界も8段FIFOで接続しています。
