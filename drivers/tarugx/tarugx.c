@@ -491,7 +491,10 @@ static int tgx_execute_commands(struct tarugx *tgx,
 	int ret = 0, wait_ret;
 
 	if (tgx->render_async_valid) {
-		if (tgx->render_async_owner)
+		/* A binary syncobj waiter does not call the private WAIT ioctl.
+		 * Let the same owner reap its completed record while submitting the
+		 * next asynchronous batch, but never let another file consume it. */
+		if (!async_owner || tgx->render_async_owner != async_owner)
 			return -EBUSY;
 		ret = tgx_reap_async(tgx, 0);
 		if (!tgx->render_async_completed)

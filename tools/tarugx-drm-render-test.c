@@ -333,8 +333,17 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
+    /* A standard syncobj wait must be sufficient to submit the next batch;
+     * userspace must not need the private WAIT ioctl to clear driver state. */
+    render_batch.out_syncobj = 0;
+    if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM, &render_batch)) {
+        perror("render-node resubmit after syncobj wait");
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
+    wait.fence = render_batch.fence;
     if (ioctl(render, DRM_IOCTL_TARUGX_WAIT, &wait)) {
-        perror("render-node DRM_IOCTL_TARUGX_WAIT");
+        perror("render-node DRM_IOCTL_TARUGX_WAIT after resubmit");
         close_handle(render, render_vram.handle);
         goto out_render;
     }
@@ -349,8 +358,8 @@ vram_gem_done:
     syncobj = 0;
     close(render);
     render = -1;
-    puts("DRM render node PASS: non-master GEM create, syncobj/sync_file + "
-         "private fence fill/blit; screen fill denied");
+    puts("DRM render node PASS: non-master GEM create, syncobj/sync_file "
+         "resubmit + private fence fill/blit; screen fill denied");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;

@@ -121,7 +121,9 @@ CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全
 待ちます。`render_queue_peak`にはドライバーが観測した最大待機命令数を記録します。
 `DRM_TARUGX_SUBMIT_ASYNC`を指定するとsubmitは投入直後に戻り、返されたfenceを
 `DRM_IOCTL_TARUGX_WAIT`で待てます。未回収の非同期バッチはDRMファイルごとに1件に制限し、
-別ファイルからの回収を拒否します。WAITせずファイルを閉じた場合は`postclose`で回収し、
+別ファイルからの回収を拒否します。標準syncobjで完了を待った同じfdから次の非同期
+batchを投入する場合は、完了済みprivate記録を自動回収するためprivate WAITは不要です。
+WAITせずファイルを閉じた場合は`postclose`で回収し、
 KMS更新と重なった場合もfence完了を待ってから表示用のblitやページ更新を開始します。
 2026-11-03の実機回帰では、320×180のfill 2件とblit 2件を1バッチとして120回、
 合計480命令を6.666秒（18.00バッチ/秒、プロセスCPU 0.9%）で処理し、
@@ -140,14 +142,15 @@ surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲�
 完了後の再利用まで確認しています。ドライバー0.6以降はrender nodeを公開し、非master
 アプリも自分が所有するVRAM GEMだけを作成してfill/blitできます。画面座標ioctlはrender
 nodeから明示的に拒否し、別fdのGEM handleによるsubmitとfence回収もそれぞれ`ENOENT`、
-`EPERM`で拒否します。2026-11-04の実機回帰ではrender nodeを含む496命令、120バッチを
+`EPERM`で拒否します。2026-11-04の実機回帰ではrender nodeを含む498命令、120バッチを
 render failure 0、プロセスCPU 0.6%で処理し、RGB565 GEMの直接scanoutにも復帰しました。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
 `out_syncobj=0`の既存アプリとprivate fence／WAIT ABIもそのまま利用できます。実機では
-同じバッチを`drmSyncobjWait()`とprivate WAITの両方で回収し、496命令をfailure 0で
-完了しました。syncobjからexportした`sync_file`も`poll()`で完了を受信できます。
+最初のバッチを`drmSyncobjWait()`だけで回収して次のバッチを投入し、そのprivate WAIT
+まで含む498命令をfailure 0で完了しました。syncobjからexportした`sync_file`も
+`poll()`で完了を受信できます。
 存在しないsyncobj、同期submitとの組合せ、別fdのhandleも拒否します。
 ドライバー0.8以降はすべての非同期GEM submitの`dma_fence`を対象GEMのreservationへ
 WRITE fenceとして登録します。同じGEMをDRM framebufferへ設定すると`prepare_fb`が
