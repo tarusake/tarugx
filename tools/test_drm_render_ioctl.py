@@ -65,7 +65,8 @@ try:
         '-ldrm', '-o', str(scanout_test)
     ], check=True, timeout=45)
 
-    subprocess.run(['systemctl', 'stop', *services], check=True, timeout=45)
+    for name in services:
+        subprocess.run(['systemctl', 'stop', name], check=False, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
     module = work/'tarugx.ko'
     if keep_driver:
@@ -123,7 +124,7 @@ try:
             f'VRAM GEM 2D mismatch fill={{gem_fill:#x}} blit={{gem_blit:#x}}'
 
     direct_output = ''
-    if gpu_version == 0x00010001:
+    if gpu_version == 0x00010001 or gpu_version >= 0x00010003:
         stage = 'direct scanout test'
         direct = subprocess.run(
             [str(scanout_test), '/dev/dri/'+cards[0].name],
@@ -170,11 +171,12 @@ try:
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (490 if gpu_version >= 0x00010002 else 492), counters
+        (494 if gpu_version >= 0x00010003 else
+         490 if gpu_version >= 0x00010002 else 492), counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \
-        (1 if gpu_version == 0x00010001 else 0), counters
+        (1 if gpu_version != 0x00010002 else 0), counters
     assert int(counters['dma_error_code']) == 0, counters
     print(run.stdout, end='')
     print(direct_output, end='')

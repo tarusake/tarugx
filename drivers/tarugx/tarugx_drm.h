@@ -5,9 +5,8 @@
 #include <drm/drm.h>
 #include <linux/types.h>
 
-/*
- * The first 2D API deliberately addresses only the visible 640x480 scanout
- * page.  Userspace supplies pixels, never physical VRAM addresses.
+/* The screen commands address the current scanout page.  Userspace supplies
+ * pixels and rectangles, never physical VRAM addresses.
  */
 struct drm_tarugx_fill {
 	__u32 x;

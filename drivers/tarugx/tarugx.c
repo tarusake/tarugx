@@ -1137,7 +1137,8 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 		return 0;
 	gem = drm_gem_fb_get_obj(plane->fb, 0);
 	if (tgx->dma_only_scanout &&
-	    (!gem || gem->funcs != &tgx_host_object_funcs))
+	    (!gem || (gem->funcs != &tgx_host_object_funcs &&
+		     gem->funcs != &tgx_vram_object_funcs)))
 		return -EINVAL;
 	if (!gem || gem->funcs != &tgx_vram_object_funcs)
 		return 0;
@@ -1353,7 +1354,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		copied = 0;
 		/* Only BAR-visible objects can have userspace write-combine stores.
 		 * Objects above BAR2 are produced by fenced FPGA render commands. */
-		if (target <= TGX_BAR2_BYTES - tgx->frame_bytes)
+		if (tgx->frame_bytes <= TGX_BAR2_BYTES &&
+		    target <= TGX_BAR2_BYTES - tgx->frame_bytes)
 			readl(tgx->vram + target + tgx->frame_bytes - 4);
 		goto upload_complete;
 	}

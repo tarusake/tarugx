@@ -143,6 +143,11 @@ int main(int argc, char **argv)
     vram_map = mmap(NULL, vram.size, PROT_READ | PROT_WRITE, MAP_SHARED,
                     fd, (off_t)vram.mmap_offset);
     if (vram_map == MAP_FAILED) {
+        if (errno == EOPNOTSUPP) {
+            puts("VRAM GEM CPU mmap SKIP: object is outside the PCIe BAR");
+            close_handle(fd, vram.handle);
+            goto vram_gem_done;
+        }
         perror("mmap VRAM GEM");
         close_handle(fd, vram.handle);
         goto out_other;
@@ -211,6 +216,7 @@ int main(int argc, char **argv)
     puts("VRAM GEM PASS: mmap/readback, DRM framebuffer, async fill/blit, "
          "close lifetime, ENOSPC and reuse");
     }
+vram_gem_done:
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;
