@@ -39,4 +39,8 @@ if [ -z "$gowin_sh" ]; then
     gowin_sh=$(command -v gw_sh || true)
 fi
 test -n "$gowin_sh" || { echo "Set GOWIN_SH to the gw_sh executable" >&2; exit 1; }
-exec "$gowin_sh" scripts/gowin_build_framebuffer.tcl
+"$gowin_sh" scripts/gowin_build_framebuffer.tcl
+
+out=build/gowin_framebuffer_pipeline/tarugx/impl/pnr
+python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
+test -s "$out/tarugx.fs"
