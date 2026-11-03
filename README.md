@@ -256,8 +256,9 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
   現在のGPU version 1.3はDDR scanoutをRGB565（pitch 3840、4,147,200 byte）にし、
-  32bit版に対して表示読出し帯域を半減しています。合成結果はSetup +0.093ns、
-  Hold +0.136ns、Recovery +1.870ns、Removal +0.258nsでした。DRMはRGB565を直接
+  32bit版に対して表示読出し帯域を半減しています。現在の3:1 urgent調停版の
+  合成結果はSetup +0.008ns、Hold +0.136ns、Recovery +2.537ns、Removal
+  +0.353nsでした。DRMはRGB565を直接
   DMAできるほか、標準Xorgが作るXRGB8888 coherent GEMをCPUでRGB565 stagingへ
   変換してからDMAします。これによりXfceを1920×1080で表示でき、RGB565直接更新は
   `active_full=46.743ms`、XRGB8888変換経路は`active_full=47.616ms`でした。
@@ -320,6 +321,13 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   2D fill/blit、4-command batch、fence/MSI、120 batch（480 command）は失敗0、
   scanout underflowとDMA/flip/VBlank timeoutも0でした。100MHzの最小setup余裕は
   +0.104nsです。
+  その後FR17 UART診断で、round-robin版はFIFO最小水位1 beat、最大scanout待ち
+  72 cycleで実際にunderflowしていたことを確認しました。FIFOが半分未満の間だけ
+  scanoutをCPU/DMAに対して3:1で発行する版では、起動後の最小水位249 beatを維持し、
+  最大待ち81 cycleでもunderflow 0、fault 0でした。XRGB8888のDRM全面更新でも
+  DMA 6回、page flip 4回、各timeout 0のまま`active_full=30.889ms`となり、従来の
+  47.510msから約35%短縮しました。8要求連続優先版と異なり、3要求ごとにCPU/DMAへ
+  1要求を返すため、表示保護と転送進行を両立します。
   旧2要求版を使った2026-11-03のSRAM実機回帰では、1,228,800 byteのDMA転送5回が13.964–14.126ms
   （約87MB/s）で、直列経路の約53msから約3.8倍に改善しました。
   staging copyとVRAM読戻しを含むKMS試験でも、各120フレームがBAR2の
