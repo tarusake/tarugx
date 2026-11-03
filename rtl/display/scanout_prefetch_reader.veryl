@@ -24,7 +24,7 @@ module scanout_prefetch_reader (
     out_error    : output logic     ,
 ) {
     var active        : logic         ;
-    var issued        : logic<16>     ;
+    var requesting    : logic         ;
     var row           : logic<9>      ;
     var column        : logic<7>      ;
     var row_base      : logic<22>     ;
@@ -45,7 +45,10 @@ module scanout_prefetch_reader (
         && (pending_stride >= 2560) && (pending_end <= 64'h400000);
     // Keep the credit decision registered so the reservation counter does
     // not feed the request/counter clock enables on the same cycle.
-    assign mem_valid = active && (issued <: 38400) && capacity;
+    // The final accepted request clears this registered flag.  Keeping the
+    // 16-bit frame-count comparison out of mem_valid shortens the path into
+    // the asynchronous request FIFO at 100 MHz.
+    assign mem_valid = requesting && capacity;
     let issue: logic = mem_valid && mem_ready;
     // Native DDR responses cannot return in the request-accept cycle.  Keep
     // request admission out of the response-ready path so that the arbiter
@@ -59,7 +62,7 @@ module scanout_prefetch_reader (
     always_ff {
         if_reset {
             active         = 0;
-            issued         = 0;
+            requesting     = 0;
             row            = 0;
             column         = 0;
             row_base       = 0;
@@ -96,9 +99,9 @@ module scanout_prefetch_reader (
                     config_error   = !valid_config;
                     if valid_config {
                         active        = 1;
+                        requesting    = 1;
                         active_buffer  = pending_base != 0;
                         active_fb_base = pending_base;
-                        issued        = 0;
                         row           = 0;
                         column        = 0;
                         row_base      = pending_base[21:0];
@@ -109,7 +112,9 @@ module scanout_prefetch_reader (
                 }
             }
             if issue {
-                issued = issued + 16'd1;
+                if (row == 479) && (column == 79) {
+                    requesting = 0;
+                }
                 if column == 79 {
                     column   = 0;
                     row      = row + 9'd1;
