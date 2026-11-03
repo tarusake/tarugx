@@ -46,6 +46,14 @@ static double monotonic_seconds(void)
 	return now.tv_sec + now.tv_nsec / 1000000000.0;
 }
 
+static double process_seconds(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
+	return now.tv_sec + now.tv_nsec / 1000000000.0;
+}
+
 static uint32_t property_id(int fd, uint32_t object_id, uint32_t object_type,
 			    const char *name)
 {
@@ -130,6 +138,28 @@ out:
 	return ret;
 }
 
+static int atomic_flip(int fd, uint32_t crtc, uint32_t plane,
+		       uint32_t framebuffer, int *out_fence_fd)
+{
+	drmModeAtomicReq *request = drmModeAtomicAlloc();
+	int ret = -1;
+
+	if (!request)
+		return -1;
+	*out_fence_fd = -1;
+	if (atomic_add_named(fd, request, plane, DRM_MODE_OBJECT_PLANE,
+			     "FB_ID", framebuffer) ||
+	    atomic_add_named(fd, request, plane, DRM_MODE_OBJECT_PLANE,
+			     "CRTC_ID", crtc) ||
+	    atomic_add_named(fd, request, crtc, DRM_MODE_OBJECT_CRTC,
+			     "OUT_FENCE_PTR", (uintptr_t)out_fence_fd))
+		goto out;
+	ret = drmModeAtomicCommit(fd, request, DRM_MODE_ATOMIC_NONBLOCK, NULL);
+out:
+	drmModeAtomicFree(request);
+	return ret;
+}
+
 static void fill_rect(uint8_t *pixels, uint32_t pitch, const drmModeClip *clip,
 		      uint32_t color, uint32_t bpp)
 {
@@ -171,7 +201,8 @@ int main(int argc, char **argv)
 	unsigned hold_seconds = 10;
 	unsigned requested_bpp = 0;
 	double modeset_completed_seconds, modeset_started, modeset_seconds;
-	double dirty_started;
+	double dirty_started, flip_cpu_started, flip_elapsed, flip_started;
+	double flip_cpu_seconds, flip_max_submit = 0;
 	double dirty_seconds[3];
 	drmModeClip clips[2] = {
 		{120, 120, 440, 200},
@@ -494,6 +525,51 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	dirty_seconds[2] = monotonic_seconds() - dirty_started;
+	flip_started = monotonic_seconds();
+	flip_cpu_started = process_seconds();
+	for (unsigned frame = 0; frame < 120; frame++) {
+		int flip_fence = -1;
+		double submit_started = monotonic_seconds();
+		double submit_seconds;
+		struct pollfd completed;
+
+		if (atomic_flip(fd, crtc, plane_resources->planes[0],
+				frame & 1 ? framebuffer : external_framebuffer,
+				&flip_fence)) {
+			perror("atomic flip stress submit");
+			goto out;
+		}
+		submit_seconds = monotonic_seconds() - submit_started;
+		if (submit_seconds > flip_max_submit)
+			flip_max_submit = submit_seconds;
+		completed = (struct pollfd) {
+			.fd = flip_fence,
+			.events = POLLIN,
+		};
+		if (flip_fence < 0 || poll(&completed, 1, 1000) != 1 ||
+		    !(completed.revents & POLLIN)) {
+			fputs("atomic flip stress fence did not signal\n", stderr);
+			if (flip_fence >= 0)
+				close(flip_fence);
+			goto out;
+		}
+		close(flip_fence);
+	}
+	flip_cpu_seconds = process_seconds() - flip_cpu_started;
+	flip_elapsed = monotonic_seconds() - flip_started;
+	if (flip_elapsed <= 0 ||
+	    120.0 / flip_elapsed < (create.bpp == 16 ? 50.0 : 25.0) ||
+	    flip_max_submit >= 0.005 ||
+	    flip_cpu_seconds / flip_elapsed >= 0.20) {
+		fprintf(stderr,
+			"atomic flip stress outside limits: %.2f fps, %.3f ms max submit, %.1f%% CPU\n",
+			120.0 / flip_elapsed, flip_max_submit * 1000.0,
+			flip_cpu_seconds * 100.0 / flip_elapsed);
+		goto out;
+	}
+	printf("DRM atomic flip stress PASS: 120 frames, %.2f fps, %.3f ms max submit, %.1f%% CPU\n",
+	       120.0 / flip_elapsed, flip_max_submit * 1000.0,
+	       flip_cpu_seconds * 100.0 / flip_elapsed);
 	printf("DRM mode PASS: %ux%u pitch=%u size=%llu modeset=%.6fs modeset_done=%.6fs dirty1=%.6fs dirty2=%.6fs active_full=%.6fs hold=%us\n",
 	       create.width, create.height, create.pitch,
 	       (unsigned long long)create.size, modeset_seconds,

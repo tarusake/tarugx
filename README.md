@@ -151,6 +151,12 @@ WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は�
 XRGB8888実機でatomic ioctlは0.399msで復帰、約30.000ms後にout fenceがsignalされました。
 これにより、ユーザー空間は全面変換／PCIe DMA／VBlankをioctl内で待たず、完了を
 標準sync_fileで受け取れます。
+外部PRIME framebufferと通常dumb bufferを交互に120回nonblocking atomic flipする
+実機ストレスでは、RGB565が59.84fps、最大ioctl 0.205ms、プロセスCPU 1.2%で
+1080p60を実現しました。XRGB8888は30.43fps、最大ioctl 0.311ms、プロセスCPU 0.9%です。
+XRGB8888はRGB565変換とPCIe DMAの合計が16.7msのVBlank境界に近く、境界を超えたフレームが
+次のVBlankまで待つ30fpsに落ちるため、次の性能改善対象です。各試験でDMA 127回、
+page flip 125回、全failure／timeout 0を確認しました。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、

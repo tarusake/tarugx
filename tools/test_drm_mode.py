@@ -96,6 +96,7 @@ try:
         assert 'DRM PRIME self-import PASS' in run.stdout, run.stdout
         assert 'DRM atomic explicit sync PASS' in run.stdout, run.stdout
         assert 'DRM atomic nonblocking PASS' in run.stdout, run.stdout
+        assert 'DRM atomic flip stress PASS' in run.stdout, run.stdout
         assert 'DRM PRIME implicit sync PASS' in run.stdout, run.stdout
         assert 'DRM PRIME external scanout PASS' in run.stdout, run.stdout
         runs.append(run.stdout)
@@ -109,11 +110,11 @@ try:
         field.split('=', 1) for field in update_profile.split()
     )
     pages_synced = int((device/'physical_pages_synced').read_text())
-    assert counters['dma_uploads'] >= 6 * iterations, counters
+    assert counters['dma_uploads'] >= 127 * iterations, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
     assert counters['vblank_timeouts'] == 0, counters
-    assert counters['page_flips'] >= 4 * iterations, counters
+    assert counters['page_flips'] >= 125 * iterations, counters
     assert int(update_timings['update_ns']) > 0, update_timings
     assert int(update_timings['dma_ns']) > 0, update_timings
     if 'pitch=7680' in run.stdout:
