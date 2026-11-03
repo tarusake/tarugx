@@ -55,6 +55,7 @@ module pcie_dma_channel #(
     var cpl_byte_count  : logic<12>;
     var cpl_lower_address: logic<7>;
     var cpl_tag         : logic<8>;
+    var cpl_end         : logic;
     var cpl_data        : logic<256>;
     var tx_parameter_error: logic;
 
@@ -88,6 +89,7 @@ module pcie_dma_channel #(
         cpl_length_dw,
         cpl_lower_address,
         cpl_tag,
+        cpl_end,
         cpl_data,
         fb_req_valid,
         fb_req_ready,
@@ -137,6 +139,7 @@ module pcie_dma_channel #(
         completion_byte_count: cpl_byte_count,
         completion_lower_address: cpl_lower_address,
         completion_tag      : cpl_tag,
+        completion_end      : cpl_end,
         completion_data     : cpl_data,
     );
 

@@ -26,6 +26,7 @@ module dma_completion_rx (
     completion_byte_count: output logic<12>,
     completion_lower_address: output logic<7>,
     completion_tag      : output logic<8>  ,
+    completion_end      : output logic     ,
     completion_data     : output logic<256>,
 ) {
     var beat_pending: logic;
@@ -59,6 +60,7 @@ module dma_completion_rx (
     var chunk_byte_count: logic<12>;
     var chunk_lower_address: logic<7>;
     var chunk_tag     : logic<8>;
+    var chunk_end     : logic;
     var chunk_data    : logic<256>;
     var incoming_count: logic<4>;
     var expected_lanes: logic<8>;
@@ -124,6 +126,7 @@ module dma_completion_rx (
     assign completion_byte_count    = chunk_byte_count;
     assign completion_lower_address = chunk_lower_address;
     assign completion_tag           = chunk_tag;
+    assign completion_end           = chunk_end;
     assign completion_data          = chunk_data;
     assign rx_wait = transfer_present && (beat_pending || chunk_pending);
 
@@ -148,6 +151,7 @@ module dma_completion_rx (
             chunk_byte_count    = 0;
             chunk_lower_address = 0;
             chunk_tag           = 0;
+            chunk_end           = 0;
             chunk_data          = 0;
         } else if clear {
             packet_active       = 0;
@@ -169,6 +173,7 @@ module dma_completion_rx (
             chunk_byte_count    = 0;
             chunk_lower_address = 0;
             chunk_tag           = 0;
+            chunk_end           = 0;
             chunk_data          = 0;
         } else {
             if chunk_pending && completion_ready {
@@ -183,6 +188,7 @@ module dma_completion_rx (
                     chunk_length        = incoming_count;
                     chunk_lower_address = next_lower_address;
                     chunk_tag           = packet_tag;
+                    chunk_end           = beat_eop;
                     chunk_data          = incoming_data;
                     words_remaining     = words_remaining - (incoming_count as 7);
                     next_lower_address  = next_lower_address + ((incoming_count as 7) << 2);
@@ -198,6 +204,7 @@ module dma_completion_rx (
                     chunk_byte_count    = header_dw1[11:0];
                     chunk_lower_address = header_dw2[6:0];
                     chunk_tag           = header_dw2[15:8];
+                    chunk_end           = beat_eop;
                     chunk_data          = incoming_data;
                     words_remaining     = (raw_length[6:0] as 7) - (incoming_count as 7);
                     next_lower_address  = header_dw2[6:0] + ((incoming_count as 7) << 2);

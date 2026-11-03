@@ -13,6 +13,7 @@ module dma_tlp_tb;
  logic rx_wait,completion_valid,completion_has_data,completion_error;logic [2:0] completion_status;
  logic [3:0] completion_length_dw;logic [11:0] completion_byte_count;logic [6:0] completion_lower_address;logic [7:0] completion_tag;
  logic [255:0] completion_data;
+ logic completion_end;
  tarugx_dma_completion_rx rx(.*);
  task tick;@(posedge clk);#1;endtask
  function automatic logic [31:0] wire_word(input logic [31:0] value);

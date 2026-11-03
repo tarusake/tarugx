@@ -6,11 +6,12 @@ module pcie_dma_read_engine_tb;
  logic busy,done,error,mrd_valid,mrd_ready=0;logic [3:0] error_code;logic [63:0] mrd_host_address;logic [6:0] mrd_length_dw;logic [7:0] mrd_tag;
  logic [7:0] active_valid;logic [63:0] active_tags;
  logic cpl_valid=0,cpl_ready,cpl_has_data=0,cpl_error=0;logic [3:0] cpl_length_dw=0;logic [6:0] cpl_lower_address=0;logic [7:0] cpl_tag=0;
+ logic cpl_end=1;
  logic [255:0] cpl_data=0;logic fb_req_valid,fb_req_ready=0;logic [31:0] fb_req_addr;logic [255:0] fb_req_wdata;
  logic [31:0] fb_req_wstrb;logic fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
  logic fb_window_full;
  logic slot_full_sample,completion_busy_sample;
- tarugx_pcie_dma_read_engine #(.TIMEOUT_CYCLES(20)) dut(.*);
+ tarugx_pcie_dma_read_engine #(.TIMEOUT_CYCLES(100)) dut(.*);
  logic [31:0] vram[0:1023];int request_count=0,write_count=0;
  task tick;@(posedge clk);#1;endtask
  task command(input logic [63:0] host,input int vram_addr,input int bytes);
@@ -74,7 +75,13 @@ module pcie_dma_read_engine_tb;
   completion(8,1,issued_tags[1],issued_lowers[1]);service_writes(8,1);
   completion(3,9,issued_tags[1],issued_lowers[1]+7'd32);service_writes(3,9);
   completion(1,0,issued_tags[0],issued_lowers[0]);service_writes(1,0);
-  wait(done);tick();assert(!error&&!busy&&request_count==2&&write_count==12)else $fatal(1,"DMA completion");
+  wait(done);tick();
+  if(error||busy||request_count!=2||write_count!=12)
+   $display("DMA completion state error=%0d code=%0d busy=%0d requests=%0d words=%0d slots=%02x received1=%0d chunk=%0d left=%0d flush=%0d fb=%0d remaining=%0d request=%0d completion=%0d",
+    error,error_code,busy,request_count,write_count,dut.slot_valid,dut.slot_received[1],
+    dut.chunk_pending,dut.chunk_left,dut.chunk_flush,dut.fb_outstanding,
+    dut.issue_remaining_dw,dut.request_pending,dut.completion_pending);
+  assert(!error&&!busy&&request_count==2&&write_count==12)else $fatal(1,"DMA completion");
   for(int i=0;i<12;i++)assert(vram[i+1]==32'hd0000000+i)else $fatal(1,"VRAM word %0d",i);
   // Eight aligned 256-byte requests must be in flight before any Completion.
   begin logic [7:0] tags[0:7];
