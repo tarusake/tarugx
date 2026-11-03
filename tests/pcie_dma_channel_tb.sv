@@ -26,8 +26,9 @@ module pcie_dma_channel_tb;
  task automatic writes(input int count,input int base);
   int i=0;int words;
   while(i<count)begin
-   while(!fb_req_valid)tick();words = fb_req_wstrb == 32'hffff_ffff ? 8 : fb_req_wstrb == 32'hff ? 2 : 1;
-   assert((fb_req_wstrb==32'h0f||fb_req_wstrb==32'hff||fb_req_wstrb==32'hffff_ffff)
+   while(!fb_req_valid)tick();words = $countones(fb_req_wstrb)/4;
+   assert(words>=1&&words<=8
+          &&fb_req_wstrb==(32'hffff_ffff>>((8-words)*4))
           &&fb_req_wdata[31:0]==32'hca000000+base+i)else $fatal(1,"write data");
    for(int word=1;word<words;word++)
     assert(fb_req_wdata[word*32+:32]==32'hca000000+base+i+word)else $fatal(1,"burst write data");

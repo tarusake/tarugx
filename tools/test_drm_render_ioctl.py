@@ -118,9 +118,15 @@ try:
         direct_output = direct.stdout
 
     attrs = device
-    dma_test_started = time.monotonic_ns()
-    (attrs/'dma_test').write_text(str(640 * 480 * 4))
-    dma_test_elapsed_ms = (time.monotonic_ns() - dma_test_started) / 1_000_000
+    dma_samples = []
+    for _ in range(5):
+        dma_test_started = time.monotonic_ns()
+        (attrs/'dma_test').write_text(str(640 * 480 * 4))
+        dma_test_elapsed_ms = (time.monotonic_ns() - dma_test_started) / 1_000_000
+        dma_samples.append({{
+            'elapsed_ms': dma_test_elapsed_ms,
+            'profile': (attrs/'dma_profile').read_text().strip(),
+        }})
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
@@ -134,7 +140,7 @@ try:
     print(run.stdout, end='')
     print(direct_output, end='')
     print(json.dumps({{'readback': hex(source),
-                      'dma_test_elapsed_ms': dma_test_elapsed_ms,
+                      'dma_samples': dma_samples,
                       'counters': counters}}))
 finally:
     if loaded_test_module:

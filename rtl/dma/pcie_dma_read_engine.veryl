@@ -127,13 +127,13 @@ module pcie_dma_read_engine #(
     let cpl_vram: logic<32> = slot_vram[completion_slot]
         + ((slot_done[completion_slot] as 32) << 2);
     let shifted_words: logic<256> = chunk_words >> ((chunk_index as 8) * 8'd32);
-    let write_word_count: logic<4> = if (write_vram[4:0] == 0) && (chunk_left >= 4'd8) ?
-        4'd8
-    : if (write_vram[2:0] == 0) && (chunk_left >= 4'd2) ?
-        4'd2
-    :
-        4'd1
-    ;
+    // A request may cover every DWORD up to the next 32-byte boundary.  The
+    // framebuffer arbiter shifts data and strobes into the addressed lanes,
+    // so restricting unaligned writes to one or two DWORDs only creates
+    // unnecessary DDR commands and raw PCIe RX backpressure.
+    let boundary_words: logic<4> = 4'd8 - {1'b0, write_vram[4:2]};
+    let write_word_count: logic<4> = if chunk_left <: boundary_words ?
+        chunk_left : boundary_words;
     let progress: logic = (mrd_valid && mrd_ready) || (cpl_valid && cpl_ready)
         || (fb_req_valid && fb_req_ready) || (fb_rsp_valid && fb_rsp_ready);
 
@@ -153,8 +153,17 @@ module pcie_dma_read_engine #(
     assign fb_req_valid     = (state == State::Run) && chunk_pending && (fb_outstanding <: 8);
     assign fb_req_addr      = write_vram;
     assign fb_req_wdata     = shifted_words;
-    assign fb_req_wstrb     = if write_word_count == 4'd8 ? 32'hffff_ffff
-        : if write_word_count == 4'd2 ? 32'h0000_00ff : 32'h0000_000f;
+    assign fb_req_wstrb     = case write_word_count {
+        4'd1: 32'h0000_000f,
+        4'd2: 32'h0000_00ff,
+        4'd3: 32'h0000_0fff,
+        4'd4: 32'h0000_ffff,
+        4'd5: 32'h000f_ffff,
+        4'd6: 32'h00ff_ffff,
+        4'd7: 32'h0fff_ffff,
+        4'd8: 32'hffff_ffff,
+        default: 32'b0,
+    };
     assign fb_rsp_ready     = ((state == State::Run) || (state == State::Fail))
         && (fb_outstanding != 0);
     let fb_request_accept: logic = fb_req_valid && fb_req_ready;

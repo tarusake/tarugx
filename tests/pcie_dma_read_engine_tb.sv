@@ -28,8 +28,9 @@ module pcie_dma_read_engine_tb;
   while(i<count)begin
    while(!fb_req_valid)tick();
    repeat(transaction%2)begin tick();assert(fb_req_valid)else $fatal(1,"write request dropped");end
-   words = fb_req_wstrb == 32'hffff_ffff ? 8 : fb_req_wstrb == 32'hff ? 2 : 1;
-   assert((fb_req_wstrb==32'h0f||fb_req_wstrb==32'hff||fb_req_wstrb==32'hffff_ffff)
+   words = $countones(fb_req_wstrb)/4;
+   assert(words>=1&&words<=8
+          &&fb_req_wstrb==(32'hffff_ffff>>((8-words)*4))
           &&fb_req_wdata[31:0]==32'hd0000000+expected_base+i)else $fatal(1,"write shape");
    for(int word=0;word<words;word++)begin
     assert(fb_req_wdata[word*32+:32]==32'hd0000000+expected_base+i+word)else $fatal(1,"burst write data");
@@ -44,12 +45,12 @@ module pcie_dma_read_engine_tb;
   int i=0;int transactions=0;int words;
   while(i<count)begin
    while(!fb_req_valid)tick();
-   words = fb_req_wstrb == 32'hffff_ffff ? 8 : fb_req_wstrb == 32'hff ? 2 : 1;
+   words = $countones(fb_req_wstrb)/4;
    assert(fb_req_wdata[31:0]==32'hd0000000+expected_base+i)else $fatal(1,"deferred write data");
    @(negedge clk);fb_req_ready=1;tick();@(negedge clk);fb_req_ready=0;
    i+=words;transactions++;
   end
-  assert(transactions>=4&&dut.fb_outstanding==4'(transactions))else $fatal(1,"writes were not pipelined");
+  assert(transactions==2&&dut.fb_outstanding==4'(transactions))else $fatal(1,"writes were not pipelined");
   repeat(transactions)begin
    @(negedge clk);fb_rsp_valid=1;tick();@(negedge clk);fb_rsp_valid=0;
   end
