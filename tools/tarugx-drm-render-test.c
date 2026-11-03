@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -13,6 +14,14 @@
 #include "tarugx_drm.h"
 
 #define STRESS_BATCHES 120
+#define FRAME_BYTES (640U * 480U * 4U)
+
+static int close_handle(int fd, uint32_t handle)
+{
+    struct drm_gem_close close_args = { .handle = handle };
+
+    return ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_args);
+}
 
 static int expect_errno(int fd, unsigned long request, void *data, int error)
 {
@@ -65,6 +74,9 @@ int main(int argc, char **argv)
         },
     };
     struct drm_tarugx_wait wait;
+    struct drm_tarugx_vram_create vram = { .size = FRAME_BYTES };
+    struct drm_tarugx_vram_create too_large = { .size = FRAME_BYTES };
+    volatile uint32_t *vram_map;
     struct timespec started, returned, stress_started, stress_finished;
     struct timespec cpu_started, cpu_finished;
     double submit_ms, stress_s, cpu_s;
@@ -94,8 +106,50 @@ int main(int argc, char **argv)
         goto out_other;
     if (expect_errno(other, DRM_IOCTL_TARUGX_SUBMIT, &batch, EACCES))
         goto out_other;
+    if (expect_errno(other, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram, EACCES))
+        goto out_other;
     if (expect_errno(fd, DRM_IOCTL_TARUGX_FILL, &invalid, EINVAL))
         goto out_other;
+    if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram)) {
+        perror("DRM_IOCTL_TARUGX_VRAM_CREATE");
+        goto out_other;
+    }
+    vram_map = mmap(NULL, vram.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    fd, (off_t)vram.mmap_offset);
+    if (vram_map == MAP_FAILED) {
+        perror("mmap VRAM GEM");
+        close_handle(fd, vram.handle);
+        goto out_other;
+    }
+    vram_map[0] = 0xfeed1234;
+    vram_map[vram.size / sizeof(*vram_map) - 1] = 0xcafe5678;
+    if (vram_map[0] != 0xfeed1234 ||
+        vram_map[vram.size / sizeof(*vram_map) - 1] != 0xcafe5678) {
+        fputs("VRAM GEM mmap readback mismatch\n", stderr);
+        munmap((void *)vram_map, vram.size);
+        close_handle(fd, vram.handle);
+        goto out_other;
+    }
+    if (expect_errno(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &too_large, ENOSPC)) {
+        munmap((void *)vram_map, vram.size);
+        close_handle(fd, vram.handle);
+        goto out_other;
+    }
+    munmap((void *)vram_map, vram.size);
+    if (close_handle(fd, vram.handle)) {
+        perror("DRM_IOCTL_GEM_CLOSE");
+        goto out_other;
+    }
+    vram = (struct drm_tarugx_vram_create) { .size = FRAME_BYTES };
+    if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram)) {
+        perror("VRAM GEM reallocation");
+        goto out_other;
+    }
+    if (close_handle(fd, vram.handle)) {
+        perror("close reallocated VRAM GEM");
+        goto out_other;
+    }
+    puts("VRAM GEM PASS: master restriction, mmap/readback, ENOSPC and reuse");
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;

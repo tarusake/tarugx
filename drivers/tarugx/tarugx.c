@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/ktime.h>
+#include <linux/mm.h>
 #include <linux/mutex.h>
 #include <linux/sizes.h>
 #include <drm/drm_atomic.h>
@@ -21,6 +22,7 @@
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_mm.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
@@ -40,6 +42,8 @@ struct tarugx {
 	void __iomem *regs, *vram;
 	struct mutex dma_lock;
 	struct mutex render_lock;
+	struct mutex vram_lock;
+	struct drm_mm vram_mm;
 	void *dma_staging;
 	dma_addr_t dma_staging_addr;
 	atomic64_t page_flips;
@@ -69,11 +73,18 @@ struct tarugx {
 	int render_async_result;
 };
 
+struct tarugx_vram_object {
+	struct drm_gem_object base;
+	struct drm_mm_node node;
+};
+
 #define TGX_WIDTH 640
 #define TGX_HEIGHT 480
 #define TGX_PITCH (TGX_WIDTH * 4)
 #define TGX_FRAME_BYTES (TGX_PITCH * TGX_HEIGHT)
 #define TGX_FB_BASE(n) ((n) * TGX_FRAME_BYTES)
+#define TGX_VRAM_BYTES SZ_4M
+#define TGX_VRAM_GEM_BASE TGX_FB_BASE(2)
 #define TGX_REG_DISPLAY_CTRL 0x10
 #define TGX_REG_FB_BASE 0x1c
 #define TGX_REG_FB_STRIDE 0x20
@@ -484,6 +495,101 @@ static int tgx_ioctl_wait(struct drm_device *drm, void *data,
 out_unlock:
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
+	return ret;
+}
+
+static void tgx_vram_vm_open(struct vm_area_struct *vma)
+{
+	drm_gem_vm_open(vma);
+}
+
+static void tgx_vram_vm_close(struct vm_area_struct *vma)
+{
+	drm_gem_vm_close(vma);
+}
+
+static const struct vm_operations_struct tgx_vram_vm_ops = {
+	.open = tgx_vram_vm_open,
+	.close = tgx_vram_vm_close,
+};
+
+static int tgx_vram_object_mmap(struct drm_gem_object *gem,
+				struct vm_area_struct *vma)
+{
+	struct tarugx_vram_object *object =
+		container_of(gem, struct tarugx_vram_object, base);
+	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
+	unsigned long length = vma->vm_end - vma->vm_start;
+	resource_size_t physical;
+
+	if (length > gem->size)
+		return -EINVAL;
+	physical = pci_resource_start(tgx->pdev, 2) + object->node.start;
+	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+	vma->vm_ops = &tgx_vram_vm_ops;
+	return io_remap_pfn_range(vma, vma->vm_start,
+				  physical >> PAGE_SHIFT, length,
+				  vma->vm_page_prot);
+}
+
+static void tgx_vram_object_free(struct drm_gem_object *gem)
+{
+	struct tarugx_vram_object *object =
+		container_of(gem, struct tarugx_vram_object, base);
+	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
+
+	mutex_lock(&tgx->vram_lock);
+	if (drm_mm_node_allocated(&object->node))
+		drm_mm_remove_node(&object->node);
+	mutex_unlock(&tgx->vram_lock);
+	drm_gem_object_release(gem);
+	kfree(object);
+}
+
+static const struct drm_gem_object_funcs tgx_vram_object_funcs = {
+	.free = tgx_vram_object_free,
+	.mmap = tgx_vram_object_mmap,
+};
+
+static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_vram_create *args = data;
+	struct tarugx_vram_object *object;
+	u64 size;
+	int ret;
+
+	if (!args->size || args->size > TGX_VRAM_BYTES - TGX_VRAM_GEM_BASE ||
+	    args->flags)
+		return -EINVAL;
+	size = PAGE_ALIGN(args->size);
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return -ENOMEM;
+	object->base.funcs = &tgx_vram_object_funcs;
+	ret = drm_gem_object_init(drm, &object->base, size);
+	if (ret) {
+		kfree(object);
+		return ret;
+	}
+	mutex_lock(&tgx->vram_lock);
+	ret = drm_mm_insert_node_generic(&tgx->vram_mm, &object->node, size,
+					 PAGE_SIZE, 0, DRM_MM_INSERT_BEST);
+	mutex_unlock(&tgx->vram_lock);
+	if (ret)
+		goto out_put;
+	ret = drm_gem_create_mmap_offset(&object->base);
+	if (ret)
+		goto out_put;
+	ret = drm_gem_handle_create(file, &object->base, &args->handle);
+	if (ret)
+		goto out_put;
+	args->size = size;
+	args->mmap_offset = drm_vma_node_offset_addr(&object->base.vma_node);
+out_put:
+	drm_gem_object_put(&object->base);
 	return ret;
 }
 
@@ -992,6 +1098,7 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_BLIT, tgx_ioctl_blit, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT, tgx_ioctl_submit, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(TARUGX_WAIT, tgx_ioctl_wait, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(TARUGX_VRAM_CREATE, tgx_ioctl_vram_create, DRM_MASTER),
 };
 
 static struct drm_gem_object *tgx_prime_import(struct drm_device *drm,
@@ -1011,8 +1118,17 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261103",
-	.major = 0, .minor = 2,
+	.major = 0, .minor = 3,
 };
+
+static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
+{
+	struct tarugx *tgx = data;
+
+	(void)drm;
+	WARN_ON(!drm_mm_clean(&tgx->vram_mm));
+	drm_mm_takedown(&tgx->vram_mm);
+}
 
 static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
@@ -1049,6 +1165,12 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->pdev = pdev;
 	mutex_init(&tgx->dma_lock);
 	mutex_init(&tgx->render_lock);
+	mutex_init(&tgx->vram_lock);
+	drm_mm_init(&tgx->vram_mm, TGX_VRAM_GEM_BASE,
+		    TGX_VRAM_BYTES - TGX_VRAM_GEM_BASE);
+	ret = drmm_add_action_or_reset(drm, tgx_vram_mm_takedown, tgx);
+	if (ret)
+		return ret;
 	tgx->regs = pcim_iomap_table(pdev)[0];
 	tgx->vram = pcim_iomap_table(pdev)[2];
 	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, TGX_FRAME_BYTES,

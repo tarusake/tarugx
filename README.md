@@ -122,6 +122,13 @@ KMS更新と重なった場合もfence完了を待ってから表示用のblit�
 submit自体は0.017msで復帰しました。fence、VRAM読戻し、WAITなしcloseの回収を含めて
 `render_failures=0`、最大待機深度3を確認しています。
 
+2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
+DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、
+`drm_mm`が画面用2ページより後ろの約1.66MiBだけを管理します。表示ページや他の
+VRAM GEMへはmmapできません。実機では1,228,800 byteの作成、先頭／末尾のmmap読書き、
+容量不足時の`ENOSPC`、handle解放後の領域再利用をBAR2読戻しまで確認しています。
+この段階ではVRAM GEMを2D命令の対象やscanoutへ指定するAPIはまだ接続していません。
+
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
 後者は表示サービスを一時停止し、終了時には従来モジュールとサービスを復元します。
@@ -219,8 +226,9 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   64-bit書込みを使用します。`dma_upload=0`の場合は全面更新もBAR2を使用します。
   部分更新前のページ同期にはFPGAの2D blitを使用します。fill/blitはDRM master限定の
   同期private ioctlとしてコマンドキュー、fence、MSIまで統合済みですが、通常の
-  Xorg描画が自動利用する段階ではありません。GEMバッファ単位の描画、非同期fence、
-  複数コマンド一括投入、安全な一般ユーザー向けAPIへの本格統合は未実装です。
+  Xorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
+  複数コマンド一括投入までは実装済みですが、GEM handleを2D命令やscanoutの対象に
+  する接続と、安全な一般ユーザー向けAPIへの本格統合は未実装です。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は

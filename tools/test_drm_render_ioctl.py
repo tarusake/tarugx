@@ -83,10 +83,16 @@ try:
         copied = struct.unpack_from('<I', vram, base + (16*640+64)*4)[0]
         batch_a = struct.unpack_from('<I', vram, base + (100*640+320)*4)[0]
         batch_b = struct.unpack_from('<I', vram, base + (300*640+320)*4)[0]
+        gem_base = 2 * 640 * 480 * 4
+        gem_first = struct.unpack_from('<I', vram, gem_base)[0]
+        gem_last = struct.unpack_from('<I', vram,
+                                      gem_base + 640*480*4 - 4)[0]
     assert source == 0xff2050d0 and copied == source, \
         f'readback mismatch source={{source:#x}} copied={{copied:#x}}'
     assert batch_a == 0xff40c060 and batch_b == 0xffd08020, \
         f'batch readback mismatch a={{batch_a:#x}} b={{batch_b:#x}}'
+    assert gem_first == 0xfeed1234 and gem_last == 0xcafe5678, \
+        f'VRAM GEM raw readback mismatch first={{gem_first:#x}} last={{gem_last:#x}}'
 
     attrs = device
     counters = {{name: (attrs/name).read_text().strip()

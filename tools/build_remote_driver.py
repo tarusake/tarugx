@@ -36,8 +36,9 @@ try:
     print(run.stdout, end='')
     print(run.stderr, end='')
     if run.returncode:
-        raise RuntimeError('driver build failed')
-    assert (work/'tarugx.ko').exists(), 'module was not produced'
+        print('TARUGX_DRIVER_BUILD_FAILED')
+    else:
+        assert (work/'tarugx.ko').exists(), 'module was not produced'
 finally:
     shutil.rmtree(work, ignore_errors=True)
 """
@@ -49,9 +50,12 @@ def main() -> None:
         name: base64.b64encode((DRIVER / name).read_bytes()).decode("ascii")
         for name in names
     }
-    print(Backend().remote(
+    output = Backend().remote(
         remote_program(files), "build DRM driver", timeout=150
-    ), end="")
+    )
+    print(output, end="")
+    if "TARUGX_DRIVER_BUILD_FAILED" in output:
+        raise RuntimeError("driver build failed")
 
 
 if __name__ == "__main__":
