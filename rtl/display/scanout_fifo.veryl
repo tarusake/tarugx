@@ -49,9 +49,10 @@ module scanout_fifo #(
             dst_data  = 0;
         } else if load_output {
             dst_valid = raw_valid;
-            if raw_valid {
-                dst_data = raw_data;
-            }
+            // Data is don't-care while dst_valid is low. Register it
+            // unconditionally so the asynchronous empty comparison controls
+            // only the one-bit valid path, not every wide data-register D.
+            dst_data = raw_data;
         }
     }
 }
