@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Fixed-mode pixel consumer. After a lost beat, black the rest of the frame
 /// and discard queued beats until index zero for a later frame boundary.
-module framebuffer_display (
+module framebuffer_display #(
+    param VIDEO_1080P : bbool = false,
+    param WIDTH       : u32 = if VIDEO_1080P ? 1920 : 640,
+    param HEIGHT      : u32 = if VIDEO_1080P ? 1080 : 480,
+    param INDEX_WIDTH : u32 = if VIDEO_1080P ? 18 : 16,
+    param X_WIDTH     : u32 = if VIDEO_1080P ? 12 : 10,
+    param Y_WIDTH     : u32 = if VIDEO_1080P ? 11 : 10,
+    param BEATS_PER_ROW: u32 = WIDTH / 8,
+    param LAST_X      : bit<X_WIDTH> = (WIDTH - 1) as X_WIDTH,
+    param LAST_Y      : bit<Y_WIDTH> = (HEIGHT - 1) as Y_WIDTH,
+) (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
     settings      : input  logic<26> ,
     in_valid      : input  logic     ,
     in_ready      : output logic     ,
-    in_data       : input  logic<273>,
+    in_data       : input  logic<257 + INDEX_WIDTH>,
     de            : output logic     ,
     hsync         : output logic     ,
     vsync         : output logic     ,
@@ -17,23 +27,31 @@ module framebuffer_display (
     display_active: output logic     ,
     fault_snapshot: output logic<64> ,
 ) {
-    var x          : logic<10>;
-    var y          : logic<10>;
+    var x          : logic<X_WIDTH>;
+    var y          : logic<Y_WIDTH>;
     var frame_start: logic    ;
     var active     : logic<26>;
     var running    : logic    ;
     var armed      : logic    ;
-    inst timing: video_timing ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+    if VIDEO_1080P :g_timing_1080p {
+        inst timing: video_timing_1080p ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+    } else :g_timing_480p {
+        inst timing: video_timing ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+    }
     let current_settings: logic<26> = if frame_start ? settings : active;
     assign display_active = current_settings[24];
-    let expected    : logic<16> = (y as 16) * 16'd80 + (x[9:3] as 16);
-    let beat_matches: logic     = in_valid && !in_data[272] && (in_data[271:256] == expected);
-    let consuming   : logic     = if frame_start ? (in_valid && !in_data[272] && (in_data[271:256] == 0)) : running;
+    let expected    : logic<INDEX_WIDTH> = (y as INDEX_WIDTH) * (BEATS_PER_ROW as INDEX_WIDTH)
+        + ((x as INDEX_WIDTH) >> 3);
+    let beat_matches: logic     = in_valid && !in_data[256 + INDEX_WIDTH]
+        && (in_data[255 + INDEX_WIDTH:256] == expected);
+    let consuming   : logic     = if frame_start
+        ? (in_valid && !in_data[256 + INDEX_WIDTH] && (in_data[255 + INDEX_WIDTH:256] == 0))
+        : running;
     let pixel       : logic<32> = in_data[(x[2:0] as 9) * 9'd32+:32];
     always_comb {
         in_ready = 0;
         if !consuming {
-            in_ready = in_valid && ((in_data[271:256] != 0) || in_data[272]);
+            in_ready = in_valid && ((in_data[255 + INDEX_WIDTH:256] != 0) || in_data[256 + INDEX_WIDTH]);
         } else if de && beat_matches && (x[2:0] == 7) {
             in_ready = 1;
         }
@@ -73,15 +91,23 @@ module framebuffer_display (
                 running = 0;
                 if current_settings[24] && !current_settings[25] && armed {
                     if !underflow {
-                        fault_snapshot = {
-                            x, y, expected, in_data[271:256], 4'b0, settings[24], settings[25], current_settings[24],
-                            current_settings[25], armed, consuming, in_valid, in_data[272]
-                        };
+                        if VIDEO_1080P {
+                            fault_snapshot = ({
+                                x, y, expected, in_data[255 + INDEX_WIDTH:256], settings[24], settings[25],
+                                armed, consuming, in_valid
+                            } as 64);
+                        } else {
+                            fault_snapshot = ({
+                                x, y, expected, in_data[255 + INDEX_WIDTH:256], 4'b0, settings[24], settings[25],
+                                current_settings[24], current_settings[25], armed, consuming, in_valid,
+                                in_data[256 + INDEX_WIDTH]
+                            } as 64);
+                        }
                     }
                     underflow = 1;
                 }
             }
-            if (x == 639) && (y == 479) {
+            if (x == LAST_X) && (y == LAST_Y) {
                 running = 0;
             }
         }

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Memory UI -> asynchronous FIFO -> fixed-mode RGB scanout.
 /// Settings must already be synchronized into their respective domains.
-module scanout_pipeline_engine (
+module scanout_pipeline_engine #(
+    param VIDEO_1080P: bbool = false,
+    param WIDTH      : u32 = if VIDEO_1080P ? 1920 : 640,
+    param HEIGHT     : u32 = if VIDEO_1080P ? 1080 : 480,
+    param INDEX_WIDTH: u32 = if VIDEO_1080P ? 18 : 16,
+) (
     mem_clk       : input  'mem   clock     ,
     mem_rst_n     : input  'mem   reset     ,
     enable        : input  'mem   logic     ,
@@ -32,12 +37,12 @@ module scanout_pipeline_engine (
     var buffered      : 'mem   logic     ;
     var push_valid    : 'mem   logic     ;
     var push_ready    : 'mem   logic     ;
-    var push_index    : 'mem   logic<16> ;
+    var push_index    : 'mem   logic<INDEX_WIDTH>;
     var push_data     : 'mem   logic<256>;
     var push_error    : 'mem   logic     ;
     var pop_valid     : 'pixel logic     ;
     var pop_ready     : 'pixel logic     ;
-    var pop_data      : 'pixel logic<273>;
+    var pop_data      : 'pixel logic<257 + INDEX_WIDTH>;
     var display_active: 'pixel logic     ;
     #[sv("async_reg = \"true\", syn_preserve = 1")]
     var display_active_sync: 'mem logic<2>;
@@ -51,7 +56,9 @@ module scanout_pipeline_engine (
             }
         }
     }
-    inst reader: scanout_prefetch_reader (
+    inst reader: scanout_prefetch_reader #(
+        WIDTH, HEIGHT, INDEX_WIDTH,
+    ) (
         clk  : mem_clk  ,
         rst_n: mem_rst_n,
         // Keep fetching until the pixel domain has actually blanked.
@@ -74,7 +81,9 @@ module scanout_pipeline_engine (
         out_data     : push_data                       ,
         out_error    : push_error                      ,
     );
-    inst fifo: scanout_fifo (
+    inst fifo: scanout_fifo #(
+        INDEX_WIDTH: INDEX_WIDTH,
+    ) (
         src_clk     : mem_clk                            ,
         src_rst_n   : mem_rst_n                          ,
         src_valid   : push_valid                         ,
@@ -87,7 +96,9 @@ module scanout_pipeline_engine (
         dst_ready   : pop_ready                          ,
         dst_data    : pop_data                           ,
     );
-    inst display: framebuffer_display (
+    inst display: framebuffer_display #(
+        VIDEO_1080P, WIDTH, HEIGHT, INDEX_WIDTH,
+    ) (
         clk           : pixel_clk  ,
         rst_n         : pixel_rst_n,
         settings                   ,

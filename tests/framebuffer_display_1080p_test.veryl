@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#[test(framebuffer_display_consumes_full_1080p_frame)]
+module framebuffer_display_consumes_full_1080p_frame {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+    var settings      : logic<26> ;
+    var in_valid      : logic     ;
+    var in_ready      : logic     ;
+    var in_data       : logic<275>;
+    var de            : logic     ;
+    var hsync         : logic     ;
+    var vsync         : logic     ;
+    var rgb           : logic<24> ;
+    var underflow     : logic     ;
+    var vblank_toggle : logic     ;
+    var display_active: logic     ;
+    var fault_snapshot: logic<64> ;
+    inst dut: framebuffer_display #(
+        VIDEO_1080P: true,
+    ) (
+        clk, rst_n: rst, settings, in_valid, in_ready, in_data, de, hsync,
+        vsync, rgb, underflow, vblank_toggle, display_active, fault_snapshot,
+    );
+    initial {
+        settings = {2'b01, 24'b0};
+        in_valid = 1;
+        in_data  = {1'b0, 18'b0, 256'h0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00};
+        rst.assert();
+        for line in 0..1125 {
+            for pixel in 0..2200 {
+                // The final beat is popped at the last active pixel. Model an
+                // empty FIFO through vertical blank until the next frame's
+                // index-zero beat arrives.
+                if (line >= 1080) || ((line == 1079) && (pixel >= 1920)) {
+                    in_valid = 0;
+                }
+                if (pixel <: 1920) && (line <: 1080) {
+                    in_data[273:256] = (line * 240 + pixel / 8) as 18;
+                    $assert(de && rgb == 24'h55aa00);
+                    $assert(in_ready == ((pixel % 8) == 7));
+                } else {
+                    $assert(!de && rgb == 0 && !in_ready);
+                }
+                $assert(!underflow);
+                clk.next(1);
+            }
+        }
+        $assert(display_active && !underflow && fault_snapshot == 0);
+        $finish();
+    }
+}
