@@ -247,16 +247,20 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   Xorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
   直接scanoutまで実装済みですが、安全な一般ユーザー向けAPIへの本格統合は未実装です。
-- FlashリリースとLinux DRM/KMSは640×480固定です。一方、実験用
-  `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.125MHz画素クロックで
+- Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
+  `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
   fillエンジンで8,294,400 byteのXRGB8888色帯をDDRへ生成し、stride 7680で
   2回取得したHDMI画像が完全一致し、UART診断もDDR校正済み、PCIe link up、
   underflowなし、faultなしでした。scanout専用Gray pointer FIFOと故障判定経路の
   分割を反映した最終構成のタイミング余裕はSetup +0.016ns、Hold +0.138nsです。
-  この構成はGPU version 1.2として公開します。DRMからのモード選択、8MiB超の
-  転送経路、1080p用GEM管理は
-  まだ統合していません。
+  この構成はGPU version 1.2として公開します。作業ツリーのDRMドライバーは
+  version 1.2を検出すると1920×1080を優先モードとして公開し、8,294,400 byteの
+  XRGB8888 dumb bufferをPCIe DMAで内部16MiB DDRへ転送します。専用実機試験で
+  `dma_uploads=1`、DMA失敗0、flip timeout 0、6色帯のHDMI画像を確認しました。
+  4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とし、
+  現時点のdamage更新は安全な全面DMAへ昇格します。したがって表示は正しいものの、
+  更新性能と1080p用VRAM GEM管理は今後の課題です。
 - PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
