@@ -6,9 +6,10 @@ module framebuffer_display #(
     param WIDTH       : u32 = if VIDEO_1080P ? 1920 : 640,
     param HEIGHT      : u32 = if VIDEO_1080P ? 1080 : 480,
     param INDEX_WIDTH : u32 = if VIDEO_1080P ? 18 : 16,
+    param PIXELS_PER_BEAT: u32 = if VIDEO_1080P ? 16 : 8,
     param X_WIDTH     : u32 = if VIDEO_1080P ? 12 : 10,
     param Y_WIDTH     : u32 = if VIDEO_1080P ? 11 : 10,
-    param BEATS_PER_ROW: u32 = WIDTH / 8,
+    param BEATS_PER_ROW: u32 = WIDTH / PIXELS_PER_BEAT,
     param LAST_X      : bit<X_WIDTH> = (WIDTH - 1) as X_WIDTH,
     param LAST_Y      : bit<Y_WIDTH> = (HEIGHT - 1) as Y_WIDTH,
 ) (
@@ -39,7 +40,7 @@ module framebuffer_display #(
     var stage_de          : logic    ;
     var stage_hsync       : logic    ;
     var stage_vsync       : logic    ;
-    var stage_pixel       : logic<32>;
+    var stage_pixel       : logic<24>;
     var stage_enable      : logic    ;
     var stage_solid       : logic    ;
     var stage_color       : logic<24>;
@@ -65,12 +66,19 @@ module framebuffer_display #(
     let current_settings: logic<26> = if frame_start ? settings : active;
     assign display_active = current_settings[24];
     let expected    : logic<INDEX_WIDTH> = (y as INDEX_WIDTH) * (BEATS_PER_ROW as INDEX_WIDTH)
-        + ((x as INDEX_WIDTH) >> 3);
+        + (if VIDEO_1080P ? ((x as INDEX_WIDTH) >> 4) : ((x as INDEX_WIDTH) >> 3));
     let consuming   : logic     = if frame_start
         ? (in_valid && !in_data[256 + INDEX_WIDTH] && (in_data[255 + INDEX_WIDTH:256] == 0))
         : running;
-    let pixel       : logic<32> = in_data[(x[2:0] as 9) * 9'd32+:32];
-    // A FIFO beat covers eight pixels. Its index is checked as two short
+    let pixel_8888  : logic<32> = in_data[(x[2:0] as 9) * 9'd32+:32];
+    let pixel_565   : logic<16> = in_data[(x[3:0] as 9) * 9'd16+:16];
+    let expanded_565: logic<24> = {
+        pixel_565[15:11], pixel_565[15:13],
+        pixel_565[10:5], pixel_565[10:9],
+        pixel_565[4:0], pixel_565[4:2]
+    };
+    let pixel       : logic<24> = if VIDEO_1080P ? expanded_565 : pixel_8888[23:0];
+    // A FIFO beat covers eight XRGB8888 or sixteen RGB565 pixels. Its index is checked as two short
     // comparisons at pixel zero, then combined on the following cycle.
     always_comb {
         de    = stage_de;
@@ -81,7 +89,7 @@ module framebuffer_display #(
             if stage_solid {
                 rgb = stage_color;
             } else if stage_pixel_valid {
-                rgb = stage_pixel[23:0];
+                rgb = stage_pixel;
             }
         }
     }
@@ -128,7 +136,7 @@ module framebuffer_display #(
             // pixels before the FIFO pop request at pixel six.
             fault_pending = fault_check_pending && (fault_low_bad || fault_high_bad);
             fault_check_pending = 0;
-            if timing_de && (x[2:0] == 0) {
+            if timing_de && (if VIDEO_1080P ? (x[3:0] == 0) : (x[2:0] == 0)) {
                 fault_check_pending = current_settings[24]
                     && !current_settings[25] && armed;
                 fault_low_bad = !consuming || !in_valid || in_data[256 + INDEX_WIDTH]
@@ -168,7 +176,7 @@ module framebuffer_display #(
             } else {
                 // A bad beat is diagnosed at pixel zero and clears running
                 // before this one-cycle-early pop request at pixel six.
-                in_ready = timing_de && (x[2:0] == 6);
+                in_ready = timing_de && (if VIDEO_1080P ? (x[3:0] == 14) : (x[2:0] == 6));
             }
             if frame_start {
                 vblank_toggle = !vblank_toggle;

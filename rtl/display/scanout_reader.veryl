@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// UI-clock reader for fixed-mode XRGB8888 frames, eight pixels per beat.
+/// UI-clock reader for fixed-mode packed pixel frames.
 /// Configuration is sampled between frames. FIFO entries carry a frame index.
 module scanout_reader #(
     param WIDTH       : u32 = 640,
     param HEIGHT      : u32 = 480,
     param INDEX_WIDTH : u32 = 16 ,
-    param BEATS_PER_ROW: u32 = WIDTH / 8,
+    param BYTES_PER_PIXEL: u32 = 4,
+    param PIXELS_PER_BEAT: u32 = 8,
+    param BEATS_PER_ROW: u32 = WIDTH / PIXELS_PER_BEAT,
     param ROW_WIDTH   : u32 = $clog2(HEIGHT),
     param COLUMN_WIDTH: u32 = $clog2(BEATS_PER_ROW),
     param LAST_ROW    : bit<ROW_WIDTH> = (HEIGHT - 1) as ROW_WIDTH,
@@ -45,9 +47,10 @@ module scanout_reader #(
     var row_base    : logic<24>;
     var stride      : logic<24>;
     let end_address : logic<64> = (fb_base as 64) + (fb_stride as 64)
-        * ((HEIGHT as 64) - 64'd1) + (WIDTH as 64) * 64'd4;
+        * ((HEIGHT as 64) - 64'd1)
+        + (WIDTH as 64) * (BYTES_PER_PIXEL as 64);
     let valid_config: logic     = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0)
-        && (fb_stride >= WIDTH * 4)
+        && (fb_stride >= WIDTH * BYTES_PER_PIXEL)
         && (end_address <= 64'h1000000);
     assign mem_valid     = state == State::Issue;
     assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);

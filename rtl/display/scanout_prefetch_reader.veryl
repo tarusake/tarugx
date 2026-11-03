@@ -5,7 +5,9 @@ module scanout_prefetch_reader #(
     param WIDTH        : u32 = 640,
     param HEIGHT       : u32 = 480,
     param INDEX_WIDTH  : u32 = 16 ,
-    param BEATS_PER_ROW: u32 = WIDTH / 8,
+    param BYTES_PER_PIXEL: u32 = 4,
+    param PIXELS_PER_BEAT: u32 = 8,
+    param BEATS_PER_ROW: u32 = WIDTH / PIXELS_PER_BEAT,
     param ROW_WIDTH    : u32 = $clog2(HEIGHT),
     param COLUMN_WIDTH : u32 = $clog2(BEATS_PER_ROW),
     param LAST_ROW     : bit<ROW_WIDTH> = (HEIGHT - 1) as ROW_WIDTH,
@@ -52,7 +54,7 @@ module scanout_prefetch_reader #(
     var pending_stride: logic<32>     ;
     var pending_end   : logic<64>     ;
     let valid_config  : logic          = (pending_base[4:0] == 0) && (pending_stride[4:0] == 0)
-        && (pending_stride >= WIDTH * 4) && (pending_end <= 64'h1000000);
+        && (pending_stride >= WIDTH * BYTES_PER_PIXEL) && (pending_end <= 64'h1000000);
     // Keep the credit decision registered so the reservation counter does
     // not feed the request/counter clock enables on the same cycle.
     // The final accepted request clears this registered flag.  Keeping the
@@ -103,7 +105,8 @@ module scanout_prefetch_reader #(
                     pending_base   = fb_base;
                     pending_stride = fb_stride;
                     pending_end    = (fb_base as 64) + (fb_stride as 64)
-                        * ((HEIGHT as 64) - 64'd1) + (WIDTH as 64) * 64'd4;
+                        * ((HEIGHT as 64) - 64'd1)
+                        + (WIDTH as 64) * (BYTES_PER_PIXEL as 64);
                     config_pending = 1;
                 } else {
                     config_pending = 0;

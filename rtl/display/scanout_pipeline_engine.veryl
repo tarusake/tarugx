@@ -6,6 +6,8 @@ module scanout_pipeline_engine #(
     param WIDTH      : u32 = if VIDEO_1080P ? 1920 : 640,
     param HEIGHT     : u32 = if VIDEO_1080P ? 1080 : 480,
     param INDEX_WIDTH: u32 = if VIDEO_1080P ? 18 : 16,
+    param BYTES_PER_PIXEL: u32 = if VIDEO_1080P ? 2 : 4,
+    param PIXELS_PER_BEAT: u32 = if VIDEO_1080P ? 16 : 8,
 ) (
     mem_clk       : input  'mem   clock     ,
     mem_rst_n     : input  'mem   reset     ,
@@ -57,7 +59,7 @@ module scanout_pipeline_engine #(
         }
     }
     inst reader: scanout_prefetch_reader #(
-        WIDTH, HEIGHT, INDEX_WIDTH,
+        WIDTH, HEIGHT, INDEX_WIDTH, BYTES_PER_PIXEL, PIXELS_PER_BEAT,
     ) (
         clk  : mem_clk  ,
         rst_n: mem_rst_n,
@@ -97,7 +99,7 @@ module scanout_pipeline_engine #(
         dst_data    : pop_data                           ,
     );
     inst display: framebuffer_display #(
-        VIDEO_1080P, WIDTH, HEIGHT, INDEX_WIDTH,
+        VIDEO_1080P, WIDTH, HEIGHT, INDEX_WIDTH, PIXELS_PER_BEAT,
     ) (
         clk           : pixel_clk  ,
         rst_n         : pixel_rst_n,

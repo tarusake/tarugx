@@ -24,7 +24,7 @@ module framebuffer_display_consumes_full_1080p_frame {
     initial {
         settings = {2'b01, 24'b0};
         in_valid = 1;
-        in_data  = {1'b0, 18'b0, 256'h0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00_0055aa00};
+        in_data  = {1'b0, 18'b0, 256'hf800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800_f800};
         rst.assert();
         for line in 0..1125 {
             for pixel in 0..2200 {
@@ -36,15 +36,15 @@ module framebuffer_display_consumes_full_1080p_frame {
                 }
                 // Video outputs are registered as a complete bus. Drive the
                 // current FIFO beat, advance the clock, then inspect the
-                // corresponding output pixel. Ready is prepared at pixel 6
-                // and remains asserted while timing advances through pixel 7.
+                // corresponding output pixel. Ready is prepared at pixel 14
+                // and remains asserted while timing advances through pixel 15.
                 if (pixel <: 1920) && (line <: 1080) {
-                    in_data[273:256] = (line * 240 + pixel / 8) as 18;
+                    in_data[273:256] = (line * 120 + pixel / 16) as 18;
                 }
                 clk.next(1);
                 if (pixel <: 1920) && (line <: 1080) {
-                    $assert(de && rgb == 24'h55aa00);
-                    $assert(in_ready == ((pixel % 8) == 6));
+                    $assert(de && rgb == 24'hff0000);
+                    $assert(in_ready == ((pixel % 16) == 14));
                 } else {
                     $assert(!de && rgb == 0 && !in_ready);
                 }

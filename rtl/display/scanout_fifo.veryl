@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// FWFT FIFO: error bit, frame beat index, eight XRGB8888 pixels.
+/// FWFT FIFO: error bit, frame beat index, and one 256-bit packed-pixel beat.
 /// Both domains must reset together; the caller must synchronize reset release.
 module scanout_fifo #(
     param DEPTH      : u32 = 512,
