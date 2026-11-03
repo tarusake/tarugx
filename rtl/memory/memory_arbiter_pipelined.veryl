@@ -33,8 +33,8 @@ module memory_arbiter_pipelined (
     mem_rsp_error : input  logic     ,
 ) {
     var issuing       : logic         ;
-    var prefer_scan   : logic         ;
     var cpu_burst     : logic<3>      ;
+    var urgent_grants : logic<2>      ;
     var owners        : logic      [8];
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -46,8 +46,9 @@ module memory_arbiter_pipelined (
     // Keep round-robin safety below the scanout watermark.  With FIFO
     // headroom, group at most four non-scanout requests before one scan read.
     let burst_limit   : logic = cpu_burst >= 3'd4;
+    let urgent_limit  : logic = urgent_grants >= 2'd3;
     let choose_scan   : logic = scan_valid && (!cpu_valid
-        || (if scan_urgent ? prefer_scan : burst_limit));
+        || (if scan_urgent ? !urgent_limit : burst_limit));
     let capacity      : logic          = !issuing && (count <: 8);
     assign scan_ready     = capacity && choose_scan;
     assign cpu_ready      = capacity && !choose_scan;
@@ -67,8 +68,8 @@ module memory_arbiter_pipelined (
     always_ff {
         if_reset {
             issuing        = 0;
-            prefer_scan    = 1;
             cpu_burst      = 0;
+            urgent_grants  = 0;
             owners         = '{default: '0};
             head           = 0;
             tail           = 0;
@@ -89,13 +90,17 @@ module memory_arbiter_pipelined (
                 issuing      = 1;
                 owners[tail] = choose_scan;
                 tail         = tail + 3'd1;
-                prefer_scan  = !choose_scan;
                 if choose_scan {
                     cpu_burst = 0;
+                    if scan_urgent && !urgent_limit {
+                        urgent_grants = urgent_grants + 2'd1;
+                    }
                 } else if scan_valid {
                     cpu_burst = cpu_burst + 3'd1;
+                    urgent_grants = 0;
                 } else {
                     cpu_burst = 0;
+                    urgent_grants = 0;
                 }
                 mem_write    = !choose_scan && cpu_write;
                 mem_addr     = if choose_scan ? scan_addr : cpu_addr;
