@@ -6,12 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
+#include <linux/dma-heap.h>
 
 static uint32_t color(unsigned band)
 {
@@ -56,6 +58,11 @@ int main(int argc, char **argv)
 	struct drm_mode_create_dumb create = { .bpp = 32 };
 	struct drm_mode_map_dumb map = {0};
 	struct drm_mode_destroy_dumb destroy = {0};
+	struct drm_gem_close import_close = {0};
+	struct dma_heap_allocation_data heap_alloc = {
+		.len = 4096,
+		.fd_flags = O_RDWR | O_CLOEXEC,
+	};
 	drmModeRes *resources = NULL;
 	drmModeConnector *connector = NULL;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
@@ -70,7 +77,8 @@ int main(int argc, char **argv)
 		{900, 700, 1100, 701},
 	};
 	drmModeClip full_clip;
-	int fd = -1, rc = 1;
+	int fd = -1, heap_buffer_fd = -1, heap_fd = -1, import_fd = -1;
+	int prime_fd = -1, rc = 1;
 
 	if (argc < 2 || argc > 4) {
 		fprintf(stderr,
@@ -129,6 +137,45 @@ int main(int argc, char **argv)
 		}
 	}
 	destroy.handle = create.handle;
+	if (drmPrimeHandleToFD(fd, create.handle, DRM_CLOEXEC | DRM_RDWR,
+			       &prime_fd)) {
+		perror("export dumb buffer to PRIME fd");
+		goto out;
+	}
+	import_fd = open(argv[1], O_RDWR | O_CLOEXEC);
+	if (import_fd < 0 ||
+	    drmPrimeFDToHandle(import_fd, prime_fd, &import_close.handle)) {
+		perror("self-import PRIME fd");
+		goto out;
+	}
+	puts("DRM PRIME self-import PASS: DMA-backed dumb buffer shared to a second file");
+	heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+	if (heap_fd >= 0) {
+		uint32_t external_handle = 0;
+
+		if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &heap_alloc)) {
+			perror("allocate external dma-buf");
+			goto out;
+		}
+		heap_buffer_fd = heap_alloc.fd;
+		errno = 0;
+		if (!drmPrimeFDToHandle(import_fd, heap_buffer_fd,
+					&external_handle) || errno != EOPNOTSUPP) {
+			fprintf(stderr,
+				"external PRIME import was not rejected (errno=%d)\n",
+				errno);
+			if (external_handle) {
+				struct drm_gem_close external_close = {
+					.handle = external_handle,
+				};
+
+				drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE,
+					 &external_close);
+			}
+			goto out;
+		}
+		puts("DRM PRIME external import PASS: unsupported dma-buf rejected");
+	}
 	handles[0] = create.handle;
 	pitches[0] = create.pitch;
 	if (drmModeAddFB2(fd, create.width, create.height,
@@ -196,6 +243,16 @@ int main(int argc, char **argv)
 	}
 	rc = 0;
 out:
+	if (import_close.handle && import_fd >= 0)
+		drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE, &import_close);
+	if (prime_fd >= 0)
+		close(prime_fd);
+	if (heap_buffer_fd >= 0)
+		close(heap_buffer_fd);
+	if (heap_fd >= 0)
+		close(heap_fd);
+	if (import_fd >= 0)
+		close(import_fd);
 	if (crtc && fd >= 0)
 		drmModeSetCrtc(fd, crtc, 0, 0, 0, NULL, 0, NULL);
 	if (pixels != MAP_FAILED)

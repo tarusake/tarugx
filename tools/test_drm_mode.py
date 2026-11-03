@@ -91,6 +91,8 @@ try:
                              check=True, text=True, capture_output=True,
                              timeout=hold + 30)
         assert expected in run.stdout, run.stdout
+        assert 'DRM PRIME self-import PASS' in run.stdout, run.stdout
+        assert 'DRM PRIME external import PASS' in run.stdout, run.stdout
         runs.append(run.stdout)
         run_profiles.append((device/'update_profile').read_text().strip())
     counters = {{name: int((device/name).read_text()) for name in (

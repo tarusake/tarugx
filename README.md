@@ -129,6 +129,12 @@ KMS更新と重なった場合もfence完了を待ってから表示用のblit�
 合計480命令を6.666秒（18.00バッチ/秒、プロセスCPU 0.9%）で処理し、
 submit自体は0.017msで復帰しました。fence、VRAM読戻し、WAITなしcloseの回収を含めて
 `render_failures=0`、最大待機深度3を確認しています。
+ドライバー0.14以降は、1080p表示に使うDMA-coherent dumb bufferを標準PRIME
+dma-buf FDへexportできます。同じTaruGXの別DRM fileへself-importしてGEM handleを
+共有でき、XRGB8888とRGB565の両方で表示回帰を実機確認しました。外部デバイスの
+scatter/gather dma-bufは、現時点のDMAが安全に扱えないため`EOPNOTSUPP`で拒否します。
+DMA heapの外部dma-bufを拒否する実機回帰も含みます。同時にschedulerのrunqueue数を
+標準priority数に合わせ、probe時のpriority範囲外警告を解消しました。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、
