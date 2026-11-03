@@ -42,6 +42,9 @@ module memory_arbiter_pipelined (
     var response_data : logic<256>    ;
     var response_error: logic         ;
     let choose_scan   : logic          = scan_valid && (!cpu_valid || prefer_scan);
+    let capacity      : logic          = !issuing && (count <: 8);
+    assign scan_ready     = capacity && choose_scan;
+    assign cpu_ready      = capacity && !choose_scan;
     assign mem_valid      = issuing;
     assign scan_rsp_valid = scan_response_valid;
     assign cpu_rsp_valid  = cpu_response_valid;
@@ -53,16 +56,8 @@ module memory_arbiter_pipelined (
     let response_ready: logic = (cpu_response_valid && cpu_rsp_ready)
         || (scan_response_valid && scan_rsp_ready);
     assign mem_rsp_ready = (count != 0) && (!response_valid || response_ready);
-    let pop : logic = mem_rsp_valid && mem_rsp_ready;
-    // Refill the held command on the same edge that downstream accepts it.
-    // Ownership is still queued in admission order, so responses remain
-    // correctly routed while consecutive requests can issue every cycle.
-    let issue         : logic = issuing && mem_ready;
-    let capacity      : logic = (!issuing || issue)
-        && ((count <: 8) || pop);
-    assign scan_ready = capacity && choose_scan;
-    assign cpu_ready  = capacity && !choose_scan;
     let push: logic = (scan_valid && scan_ready) || (cpu_valid && cpu_ready);
+    let pop : logic = mem_rsp_valid && mem_rsp_ready;
     always_ff {
         if_reset {
             issuing        = 0;
@@ -80,7 +75,7 @@ module memory_arbiter_pipelined (
             mem_wdata      = 0;
             mem_wstrb      = 0;
         } else {
-            if issue {
+            if issuing && mem_ready {
                 issuing = 0;
             }
             if push {

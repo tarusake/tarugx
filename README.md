@@ -278,7 +278,11 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   優先するwatermark burst調停も試しましたが、表示中の全面DMAが164.205ms
   （DMA busy 14,663,957 cycle）へ悪化しました。従来round-robinへ戻すと
   64.314–95.812ms（DMA busy 4,320,363–7,471,855 cycle）へ回復し、失敗・flip/VBlank
-  timeoutはいずれも0でした。この方式も不採用です。`tools/test_drm_mode.py`は最後に
+  timeoutはいずれも0でした。この方式も不採用です。DDR調停器自身を毎クロック
+  連続発行できるようにする方式も試しましたが、表示中の全面DMAは
+  63.934–95.838ms（DMA busy 4,178,204–7,464,452 cycle）で改善せず、100MHzの
+  setup余裕が+0.068nsから+0.001nsへ減少したため不採用としました。
+  `tools/test_drm_mode.py`は最後に
   表示中の全面dirtyを行い、`active_full`として継続測定します。
   1080p SRAM実験後も作業ツリードライバーで表示を続ける場合は
   `python3 tools/test_drm_mode.py --keep-driver`を使います。既定では従来どおり試験前の
