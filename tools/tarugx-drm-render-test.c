@@ -134,9 +134,12 @@ int main(int argc, char **argv)
     if (expect_errno(fd, DRM_IOCTL_TARUGX_FILL, &invalid, EINVAL))
         goto out_other;
     if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram)) {
-        perror("DRM_IOCTL_TARUGX_VRAM_CREATE");
-        goto out_other;
-    }
+        if (errno != ENOSPC) {
+            perror("DRM_IOCTL_TARUGX_VRAM_CREATE");
+            goto out_other;
+        }
+        puts("VRAM GEM SKIP: no CPU-mappable VRAM remains in this mode");
+    } else {
     vram_map = mmap(NULL, vram.size, PROT_READ | PROT_WRITE, MAP_SHARED,
                     fd, (off_t)vram.mmap_offset);
     if (vram_map == MAP_FAILED) {
@@ -207,6 +210,7 @@ int main(int argc, char **argv)
     }
     puts("VRAM GEM PASS: mmap/readback, DRM framebuffer, async fill/blit, "
          "close lifetime, ENOSPC and reuse");
+    }
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
         perror("DRM_IOCTL_TARUGX_FILL");
         goto out_other;

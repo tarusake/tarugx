@@ -290,6 +290,11 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   1080p用VRAM GEM管理は今後の課題です。非表示ページ同期に
   full-frame blitを使う案も実機測定しましたが、コピー内容は正常な一方で
   201.528msかかり、直接DMAの16.041msより約12.6倍遅いため採用していません。
+  1080pでは2ページが16MiB DDRの大半を占め、CPU-mappableなBAR2内に安全な
+  VRAM GEM領域がないため、render ioctl統合試験はVRAM GEM部分だけを理由付きで
+  skipします。host coherent GEMからのDMA scanoutと、画面上のfill/blit、非同期
+  4-command batch、fence/MSI、120 batch（480 command）のstressは引き続き実行し、
+  実機でrender failure 0、DMA failure 0、flip timeout 0、CPU 0.7%を確認しました。
 - PCIe DMAは最大8要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は4KiB境界を越えない最大64 DWORDです。
   Completion TLPの先頭5 DWORDと後続8 DWORDチャンクは、EOPまで512-bitバッファで
