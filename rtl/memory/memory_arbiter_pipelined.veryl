@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Round-robin admission, eight ordered ownership slots, one held command.
+/// FIFO-aware admission, eight ordered ownership slots, one held command.
 module memory_arbiter_pipelined (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
@@ -14,6 +14,7 @@ module memory_arbiter_pipelined (
     cpu_rsp_data  : output logic<256>,
     cpu_rsp_error : output logic     ,
     scan_valid    : input  logic     ,
+    scan_urgent   : input  logic     ,
     scan_ready    : output logic     ,
     scan_addr     : input  logic<24> ,
     scan_rsp_valid: output logic     ,
@@ -33,6 +34,7 @@ module memory_arbiter_pipelined (
 ) {
     var issuing       : logic         ;
     var prefer_scan   : logic         ;
+    var cpu_burst     : logic<3>      ;
     var owners        : logic      [8];
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -41,7 +43,11 @@ module memory_arbiter_pipelined (
     var scan_response_valid: logic    ;
     var response_data : logic<256>    ;
     var response_error: logic         ;
-    let choose_scan   : logic          = scan_valid && (!cpu_valid || prefer_scan);
+    // Keep round-robin safety below the scanout watermark.  With FIFO
+    // headroom, group at most four non-scanout requests before one scan read.
+    let burst_limit   : logic = cpu_burst >= 3'd4;
+    let choose_scan   : logic = scan_valid && (!cpu_valid
+        || (if scan_urgent ? prefer_scan : burst_limit));
     let capacity      : logic          = !issuing && (count <: 8);
     assign scan_ready     = capacity && choose_scan;
     assign cpu_ready      = capacity && !choose_scan;
@@ -62,6 +68,7 @@ module memory_arbiter_pipelined (
         if_reset {
             issuing        = 0;
             prefer_scan    = 1;
+            cpu_burst      = 0;
             owners         = '{default: '0};
             head           = 0;
             tail           = 0;
@@ -83,6 +90,13 @@ module memory_arbiter_pipelined (
                 owners[tail] = choose_scan;
                 tail         = tail + 3'd1;
                 prefer_scan  = !choose_scan;
+                if choose_scan {
+                    cpu_burst = 0;
+                } else if scan_valid {
+                    cpu_burst = cpu_burst + 3'd1;
+                } else {
+                    cpu_burst = 0;
+                }
                 mem_write    = !choose_scan && cpu_write;
                 mem_addr     = if choose_scan ? scan_addr : cpu_addr;
                 mem_wdata    = if choose_scan ? 256'b0 : cpu_wdata;

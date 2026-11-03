@@ -36,7 +36,7 @@ module pcie_memory_pipeline_tb;
   .fill_start(queued_fill_start),.fill_command(queued_fill_command),
   .blit_start(queued_blit_start),.blit_command(queued_blit_command),
   .completion_valid(queue_completion_valid),.completion_error(queue_completion_error));
- logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=1,scan_rsp_error;
+ logic scan_valid=0,scan_urgent=1,scan_ready,scan_rsp_valid,scan_rsp_ready=1,scan_rsp_error;
  logic [23:0] scan_addr=4096;logic [255:0] scan_rsp_data;
  logic fill_mem_valid=0,fill_mem_ready,fill_mem_rsp_valid,fill_mem_rsp_ready=1,fill_mem_rsp_error;
  logic [23:0] fill_mem_addr=0;logic [255:0] fill_mem_wdata=0;logic [31:0] fill_mem_wstrb=0;
@@ -49,7 +49,7 @@ module pcie_memory_pipeline_tb;
   .cpu_request({fb_req_write,fb_req_addr,fb_req_wdata,fb_req_wstrb}),
   .cpu_rsp_valid(fb_rsp_valid),.cpu_rsp_ready(fb_rsp_ready),.cpu_response({fb_rsp_error,fb_rsp_rdata}),
   .mem_clk(mem_clk),.mem_rst_n(mem_rst_n),
-  .scan_valid(scan_valid),.scan_ready(scan_ready),.scan_addr(scan_addr),
+  .scan_valid(scan_valid),.scan_urgent(scan_urgent),.scan_ready(scan_ready),.scan_addr(scan_addr),
   .scan_rsp_valid(scan_rsp_valid),.scan_rsp_ready(scan_rsp_ready),.scan_rsp_data(scan_rsp_data),.scan_rsp_error(scan_rsp_error),
   .fill_valid(fill_mem_valid),.fill_ready(fill_mem_ready),.fill_addr(fill_mem_addr),
   .fill_wdata(fill_mem_wdata),.fill_wstrb(fill_mem_wstrb),.fill_rsp_valid(fill_mem_rsp_valid),
