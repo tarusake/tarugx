@@ -139,6 +139,10 @@ dma-bufは`EINVAL`で拒否し、PCIe DMAに不正な単一アドレスを渡し
 DMA heapから確保したXRGB8888 8,294,400 byteとRGB565 4,149,248 byteを外部PRIME
 framebufferとして登録し、TaruGXのPCIe DMAでVRAMへ転送して1080p表示できることを
 確認しました。各モードでDMA 7回、page flip 5回、全failure／timeout 0です。
+さらに未完了の全面blit fenceを`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`で外部framebufferの
+WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は完了となることを
+確認しました。KMSがPRIME reservation fenceを待ってからPCIe DMAを始めるため、
+外部producerが書込み中の画像を途中で表示しません。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、

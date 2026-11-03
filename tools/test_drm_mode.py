@@ -58,7 +58,7 @@ try:
         'cc', '-O2', '-Wall', '-Wextra', '-Werror',
         '-I/usr/include/libdrm', str(work/'tarugx-drm-mode-test.c'),
         '-ldrm', '-o', str(test)
-    ], check=True, timeout=45)
+    ], check=True, timeout=45, text=True, capture_output=True)
     # Transient desktop/Xorg units may already have been garbage-collected
     # after a failed prior run. Stop each producer idempotently.
     for name in services:
@@ -93,6 +93,7 @@ try:
                              timeout=hold + 30)
         assert expected in run.stdout, run.stdout
         assert 'DRM PRIME self-import PASS' in run.stdout, run.stdout
+        assert 'DRM PRIME implicit sync PASS' in run.stdout, run.stdout
         assert 'DRM PRIME external scanout PASS' in run.stdout, run.stdout
         runs.append(run.stdout)
         run_profiles.append((device/'update_profile').read_text().strip())

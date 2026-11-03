@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,17 @@
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
+
+#include "tarugx_drm.h"
+
+#ifndef DMA_BUF_IOCTL_IMPORT_SYNC_FILE
+struct dma_buf_import_sync_file {
+	uint32_t flags;
+	int32_t fd;
+};
+#define DMA_BUF_IOCTL_IMPORT_SYNC_FILE \
+	_IOW(DMA_BUF_BASE, 3, struct dma_buf_import_sync_file)
+#endif
 
 static uint32_t color(unsigned band)
 {
@@ -67,6 +79,7 @@ int main(int argc, char **argv)
 	drmModeConnector *connector = NULL;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
 	uint32_t external_framebuffer = 0, external_handle = 0;
+	uint32_t render_handle = 0, render_syncobj = 0;
 	uint32_t framebuffer = 0, crtc = 0;
 	uint8_t *external_pixels = MAP_FAILED;
 	uint8_t *pixels = MAP_FAILED;
@@ -80,7 +93,7 @@ int main(int argc, char **argv)
 	};
 	drmModeClip full_clip;
 	int fd = -1, heap_buffer_fd = -1, heap_fd = -1, import_fd = -1;
-	int prime_fd = -1, rc = 1;
+	int prime_fd = -1, render_sync_file = -1, rc = 1;
 
 	if (argc < 2 || argc > 4) {
 		fprintf(stderr,
@@ -214,12 +227,80 @@ int main(int argc, char **argv)
 				goto out;
 			}
 		}
+		{
+			struct drm_tarugx_vram_create render_vram = {
+				.width = create.width,
+				.height = create.height,
+			};
+			struct drm_tarugx_submit_gem render_submit = {
+				.count = 1,
+				.flags = DRM_TARUGX_SUBMIT_ASYNC,
+				.commands = {{
+					.opcode = DRM_TARUGX_OP_BLIT,
+					.width = create.width,
+					.height = create.height,
+				}},
+			};
+			struct dma_buf_import_sync_file import_sync = {
+				.flags = DMA_BUF_SYNC_WRITE,
+			};
+			struct pollfd pending = { .events = POLLIN };
+
+			if (drmIoctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE,
+				     &render_vram)) {
+				perror("create implicit-sync render surface");
+				goto out;
+			}
+			render_handle = render_vram.handle;
+			if (drmSyncobjCreate(fd, 0, &render_syncobj)) {
+				perror("create implicit-sync syncobj");
+				goto out;
+			}
+			render_submit.handle = render_handle;
+			render_submit.out_syncobj = render_syncobj;
+			if (drmIoctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM,
+				     &render_submit)) {
+				perror("submit implicit-sync producer");
+				goto out;
+			}
+			if (drmSyncobjExportSyncFile(fd, render_syncobj,
+						 &render_sync_file)) {
+				perror("export implicit-sync fence");
+				goto out;
+			}
+			pending.fd = render_sync_file;
+			if (poll(&pending, 1, 0) != 0) {
+				fputs("implicit-sync producer completed too early\n",
+				      stderr);
+				goto out;
+			}
+			import_sync.fd = render_sync_file;
+			if (ioctl(heap_buffer_fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE,
+				  &import_sync)) {
+				perror("import implicit-sync fence into dma-buf");
+				goto out;
+			}
+		}
 		if (drmModeSetCrtc(fd, crtc, external_framebuffer, 0, 0,
 				   &connector->connector_id, 1,
 				   &connector->modes[0])) {
 			perror("external PRIME modeset");
 			goto out;
 		}
+		{
+			struct pollfd completed = {
+				.fd = render_sync_file,
+				.events = POLLIN,
+			};
+
+			if (poll(&completed, 1, 0) != 1 ||
+			    !(completed.revents & POLLIN)) {
+				fputs("external modeset did not wait for dma-buf fence\n",
+				      stderr);
+				goto out;
+			}
+		}
+		puts("DRM PRIME implicit sync PASS: modeset waited for imported write fence");
 		puts("DRM PRIME external scanout PASS: contiguous dma-buf uploaded by PCIe DMA");
 	}
 	handles[0] = create.handle;
@@ -291,6 +372,15 @@ int main(int argc, char **argv)
 out:
 	if (import_close.handle && import_fd >= 0)
 		drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE, &import_close);
+	if (render_sync_file >= 0)
+		close(render_sync_file);
+	if (render_syncobj && fd >= 0)
+		drmSyncobjDestroy(fd, render_syncobj);
+	if (render_handle && fd >= 0) {
+		struct drm_gem_close render_close = { .handle = render_handle };
+
+		drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &render_close);
+	}
 	if (prime_fd >= 0)
 		close(prime_fd);
 	if (heap_buffer_fd >= 0)
