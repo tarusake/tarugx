@@ -93,7 +93,7 @@ struct drm_tarugx_submit_gem2 {
 	__u32 handle;
 	__u32 count;
 	__u32 flags;
-	__u32 fence;
+	__u32 pad;
 	__u32 in_syncobj;
 	__u32 out_syncobj;
 	__u64 in_point;

@@ -25,6 +25,7 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
+#include <drm/gpu_scheduler.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
@@ -41,6 +42,8 @@ module_param(dma_upload, bool, 0644);
 MODULE_PARM_DESC(dma_upload,
 		 "use full-frame DMA uploads when supported by the FPGA (default: true)");
 
+#define TGX_RENDER_ENTITIES 4
+
 struct tarugx {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
@@ -49,6 +52,7 @@ struct tarugx {
 	void __iomem *regs, *vram;
 	struct mutex dma_lock;
 	struct mutex render_lock;
+	struct mutex render_submit_lock;
 	struct mutex vram_lock;
 	struct drm_mm vram_mm;
 	void *dma_staging;
@@ -66,6 +70,7 @@ struct tarugx {
 	atomic64_t render_commands;
 	atomic64_t render_failures;
 	atomic64_t render_queue_peak;
+	atomic64_t render_sched_peak;
 	atomic64_t direct_scanouts;
 	atomic64_t last_update_ns;
 	atomic64_t last_conversion_ns;
@@ -92,6 +97,13 @@ struct tarugx {
 	u32 render_async_commands;
 	int render_async_result;
 	struct drm_gem_object *render_async_gem;
+	struct drm_gpu_scheduler render_sched;
+	struct drm_sched_entity render_entities[TGX_RENDER_ENTITIES];
+	struct drm_gpu_scheduler *render_sched_list[1];
+	atomic_t render_sched_jobs;
+	atomic_t render_entity_next;
+	u32 render_entity_count;
+	bool render_sched_initialized;
 	const struct drm_display_mode *mode;
 	u32 width;
 	u32 height;
@@ -110,6 +122,17 @@ struct tarugx_vram_object {
 	struct drm_mm_node node;
 	u32 width;
 	u32 height;
+	u32 pitch;
+};
+
+struct tarugx_sched_job {
+	struct drm_sched_job base;
+	struct tarugx *tgx;
+	struct drm_gem_object *gem;
+	struct dma_fence *input_fence;
+	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
+	u32 count;
+	u32 vram_base;
 	u32 pitch;
 };
 
@@ -491,6 +514,8 @@ static int tgx_execute_commands(struct tarugx *tgx,
 	u32 fence = 0, status, submitted = 0;
 	int ret = 0, wait_ret;
 
+	if (async_owner && atomic_read(&tgx->render_sched_jobs))
+		return -EBUSY;
 	if (tgx->render_async_valid) {
 		/* A binary syncobj waiter does not call the private WAIT ioctl.
 		 * Let the same owner reap its completed record while submitting the
@@ -558,6 +583,49 @@ static int tgx_execute_commands(struct tarugx *tgx,
 	*fence_out = fence;
 	return 0;
 }
+
+static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
+{
+	struct tarugx_sched_job *job =
+		container_of(sched_job, struct tarugx_sched_job, base);
+	struct tarugx *tgx = job->tgx;
+	u32 fence;
+	int idx, ret;
+
+	ret = job->input_fence ? dma_fence_get_status(job->input_fence) : 1;
+	if (ret < 0) {
+		/* A failed producer must not allow dependent writes to execute. */
+	} else if (!drm_dev_enter(&tgx->drm, &idx)) {
+		ret = -ENODEV;
+	} else {
+		mutex_lock(&tgx->render_lock);
+		ret = tgx_execute_commands(tgx, job->commands, job->count,
+					   job->vram_base, job->pitch, NULL,
+					   &fence);
+		mutex_unlock(&tgx->render_lock);
+		drm_dev_exit(idx);
+	}
+	if (ret)
+		dma_fence_set_error(&sched_job->s_fence->finished, ret);
+	return NULL;
+}
+
+static void tgx_sched_free_job(struct drm_sched_job *sched_job)
+{
+	struct tarugx_sched_job *job =
+		container_of(sched_job, struct tarugx_sched_job, base);
+
+	drm_sched_job_cleanup(sched_job);
+	dma_fence_put(job->input_fence);
+	drm_gem_object_put(job->gem);
+	atomic_dec(&job->tgx->render_sched_jobs);
+	kfree(job);
+}
+
+static const struct drm_sched_backend_ops tgx_sched_ops = {
+	.run_job = tgx_sched_run_job,
+	.free_job = tgx_sched_free_job,
+};
 
 static int tgx_execute_screen_commands(struct tarugx *tgx,
 				       const struct drm_tarugx_command *commands,
@@ -910,6 +978,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		if (ret)
 			goto out_resv;
 	}
+	mutex_lock(&tgx->render_submit_lock);
 	mutex_lock(&tgx->render_lock);
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
 				   object->node.start, object->pitch,
@@ -941,6 +1010,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 		}
 	}
 	mutex_unlock(&tgx->render_lock);
+	mutex_unlock(&tgx->render_submit_lock);
 	if (!ret)
 		tgx_update_sync_fence(tgx);
 out_resv:
@@ -964,41 +1034,163 @@ out_syncobj:
 static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
 				 struct drm_file *file)
 {
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
 	struct drm_tarugx_submit_gem2 *args = data;
-	struct drm_tarugx_submit_gem submit = {
-		.handle = args->handle,
-		.count = args->count,
-		.flags = args->flags,
-		.out_syncobj = args->out_syncobj,
-		.out_point = args->out_point,
-	};
+	struct tarugx_sched_job *job = NULL;
+	struct tarugx_vram_object *object;
+	struct drm_gem_object *gem = NULL;
+	struct drm_syncobj *out_syncobj = NULL;
+	struct dma_fence_chain *out_chain = NULL;
 	struct dma_fence *in_fence = NULL;
-	u32 i;
-	int status, ret;
+	struct dma_fence *dependency;
+	struct dma_fence *finished;
+	bool gate_held = false, job_initialized = false, resv_locked = false;
+	u32 entity_index, i;
+	int ret;
 
-	if (args->flags != DRM_TARUGX_SUBMIT_ASYNC ||
-	    (args->in_point && !args->in_syncobj))
+	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS || args->pad ||
+	    args->flags != DRM_TARUGX_SUBMIT_ASYNC ||
+	    (args->in_point && !args->in_syncobj) ||
+	    (args->out_point && !args->out_syncobj))
 		return -EINVAL;
-	for (i = 0; i < DRM_TARUGX_MAX_COMMANDS; i++)
-		submit.commands[i] = args->commands[i];
+	if (!tgx->render_sched_initialized)
+		return -EOPNOTSUPP;
+	if (args->out_syncobj) {
+		out_syncobj = drm_syncobj_find(file, args->out_syncobj);
+		if (!out_syncobj)
+			return -ENOENT;
+	}
+	gem = drm_gem_object_lookup(file, args->handle);
+	if (!gem) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (gem->funcs != &tgx_vram_object_funcs) {
+		ret = -EINVAL;
+		goto out;
+	}
+	object = container_of(gem, struct tarugx_vram_object, base);
+	for (i = 0; i < args->count; i++) {
+		if (!tgx_command_valid(&args->commands[i], object->width,
+				       object->height)) {
+			ret = -EINVAL;
+			goto out;
+		}
+	}
+	job = kzalloc(sizeof(*job), GFP_KERNEL);
+	if (!job) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	job->tgx = tgx;
+	job->gem = gem;
+	job->count = args->count;
+	job->vram_base = object->node.start;
+	job->pitch = object->pitch;
+	for (i = 0; i < args->count; i++)
+		job->commands[i] = args->commands[i];
+	entity_index = (u32)atomic_inc_return(&tgx->render_entity_next) - 1;
+	entity_index %= tgx->render_entity_count;
+	ret = drm_sched_job_init(&job->base,
+				 &tgx->render_entities[entity_index], 1, tgx);
+	if (ret)
+		goto out;
+	job_initialized = true;
 	if (args->in_syncobj) {
 		ret = drm_syncobj_find_fence(file, args->in_syncobj,
 					     args->in_point, 0, &in_fence);
 		if (ret)
-			return ret;
-		ret = dma_fence_wait(in_fence, true);
+			goto out;
+		job->input_fence = dma_fence_get(in_fence);
+		/* drm_sched_job_add_dependency consumes its fence reference on
+		 * both success and failure. */
+		dependency = in_fence;
+		in_fence = NULL;
+		ret = drm_sched_job_add_dependency(&job->base, dependency);
 		if (ret)
-			goto out_fence;
-		status = dma_fence_get_status(in_fence);
-		if (status <= 0) {
-			ret = status ? status : -EIO;
-			goto out_fence;
+			goto out;
+	}
+	if (args->out_point) {
+		out_chain = dma_fence_chain_alloc();
+		if (!out_chain) {
+			ret = -ENOMEM;
+			goto out;
 		}
 	}
-	ret = tgx_ioctl_submit_gem(drm, &submit, file);
-	args->fence = submit.fence;
-out_fence:
+	mutex_lock(&tgx->render_submit_lock);
+	if (tgx->render_async_valid && tgx->render_async_owner == file) {
+		ret = tgx_reap_async(tgx, 0);
+		if (tgx->render_async_completed)
+			tgx_clear_async(tgx);
+		if (ret && ret != -EAGAIN)
+			goto out_unlock_gate;
+	}
+	if (tgx->removing) {
+		ret = -ENODEV;
+	} else if (tgx->render_async_valid) {
+		ret = -EBUSY;
+	} else {
+		i = atomic_inc_return(&tgx->render_sched_jobs);
+		if (i > atomic64_read(&tgx->render_sched_peak))
+			atomic64_set(&tgx->render_sched_peak, i);
+		gate_held = true;
+		ret = 0;
+	}
+out_unlock_gate:
+	mutex_unlock(&tgx->render_submit_lock);
+	if (ret)
+		goto out;
+	ret = dma_resv_lock_interruptible(gem->resv, NULL);
+	if (ret)
+		goto out;
+	resv_locked = true;
+	ret = drm_sched_job_add_resv_dependencies(&job->base, gem->resv,
+						  DMA_RESV_USAGE_WRITE);
+	if (ret)
+		goto out;
+	ret = dma_resv_reserve_fences(gem->resv, 1);
+	if (ret)
+		goto out;
+	drm_sched_job_arm(&job->base);
+	finished = &job->base.s_fence->finished;
+	dma_resv_add_fence(gem->resv, finished, DMA_RESV_USAGE_WRITE);
+	if (out_syncobj) {
+		if (args->out_point) {
+			drm_syncobj_add_point(out_syncobj, out_chain, finished,
+					      args->out_point);
+			out_chain = NULL;
+		} else {
+			drm_syncobj_replace_fence(out_syncobj, finished);
+		}
+	}
+	dma_resv_unlock(gem->resv);
+	resv_locked = false;
+	/* Keep the SPSC entity producer side serialized without waiting for the
+	 * hardware execution lock held by the scheduler worker. */
+	mutex_lock(&tgx->render_submit_lock);
+	drm_sched_entity_push_job(&job->base);
+	mutex_unlock(&tgx->render_submit_lock);
+	gem = NULL;
+	job = NULL;
+	job_initialized = false;
+	gate_held = false;
+	ret = 0;
+out:
+	if (resv_locked)
+		dma_resv_unlock(gem->resv);
+	if (job_initialized)
+		drm_sched_job_cleanup(&job->base);
+	if (job)
+		dma_fence_put(job->input_fence);
+	if (gate_held)
+		atomic_dec(&tgx->render_sched_jobs);
+	if (out_chain)
+		dma_fence_chain_free(out_chain);
 	dma_fence_put(in_fence);
+	drm_gem_object_put(gem);
+	kfree(job);
+	if (out_syncobj)
+		drm_syncobj_put(out_syncobj);
 	return ret;
 }
 
@@ -1174,6 +1366,16 @@ static ssize_t render_queue_peak_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(render_queue_peak);
 
+static ssize_t render_sched_peak_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+			  atomic64_read(&tgx->render_sched_peak));
+}
+static DEVICE_ATTR_RO(render_sched_peak);
+
 static ssize_t direct_scanouts_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
@@ -1285,6 +1487,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_render_commands.attr,
 	&dev_attr_render_failures.attr,
 	&dev_attr_render_queue_peak.attr,
+	&dev_attr_render_sched_peak.attr,
 	&dev_attr_direct_scanouts.attr,
 	&dev_attr_physical_pages_synced.attr,
 	&dev_attr_update_profile.attr,
@@ -2017,7 +2220,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 10,
+	.major = 0, .minor = 11,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -2027,6 +2230,54 @@ static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
 	(void)drm;
 	WARN_ON(!drm_mm_clean(&tgx->vram_mm));
 	drm_mm_takedown(&tgx->vram_mm);
+}
+
+static void tgx_scheduler_fini(void *data)
+{
+	struct tarugx *tgx = data;
+
+	if (!tgx->render_sched_initialized)
+		return;
+	tgx->render_sched_initialized = false;
+	while (tgx->render_entity_count) {
+		tgx->render_entity_count--;
+		drm_sched_entity_destroy(
+			&tgx->render_entities[tgx->render_entity_count]);
+	}
+	drm_sched_fini(&tgx->render_sched);
+}
+
+static int tgx_scheduler_init(struct tarugx *tgx)
+{
+	u32 i;
+	int ret;
+
+	tgx->render_sched_list[0] = &tgx->render_sched;
+	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL, 1,
+			     TGX_RENDER_ENTITIES,
+			     0, msecs_to_jiffies(200), NULL, NULL,
+			     "tarugx-render", tgx->drm.dev);
+	if (ret)
+		return ret;
+	for (i = 0; i < TGX_RENDER_ENTITIES; i++) {
+		ret = drm_sched_entity_init(&tgx->render_entities[i],
+					    DRM_SCHED_PRIORITY_NORMAL,
+					    tgx->render_sched_list, 1, NULL);
+		if (ret)
+			goto out_entities;
+		tgx->render_entity_count++;
+	}
+	tgx->render_sched_initialized = true;
+	return 0;
+
+out_entities:
+	while (tgx->render_entity_count) {
+		tgx->render_entity_count--;
+		drm_sched_entity_destroy(
+			&tgx->render_entities[tgx->render_entity_count]);
+	}
+	drm_sched_fini(&tgx->render_sched);
+	return ret;
 }
 
 static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -2070,6 +2321,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->pdev = pdev;
 	mutex_init(&tgx->dma_lock);
 	mutex_init(&tgx->render_lock);
+	mutex_init(&tgx->render_submit_lock);
 	mutex_init(&tgx->vram_lock);
 	spin_lock_init(&tgx->render_fence_lock);
 	tgx->render_fence_context = dma_fence_context_alloc(1);
@@ -2119,6 +2371,15 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->render_fence = readl(tgx->regs + TGX_REG_QUEUE_COMPLETED);
 	dev_info(&pdev->dev, "2D render queue %s\n",
 		 tgx->render_available ? "available" : "unavailable");
+	if (tgx->render_available) {
+		ret = tgx_scheduler_init(tgx);
+		if (ret)
+			return ret;
+		ret = devm_add_action_or_reset(&pdev->dev, tgx_scheduler_fini,
+					       tgx);
+		if (ret)
+			return ret;
+	}
 	pci_set_drvdata(pdev, tgx);
 	ret = devm_device_add_groups(&pdev->dev, tgx_groups);
 	if (ret)
@@ -2169,6 +2430,7 @@ static void tgx_stop_waiters(struct tarugx *tgx)
 	tgx_signal_sync_fence(tgx, -ENODEV);
 	wake_up_all(&tgx->render_wait);
 	wake_up_all(&tgx->vblank_wait);
+	tgx_scheduler_fini(tgx);
 }
 
 static void tgx_remove(struct pci_dev *pdev)
