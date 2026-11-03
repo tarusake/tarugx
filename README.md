@@ -258,11 +258,13 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   version 1.2を検出すると1920×1080を優先モードとして公開し、8,294,400 byteの
   XRGB8888 dumb bufferをPCIe DMAで内部16MiB DDRへ転送します。専用実機試験で
   `dma_uploads=1`、DMA失敗0、flip timeout 0、6色帯のHDMI画像を確認しました。
-  同じ8,294,400 byteのmodesetは30.355ms（CPU stagingコピー込み、約273MB/s）、
-  FPGA DMA busyは1,538,605 cycle（100MHzで15.386ms）でした。
+  当初はCPU shadowからcoherent stagingへのコピーを含めて30.355ms（約273MB/s）
+  でしたが、version 1.2ではdumb buffer自体をcoherent GEMにしてFPGAへ直接渡し、
+  16.041ms（約517MB/s、約62fps相当）へ47%短縮しました。FPGA DMA busyは
+  1,538,936 cycle（100MHzで15.389ms）で、ホスト側の余分な全面コピーはありません。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とし、
   現時点のdamage更新は安全な全面DMAへ昇格します。したがって表示は正しいものの、
-  更新性能と1080p用VRAM GEM管理は今後の課題です。
+  damageの部分DMA化と1080p用VRAM GEM管理は今後の課題です。
 - PCIe DMAは最大8要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は4KiB境界を越えない最大64 DWORDです。
   32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
