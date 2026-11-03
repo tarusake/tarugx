@@ -20,12 +20,32 @@ USER_CODE = '0x54474631'
 PREPARE = r"""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import time
 endpoint = Path('/sys/bus/pci/devices')/ENDPOINT
 assert endpoint.resolve(strict=True).name == ENDPOINT, 'Endpoint missing'
 assert endpoint.joinpath('vendor').read_text().strip() == '0x22c2', 'Unexpected vendor'
 assert endpoint.joinpath('device').read_text().strip() == '0x1100', 'Unexpected device'
+module_copy = Path('/run/tarugx-sram-update.ko')
+worktree_module = Path('/run/tarugx-worktree/tarugx.ko')
+installed_module = Path(subprocess.run(
+    ['modinfo', '-n', 'tarugx'], check=True, capture_output=True, text=True
+).stdout.strip())
+loaded_version = Path('/sys/module/tarugx/srcversion').read_text().strip()
+module_source = None
+for candidate in (worktree_module, installed_module):
+    if not candidate.is_file():
+        continue
+    candidate_version = subprocess.run(
+        ['modinfo', '-F', 'srcversion', str(candidate)], check=True,
+        capture_output=True, text=True
+    ).stdout.strip()
+    if candidate_version == loaded_version:
+        module_source = candidate
+        break
+assert module_source is not None, 'Loaded driver module file could not be identified'
+shutil.copy2(module_source, module_copy)
 subprocess.run(['systemctl', 'stop', 'tarugx-main-display'], check=True)
 try:
     # The boot service starts collected transient units.  They can outlive a
@@ -44,10 +64,10 @@ try:
         time.sleep(0.05)
     assert not endpoint.exists(), 'Endpoint removal failed'
 except Exception:
-    subprocess.run(['modprobe', 'tarugx'], check=False)
+    subprocess.run(['insmod', str(module_copy)], check=False)
     subprocess.run(['systemctl', 'start', 'tarugx-main-display'], check=False)
     raise
-print(json.dumps({'removed': True}))
+print(json.dumps({'removed': True, 'module_source': str(module_source)}))
 """
 
 RESTORE = r"""
@@ -60,6 +80,7 @@ assert root.resolve(strict=True).name == ROOT_PORT, 'Root port missing'
 root.joinpath('power/control').write_text('on')
 root.joinpath('rescan').write_text('1')
 endpoint = Path('/sys/bus/pci/devices')/ENDPOINT
+module_copy = Path('/run/tarugx-sram-update.ko')
 deadline = time.monotonic()+10
 while not endpoint.exists() and time.monotonic() < deadline:
     time.sleep(0.5)
@@ -67,11 +88,22 @@ assert endpoint.exists(), 'Endpoint did not enumerate'
 with endpoint.joinpath('config').open('rb', buffering=0) as f:
     ident = int.from_bytes(f.read(4), 'little')
 assert ident == IDENT, 'Unexpected endpoint ID'
-subprocess.run(['modprobe', 'tarugx'], check=True)
+# PCI modalias handling may auto-bind the installed module during rescan.
+# Replace only that verified TaruGX binding with the exact module saved before
+# reconfiguration, so a worktree driver is never silently downgraded.
+if endpoint.joinpath('driver').exists():
+    driver = endpoint.joinpath('driver').resolve(strict=True)
+    assert driver.name == 'tarugx', 'Unexpected auto-bound driver'
+    driver.joinpath('unbind').write_text(ENDPOINT)
+if Path('/sys/module/tarugx').exists():
+    subprocess.run(['modprobe', '-r', 'tarugx'], check=True)
+assert module_copy.is_file(), 'Saved driver module is missing'
+subprocess.run(['insmod', str(module_copy)], check=True)
 assert endpoint.joinpath('driver').resolve(strict=True).name == 'tarugx', 'Driver bind failed'
 subprocess.run(['systemctl', 'start', 'tarugx-main-display'], check=True)
 service = subprocess.run(['systemctl', 'is-active', 'tarugx-main-display'],
                          check=True, text=True, capture_output=True).stdout.strip()
+module_copy.unlink()
 print(json.dumps({'id': ident, 'driver': 'tarugx', 'display': service}))
 """
 
