@@ -228,10 +228,12 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     );
     wire video_de, video_hsync, video_vsync;
     wire [23:0] video_rgb;
+    wire scan_video_de, scan_video_hsync, scan_video_vsync;
+    wire [23:0] scan_video_rgb;
     wire underflow, config_error;
     wire mem_active_buffer;
     wire [31:0] mem_active_fb_base;
-    wire pixel_vblank_toggle;
+    wire pixel_vblank_toggle, scan_vblank_toggle;
     wire [63:0] fault_snapshot;
     wire [64:0] memory_settings;
     tarugx_display_config_cdc #(.WIDTH(65)) u_memory_config_cdc (
@@ -387,18 +389,34 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(mem_rsp_data),
         .mem_rsp_error(mem_rsp_error)
     );
+`ifdef TARUGX_VIDEO_1080P
+    // The link-only 1080p image must not clock the fixed 640x480 scanout at
+    // 148 MHz.  Remove it entirely and leave the DDR scan port idle so timing
+    // analysis measures only the physical 1080p output path.
+    assign scan_valid = 1'b0;
+    assign scan_addr = 24'b0;
+    assign scan_rsp_ready = 1'b1;
+    assign scan_urgent = 1'b0;
+    assign underflow = 1'b0;
+    assign config_error = 1'b0;
+    assign mem_active_buffer = 1'b0;
+    assign mem_active_fb_base = 32'b0;
+    assign fault_snapshot = 64'b0;
+`else
 `ifdef TARUGX_PIPELINED_MEMORY
     tarugx_scanout_pipeline_engine u_scanout (
 `else
     tarugx_scanout_engine u_scanout (
 `endif
-        .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]), .enable(memory_settings[64]),
+        .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
+        .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
         .config_error(config_error), .active_buffer(mem_active_buffer),
         .active_fb_base(mem_active_fb_base),
         .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
-        .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
-        .rgb(video_rgb), .underflow(underflow), .vblank_toggle(pixel_vblank_toggle),
+        .settings(video_settings),
+        .de(scan_video_de), .hsync(scan_video_hsync), .vsync(scan_video_vsync),
+        .rgb(scan_video_rgb), .underflow(underflow), .vblank_toggle(scan_vblank_toggle),
         .fault_snapshot(fault_snapshot),
         .mem_valid(scan_valid),
         .mem_ready(scan_ready),
@@ -408,6 +426,22 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(scan_rsp_data),
         .mem_rsp_error(scan_rsp_error)
     );
+`endif
+`ifdef TARUGX_VIDEO_1080P
+    wire pattern_vblank_toggle;
+    tarugx_video_test_pattern_1080p u_1080p_pattern (
+        .clk(pixel_clk), .rst_n(pixel_reset[1]),
+        .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
+        .rgb(video_rgb), .vblank_toggle(pattern_vblank_toggle)
+    );
+    assign pixel_vblank_toggle = pattern_vblank_toggle;
+`else
+    assign video_de = scan_video_de;
+    assign video_hsync = scan_video_hsync;
+    assign video_vsync = scan_video_vsync;
+    assign video_rgb = scan_video_rgb;
+    assign pixel_vblank_toggle = scan_vblank_toggle;
+`endif
     tarugx_display_config_cdc #(.WIDTH(1)) u_active_buffer_cdc (
         .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),

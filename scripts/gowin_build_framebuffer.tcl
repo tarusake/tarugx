@@ -31,6 +31,7 @@ set rom_diagnostic 0
 set raw_bar_probe 0
 set auto_rom 0
 set pipelined_memory 0
+set video_1080p 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
     set por_release_test 1
@@ -64,6 +65,9 @@ if {[info exists ::env(TARUGX_PCIE_AUTO_ROM)] && $::env(TARUGX_PCIE_AUTO_ROM) eq
 if {[info exists ::env(TARUGX_PCIE_PIPELINED_MEMORY)] && $::env(TARUGX_PCIE_PIPELINED_MEMORY) eq "1"} {
     if {!$auto_rom} { error "Pipelined memory requires auto ROM experiment" }
     set pipelined_memory 1
+}
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60"} {
+    set video_1080p 1
 }
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
@@ -125,6 +129,7 @@ foreach source [list \
 puts [exec python3 [file join $repo scripts check_gowin_csr.py] [file join $pcie_dir serdes.csr]]
 
 if {$pipelined_memory} { set output_dir [file join $repo build gowin_framebuffer_pipeline] }
+if {$video_1080p} { set output_dir [file join $repo build gowin_framebuffer_1080p] }
 
 create_project -name tarugx -dir $output_dir \
     -pn GW5AST-LV138PG484AC2/I1 -device_version B -force
@@ -169,7 +174,7 @@ add_file [file join $cam pll_init.v]
 add_file [file join $repo build gowin_ddr3_b DDR3MI.vg]
 add_file [file join $repo fpga tang_mega_138k tarugx_ddr3_wrapper.sv]
 set top_source [file join $repo fpga tang_mega_138k tarugx_framebuffer_gowin_top.sv]
-if {$recovery_experiment || $generated_no_msi || $por_release_test} {
+if {$recovery_experiment || $generated_no_msi || $por_release_test || $video_1080p} {
     set f [open $top_source r]; set top_text [read $f]; close $f
     if {$recovery_experiment} {
         set top_text [string map {"PCIE_RECOVERY_EXPERIMENT = 1'b0" "PCIE_RECOVERY_EXPERIMENT = 1'b1"} $top_text]
@@ -193,6 +198,7 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
     if {$raw_bar_probe} { set top_text "`define TARUGX_PCIE_RAW_BAR_PROBE\n$top_text" }
     if {$auto_rom} { set top_text "`define TARUGX_PCIE_AUTO_ROM\n$top_text" }
     if {$pipelined_memory} { set top_text "`define TARUGX_PIPELINED_MEMORY\n$top_text" }
+    if {$video_1080p} { set top_text "`define TARUGX_VIDEO_1080P\n$top_text" }
     set top_source [file join $output_dir tarugx_framebuffer_gowin_top.sv]
     set f [open $top_source w]; puts $f $top_text; close $f
 }
@@ -230,6 +236,22 @@ if {$recovery_experiment} {
         set kept {}
         foreach line [split $base_timing "\n"] {
             if {[string match {set_max_delay*u_pcie_debug/snapshot_cdc/*} $line]} { continue }
+            lappend kept $line
+        }
+        set base_timing [join $kept "\n"]
+    }
+    if {$video_1080p} {
+        # The physical-link test deliberately replaces and disables the DDR
+        # scanout pipeline.  Synthesis removes those blocks, so omit only the
+        # constraints whose endpoints cannot exist in this configuration.
+        set kept {}
+        foreach line [split $base_timing "\n"] {
+            if {[string match {*u_display_cdc*} $line] ||
+                [string match {*u_memory_config_cdc*} $line] ||
+                [string match {*u_active_buffer_cdc*} $line] ||
+                [string match {*u_vblank_toggle_cdc*} $line] ||
+                [string match {*u_scanout*} $line] ||
+                [string match {*fault_snapshot*} $line]} { continue }
             lappend kept $line
         }
         set base_timing [join $kept "\n"]

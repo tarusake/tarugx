@@ -34,6 +34,10 @@ export TARUGX_PCIE_RAW_BAR_PROBE=1
 export TARUGX_PCIE_AUTO_ROM=1
 export TARUGX_PCIE_PIPELINED_MEMORY=1
 
+# Regenerate the selected video PLL for every build. Generated IP is a build
+# input, so reusing an old 480p/1080p file would silently build the wrong mode.
+sh scripts/gowin_generate_video.sh
+
 gowin_sh=${GOWIN_SH:-}
 if [ -z "$gowin_sh" ]; then
     gowin_sh=$(command -v gw_sh || true)
@@ -41,6 +45,10 @@ fi
 test -n "$gowin_sh" || { echo "Set GOWIN_SH to the gw_sh executable" >&2; exit 1; }
 "$gowin_sh" scripts/gowin_build_framebuffer.tcl
 
-out=build/gowin_framebuffer_pipeline/tarugx/impl/pnr
+if [ "${TARUGX_VIDEO_MODE:-480p60}" = 1080p60 ]; then
+    out=build/gowin_framebuffer_1080p/tarugx/impl/pnr
+else
+    out=build/gowin_framebuffer_pipeline/tarugx/impl/pnr
+fi
 python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
 test -s "$out/tarugx.fs"

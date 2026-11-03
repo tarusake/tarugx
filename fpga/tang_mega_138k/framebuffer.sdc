@@ -30,7 +30,10 @@ set_false_path -to [get_pins {pcie_debug_reset*/CLEAR}]
 # These registers implement asynchronous assertion / synchronous release.
 # The final release register to functional RESET/CLEAR pins remains timed.
 set_false_path -to [get_pins {cpu_reset*/CLEAR mem_reset*/CLEAR pixel_reset*/CLEAR}]
-set_false_path -to [get_pins {u_dvi/*dvi_tx_tmds_phy_inst/reset_release*/CLEAR}]
+# OSER10 RESET follows the vendor reference PHY and is a pixel-clock-registered
+# asynchronous primitive control.  Exclude only that control route; PCLK/FCLK
+# and all encoded video data paths remain fully timed.
+set_false_path -to [get_pins {u_dvi/*dvi_tx_tmds_phy_inst/tmds_serdes_inst0/RESET}]
 # Bundled payloads settle before the synchronized toggles can be consumed.
 set_max_delay 10 -from [get_cells {u_display_cdc/held*}] -to [get_cells {u_display_cdc/dst_config*}]
 set_max_delay 10 -from [get_cells {u_memory_config_cdc/held*}] -to [get_cells {u_memory_config_cdc/dst_config*}]

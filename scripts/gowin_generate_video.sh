@@ -6,8 +6,8 @@ sample=${SIPEED_HDMI_DIR:?Set SIPEED_HDMI_DIR to the official sample directory}
 out="$repo/build/gowin_video"
 mkdir -p "$out"
 # Adapt the official Rev.B PLL generator settings. PFD must be >=19 MHz.
-# The default remains the verified 640x480 mode. 1080p60 uses 148.4375 MHz
-# pixels and 742.1875 MHz DDR, which produces 59.974747 Hz and stays within
+# The default remains the verified 640x480 mode. 1080p60 uses 148.125 MHz
+# pixels and 740.625 MHz DDR, which produces 59.848485 Hz and stays within
 # the GW5AST-138 PLL and 1.6 Gbps LVDS-TX limits.
 mode=${TARUGX_VIDEO_MODE:-480p60}
 case "$mode" in
@@ -18,10 +18,14 @@ case "$mode" in
         odiv1=10
         ;;
     1080p60)
-        mdiv=59
-        mfrac=3
-        odiv0=10
-        odiv1=2
+        # 50 / 2 * 29.625 = 740.625 MHz VCO.  Divide by five for
+        # 148.125 MHz pixels and expose the VCO directly as the x5 DDR
+        # serializer clock.  Keeping the VCO below 1.3 GHz is required by
+        # the GW5AST PLL timing model.
+        mdiv=29
+        mfrac=5
+        odiv0=5
+        odiv1=1
         ;;
     *)
         echo "Unsupported TARUGX_VIDEO_MODE: $mode" >&2
