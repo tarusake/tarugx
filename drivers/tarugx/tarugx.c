@@ -137,6 +137,7 @@ struct tarugx_vram_object {
 #define TGX_REG_DMA_TX_STALL_CYCLES 0xdc
 #define TGX_REG_DMA_RX_STALL_CYCLES 0xe0
 #define TGX_REG_DMA_MEMORY_STALL_CYCLES 0xe4
+#define TGX_REG_DMA_ERROR_CODE 0xe8
 #define TGX_DMA_STATUS_BUSY BIT(0)
 #define TGX_DMA_STATUS_DONE BIT(1)
 #define TGX_DMA_STATUS_ERROR BIT(2)
@@ -170,8 +171,13 @@ static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 	if (ret)
 		return ret;
 	if (!(status & TGX_DMA_STATUS_DONE) ||
-	    status & (TGX_DMA_STATUS_ERROR | TGX_DMA_STATUS_REJECTED))
+	    status & (TGX_DMA_STATUS_ERROR | TGX_DMA_STATUS_REJECTED)) {
+		dev_warn_ratelimited(&tgx->pdev->dev,
+				     "DMA failed: status=%#x reason=%u\n",
+				     status,
+				     readl(tgx->regs + TGX_REG_DMA_ERROR_CODE) & 0xf);
 		return -EIO;
+	}
 	return 0;
 }
 
@@ -841,6 +847,16 @@ static ssize_t dma_profile_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(dma_profile);
 
+static ssize_t dma_error_code_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n",
+			  readl(tgx->regs + TGX_REG_DMA_ERROR_CODE) & 0xf);
+}
+static DEVICE_ATTR_RO(dma_error_code);
+
 static ssize_t render_commands_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
@@ -945,6 +961,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_dma_uploads.attr,
 	&dev_attr_dma_upload_failures.attr,
 	&dev_attr_dma_profile.attr,
+	&dev_attr_dma_error_code.attr,
 	&dev_attr_render_commands.attr,
 	&dev_attr_render_failures.attr,
 	&dev_attr_render_queue_peak.attr,

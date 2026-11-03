@@ -40,6 +40,7 @@ module bar0_tlp_bridge_end_to_end {
     var dma_busy       : logic     ;
     var dma_done       : logic     ;
     var dma_error      : logic     ;
+    var dma_error_code : logic<4>  ;
     var dma_profile    : logic<128>;
     var display_ctrl   : logic<32> ;
     var display_color  : logic<32> ;
@@ -99,6 +100,7 @@ module bar0_tlp_bridge_end_to_end {
         dma_busy         ,
         dma_done         ,
         dma_error        ,
+        dma_error_code   ,
         dma_profile      ,
         display_ctrl     ,
         display_color    ,
@@ -149,6 +151,7 @@ module bar0_tlp_bridge_end_to_end {
         dma_busy      = 0;
         dma_done      = 0;
         dma_error     = 0;
+        dma_error_code = 0;
         dma_profile   = 0;
         rst.assert();
         clk.next(1);

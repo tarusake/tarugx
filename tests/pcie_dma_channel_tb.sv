@@ -3,7 +3,7 @@
 module pcie_dma_channel_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic [15:0] requester_id=16'h0100;logic cmd_valid=0,cmd_ready;logic [63:0] cmd_host_address=0;
- logic [31:0] cmd_vram_address=0,cmd_length_bytes=0;logic busy,done,error,tx_ready=0;
+ logic [31:0] cmd_vram_address=0,cmd_length_bytes=0;logic busy,done,error,tx_ready=0;logic [3:0] error_code;
  logic [7:0] tx_valid;logic tx_sop,tx_eop;logic [255:0] tx_data;
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;logic rx_claim,rx_wait;
  logic fb_req_valid,fb_req_ready=0;logic [31:0] fb_req_addr;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;

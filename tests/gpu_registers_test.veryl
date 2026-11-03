@@ -28,6 +28,7 @@ module gpu_registers_reset_and_read {
     var dma_busy       : logic     ;
     var dma_done       : logic     ;
     var dma_error      : logic     ;
+    var dma_error_code : logic<4>  ;
     var dma_profile    : logic<128>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
@@ -79,6 +80,7 @@ module gpu_registers_reset_and_read {
         dma_busy         ,
         dma_done         ,
         dma_error        ,
+        dma_error_code   ,
         dma_profile      ,
         req_ready        ,
         rsp_valid        ,
@@ -129,6 +131,7 @@ module gpu_registers_reset_and_read {
         dma_busy      = 0;
         dma_done      = 0;
         dma_error     = 0;
+        dma_error_code = 0;
         dma_profile   = 0;
         rst.assert();
         clk.next(1);
@@ -214,6 +217,7 @@ module gpu_registers_write_byte_enable_and_commit {
     var dma_busy       : logic     ;
     var dma_done       : logic     ;
     var dma_error      : logic     ;
+    var dma_error_code : logic<4>  ;
     var dma_profile    : logic<128>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
@@ -265,6 +269,7 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy         ,
         dma_done         ,
         dma_error        ,
+        dma_error_code   ,
         dma_profile      ,
         req_ready        ,
         rsp_valid        ,
@@ -315,6 +320,7 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy      = 0;
         dma_done      = 0;
         dma_error     = 0;
+        dma_error_code = 0;
         dma_profile   = 0;
         rst.assert();
         clk.next(1);
@@ -537,9 +543,13 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy  = 0;
         dma_done  = 1;
         dma_error = 1;
+        dma_error_code = 4'd6;
         req_write = 0;
         clk.next(1);
         dma_done = 0;
+        $assert(rsp_rdata == 32'h0000_0006);
+        req_addr = 16'h00e8;
+        clk.next(1);
         $assert(rsp_rdata == 32'h0000_0006);
         req_write = 1;
         req_addr  = 16'h00d0;

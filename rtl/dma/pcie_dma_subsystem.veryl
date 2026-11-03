@@ -14,6 +14,7 @@ module pcie_dma_subsystem #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    error_code      : output logic<4>  ,
     profile         : output logic<128>,
     rx_sop          : input  logic     ,
     rx_eop          : input  logic     ,
@@ -137,7 +138,7 @@ module pcie_dma_subsystem #(
     ) (
         clk, rst_n, requester_id: requester_id_q,
         cmd_valid, cmd_ready, cmd_host_address, cmd_vram_address, cmd_length_bytes,
-        busy, done, error,
+        busy, done, error, error_code,
         tx_ready: dma_tx_ready,
         tx_valid: dma_tx_valid,
         tx_sop: dma_tx_sop,

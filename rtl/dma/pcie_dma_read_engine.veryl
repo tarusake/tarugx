@@ -18,6 +18,7 @@ module pcie_dma_read_engine #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    error_code      : output logic<4>  ,
     mrd_valid       : output logic     ,
     mrd_ready       : input  logic     ,
     mrd_host_address: output logic<64> ,
@@ -208,6 +209,7 @@ module pcie_dma_read_engine #(
             completion_words   = 0;
             done               = 0;
             error              = 0;
+            error_code         = 0;
         } else {
             done = 0;
             if fb_request_accept && !fb_response_accept {
@@ -219,6 +221,7 @@ module pcie_dma_read_engine #(
                 timeout_counter = 0;
             } else if (state == State::Run) && (timeout_counter >= TIMEOUT_CYCLES - 1) {
                 error = 1;
+                error_code = 4'd8;
                 state = State::Fail;
             } else if state == State::Run {
                 timeout_counter = timeout_counter + 1;
@@ -236,6 +239,7 @@ module pcie_dma_read_engine #(
                     completion_pending = 0;
                     fb_outstanding     = 0;
                     error              = 0;
+                    error_code         = 0;
                     state              = State::Validate;
                 }
                 State::Validate: {
@@ -243,6 +247,7 @@ module pcie_dma_read_engine #(
                         state = State::Run;
                     } else {
                         error = 1;
+                        error_code = 4'd1;
                         state = State::Fail;
                     }
                 }
@@ -281,11 +286,25 @@ module pcie_dma_read_engine #(
 
                     if completion_pending {
                         completion_pending = 0;
-                        if !completion_matched || completion_error
-                            || !completion_has_data || (completion_length == 0)
-                            || ((completion_length as 7) >: cpl_remaining)
-                            || (completion_lower != cpl_expected_lower) {
+                        if !completion_matched {
                             error = 1;
+                            error_code = 4'd2;
+                            state = State::Fail;
+                        } else if completion_error {
+                            error = 1;
+                            error_code = 4'd3;
+                            state = State::Fail;
+                        } else if !completion_has_data || (completion_length == 0) {
+                            error = 1;
+                            error_code = 4'd4;
+                            state = State::Fail;
+                        } else if (completion_length as 7) >: cpl_remaining {
+                            error = 1;
+                            error_code = 4'd5;
+                            state = State::Fail;
+                        } else if completion_lower != cpl_expected_lower {
+                            error = 1;
+                            error_code = 4'd6;
                             state = State::Fail;
                         } else {
                             chunk_pending = 1;
@@ -314,6 +333,7 @@ module pcie_dma_read_engine #(
                     if fb_response_accept {
                         if fb_rsp_error {
                             error = 1;
+                            error_code = 4'd7;
                             state = State::Fail;
                         }
                     }
@@ -340,6 +360,7 @@ module pcie_dma_read_engine #(
                 }
                 default: {
                     error = 1;
+                    error_code = 4'd9;
                     state = State::Fail;
                 }
             }

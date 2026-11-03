@@ -136,12 +136,14 @@ try:
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
                              'flip_timeouts', 'dma_upload_failures',
-                             'direct_scanouts', 'dma_profile')}}
+                             'direct_scanouts', 'dma_profile',
+                             'dma_error_code')}}
     assert int(counters['render_commands']) == 492, counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \
         (1 if gpu_version >= 0x00010001 else 0), counters
+    assert int(counters['dma_error_code']) == 0, counters
     print(run.stdout, end='')
     print(direct_output, end='')
     print(json.dumps({{'readback': hex(source),
@@ -158,6 +160,7 @@ except Exception as error:
              mmap.mmap(regs_file.fileno(), 65536, flags=mmap.MAP_SHARED,
                        prot=mmap.PROT_READ) as regs:
             diagnostics['dma_status'] = hex(struct.unpack_from('<I', regs, 0xd4)[0])
+            diagnostics['dma_error_code'] = struct.unpack_from('<I', regs, 0xe8)[0] & 0xf
     print(json.dumps({{'error_type': type(error).__name__,
                       'stage': stage,
                       'error': str(error),

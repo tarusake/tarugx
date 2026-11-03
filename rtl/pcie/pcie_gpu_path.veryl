@@ -170,6 +170,7 @@ module pcie_gpu_path (
     var dma_busy        : logic    ;
     var dma_done        : logic    ;
     var dma_error       : logic    ;
+    var dma_error_code  : logic<4> ;
     var dma_profile     : logic<128>;
     var dma_host_address: logic<64>;
     var dma_vram_address: logic<32>;
@@ -214,6 +215,7 @@ module pcie_gpu_path (
         dma_busy                                                     ,
         dma_done                                                     ,
         dma_error                                                    ,
+        dma_error_code                                               ,
         dma_profile                                                  ,
         display_ctrl                                                 ,
         display_color                                                ,
@@ -267,6 +269,7 @@ module pcie_gpu_path (
         busy: dma_busy,
         done: dma_done,
         error: dma_error,
+        error_code: dma_error_code,
         profile: dma_profile,
         rx_sop,
         rx_eop,

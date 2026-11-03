@@ -130,6 +130,7 @@ module pcie_bar0_path (
         dma_busy       : 1'b1              ,
         dma_done       : 1'b0              ,
         dma_error      : 1'b0              ,
+        dma_error_code : 4'b0              ,
         dma_profile    : 128'b0            ,
         display_ctrl                       ,
         display_color                      ,
