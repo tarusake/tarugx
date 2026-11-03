@@ -19,15 +19,16 @@ case "$mode" in
         odiv1=10
         ;;
     1080p60)
-        idiv=2
-        # 50 / 2 * 29.625 = 740.625 MHz VCO.  Divide by five for
-        # 148.125 MHz pixels and expose the VCO directly as the x5 DDR
-        # serializer clock.  Keeping the VCO below 1.3 GHz is required by
-        # the GW5AST PLL timing model.
+        # Keep the board-vendor example's 10:2 output-divider topology. The
+        # otherwise legal 5:1 topology left ODIV1 at one and produced no
+        # physical output on this board.  Reducing only the multiplier from
+        # the verified 30.0 baseline generates 148.125/740.625 MHz while
+        # preserving the known-working serializer divider.
+        idiv=1
         mdiv=29
         mfrac=5
-        odiv0=5
-        odiv1=1
+        odiv0=10
+        odiv1=2
         ;;
     1080p60_vendor)
         # Keep the Tang Mega 138K hdmi_colorbar example PLL unchanged.
