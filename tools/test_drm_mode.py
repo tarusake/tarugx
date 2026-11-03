@@ -84,12 +84,14 @@ try:
     if bpp is not None:
         test_args.append(str(bpp))
     runs = []
+    run_profiles = []
     for iteration in range(iterations):
         run = subprocess.run(test_args,
                              check=True, text=True, capture_output=True,
                              timeout=hold + 30)
         assert expected in run.stdout, run.stdout
         runs.append(run.stdout)
+        run_profiles.append((device/'update_profile').read_text().strip())
     counters = {{name: int((device/name).read_text()) for name in (
         'dma_uploads', 'dma_upload_failures', 'flip_timeouts',
         'vblank_timeouts', 'page_flips')}}
@@ -114,8 +116,10 @@ try:
     for iteration, stdout in enumerate(runs, 1):
         print(f'iteration={{iteration}}/{{iterations}}')
         print(stdout, end='')
+        print('profile='+run_profiles[iteration - 1])
     print(json.dumps({{'expected': expected, 'iterations': iterations,
                       'counters': counters,
+                      'run_profiles': run_profiles,
                       'dma_profile': dma_profile,
                       'update_profile': update_profile,
                       'physical_pages_synced': pages_synced}}))
