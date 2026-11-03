@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Temporarily load and exercise the DRM fill/blit ioctl driver on hardware."""
 
+import argparse
 import base64
 from pathlib import Path
 
@@ -15,7 +16,7 @@ def encoded(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def remote_program(files: dict[str, str]) -> str:
+def remote_program(files: dict[str, str], keep_driver: bool) -> str:
     return f"""
 import base64
 import json
@@ -29,6 +30,7 @@ import tempfile
 import time
 
 files = {files!r}
+keep_driver = {keep_driver!r}
 services = ['tarugx-main-display', 'tarugx-xorg', 'tarugx-desktop']
 was_active = {{name: subprocess.run(
     ['systemctl', 'is-active', name], capture_output=True, text=True
@@ -65,7 +67,13 @@ try:
 
     subprocess.run(['systemctl', 'stop', *services], check=True, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
-    subprocess.run(['insmod', str(work/'tarugx.ko')], check=True, timeout=30)
+    module = work/'tarugx.ko'
+    if keep_driver:
+        persistent = Path('/run/tarugx-worktree')
+        persistent.mkdir(mode=0o755, exist_ok=True)
+        module = persistent/'tarugx.ko'
+        shutil.copy2(work/'tarugx.ko', module)
+    subprocess.run(['insmod', str(module)], check=True, timeout=30)
     loaded_test_module = True
 
     device = Path('/sys/bus/pci/devices/0000:01:00.0')
@@ -199,18 +207,28 @@ except Exception as error:
                       'error': str(error),
                       'diagnostics': diagnostics}}))
 finally:
-    if loaded_test_module:
+    if loaded_test_module and not keep_driver:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
-    if not Path('/sys/module/tarugx').exists():
+    if not keep_driver and not Path('/sys/module/tarugx').exists():
         subprocess.run(['insmod', str(old_copy)], check=True, timeout=30)
-    for name in services:
-        if was_active[name]:
-            subprocess.run(['systemctl', 'start', name], check=True, timeout=120)
+    if keep_driver:
+        subprocess.run(['systemctl', 'start', 'tarugx-main-display'],
+                       check=True, timeout=120)
+    else:
+        for name in services:
+            if was_active[name]:
+                subprocess.run(['systemctl', 'start', name], check=True, timeout=120)
     shutil.rmtree(work, ignore_errors=True)
 """
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--keep-driver", action="store_true",
+        help="leave the worktree module loaded and restart the main display",
+    )
+    args = parser.parse_args()
     driver = ROOT / "drivers" / "tarugx"
     files = {
         "Makefile": encoded(driver / "Makefile"),
@@ -224,7 +242,8 @@ def main() -> None:
         ),
     }
     print(Backend().remote(
-        remote_program(files), "test DRM render ioctls", timeout=300
+        remote_program(files, args.keep_driver),
+        "test DRM render ioctls", timeout=300
     ), end="")
 
 

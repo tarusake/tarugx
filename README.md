@@ -149,10 +149,13 @@ version 1.1以降では完全なアドレスでページフリップ完了を確
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
 後者は表示サービスを一時停止し、終了時には従来モジュールとサービスを復元します。
+1080p SRAM実験後も作業版ドライバーとメイン表示を維持する場合は
+`--keep-driver`を付けます。
 
 ```sh
 python3 tools/build_remote_driver.py
 python3 tools/test_drm_render_ioctl.py
+python3 tools/test_drm_render_ioctl.py --keep-driver
 ```
 
 BAR2とDMAのDRM全面更新を同じ条件で比較する場合は、次を実行します。リポジトリの
