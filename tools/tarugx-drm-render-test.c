@@ -35,6 +35,31 @@ int main(int argc, char **argv)
     struct drm_tarugx_fill invalid = {
         .x = 639, .y = 0, .width = 2, .height = 1,
     };
+    struct drm_tarugx_submit batch = {
+        .count = 4,
+        .commands = {
+            {
+                .opcode = DRM_TARUGX_OP_FILL,
+                .dst_x = 0, .dst_y = 100, .width = 320, .height = 180,
+                .color = 0xff40c060,
+            },
+            {
+                .opcode = DRM_TARUGX_OP_BLIT,
+                .src_x = 0, .src_y = 100, .dst_x = 320, .dst_y = 100,
+                .width = 320, .height = 180,
+            },
+            {
+                .opcode = DRM_TARUGX_OP_FILL,
+                .dst_x = 0, .dst_y = 300, .width = 320, .height = 180,
+                .color = 0xffd08020,
+            },
+            {
+                .opcode = DRM_TARUGX_OP_BLIT,
+                .src_x = 0, .src_y = 300, .dst_x = 320, .dst_y = 300,
+                .width = 320, .height = 180,
+            },
+        },
+    };
     int fd, other, result = 1;
 
     if (argc != 2) {
@@ -58,6 +83,8 @@ int main(int argc, char **argv)
     }
     if (expect_errno(other, DRM_IOCTL_TARUGX_FILL, &fill, EACCES))
         goto out_other;
+    if (expect_errno(other, DRM_IOCTL_TARUGX_SUBMIT, &batch, EACCES))
+        goto out_other;
     if (expect_errno(fd, DRM_IOCTL_TARUGX_FILL, &invalid, EINVAL))
         goto out_other;
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
@@ -68,14 +95,24 @@ int main(int argc, char **argv)
         perror("DRM_IOCTL_TARUGX_BLIT");
         goto out_other;
     }
+    if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT, &batch)) {
+        perror("DRM_IOCTL_TARUGX_SUBMIT");
+        goto out_other;
+    }
     if (!fill.fence || !blit.fence || fill.fence == blit.fence) {
         fprintf(stderr, "invalid fences: fill=%u blit=%u\n",
                 fill.fence, blit.fence);
         goto out_other;
     }
 
+    if (!batch.fence || batch.fence == blit.fence) {
+        fprintf(stderr, "invalid batch fence: %u\n", batch.fence);
+        goto out_other;
+    }
+
     printf("DRM render ioctl PASS: master restriction, bounds, fill fence %u, "
-           "blit fence %u\n", fill.fence, blit.fence);
+           "blit fence %u, four-command batch fence %u\n",
+           fill.fence, blit.fence, batch.fence);
     result = 0;
 out_other:
     close(other);

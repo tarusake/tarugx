@@ -81,15 +81,21 @@ try:
         base = active * 640 * 480 * 4
         source = struct.unpack_from('<I', vram, base + (16*640+16)*4)[0]
         copied = struct.unpack_from('<I', vram, base + (16*640+64)*4)[0]
+        batch_a = struct.unpack_from('<I', vram, base + (100*640+320)*4)[0]
+        batch_b = struct.unpack_from('<I', vram, base + (300*640+320)*4)[0]
     assert source == 0xff2050d0 and copied == source, \
         f'readback mismatch source={{source:#x}} copied={{copied:#x}}'
+    assert batch_a == 0xff40c060 and batch_b == 0xffd08020, \
+        f'batch readback mismatch a={{batch_a:#x}} b={{batch_b:#x}}'
 
     attrs = device
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
+                             'render_queue_peak',
                              'flip_timeouts', 'dma_upload_failures')}}
-    assert int(counters['render_commands']) == 2, counters
+    assert int(counters['render_commands']) == 6, counters
     assert int(counters['render_failures']) == 0, counters
+    assert int(counters['render_queue_peak']) >= 2, counters
     print(run.stdout, end='')
     print(json.dumps({{'readback': hex(source), 'counters': counters}}))
 finally:

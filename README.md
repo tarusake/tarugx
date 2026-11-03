@@ -111,6 +111,8 @@ ioctlはDRM masterだけに許可し、任意のVRAMアドレスではなく640�
 CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全性を優先した同期APIで、
 各呼出しは完了または100msのtimeoutまで待ちます。成功・失敗数はPCIデバイスの
 `render_commands`と`render_failures`属性で確認できます。
+複数命令をまとめる`DRM_IOCTL_TARUGX_SUBMIT`は最大4命令を連続投入し、最後のfenceだけを
+待ちます。`render_queue_peak`にはドライバーが観測した最大待機命令数を記録します。
 
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
