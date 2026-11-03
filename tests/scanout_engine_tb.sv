@@ -33,7 +33,9 @@ module scanout_engine_tb;
  always @(posedge pixel_clk) if(pixel_rst_n) begin
   if(dut.display.frame_start) frame++;
   if((frame==2 || frame==3 || frame==4 || frame==5 || frame==8) && de) begin
-   assert(rgb==24'(int'(dut.display.y)*640+int'(dut.display.x))) else $fatal(1,"integrated pixel f%0d %0d,%0d %h",frame,dut.display.x,dut.display.y,rgb);
+   // The complete video bus is registered after pixel selection; internal x
+   // has advanced once while RGB/DE describe the preceding active pixel.
+   assert(dut.display.x>0 && rgb==24'(int'(dut.display.y)*640+int'(dut.display.x)-1)) else $fatal(1,"integrated pixel f%0d %0d,%0d %h",frame,dut.display.x,dut.display.y,rgb);
    pixels++;
   end
   if(frame>=6 && frame<=7 && de)

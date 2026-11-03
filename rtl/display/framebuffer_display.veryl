@@ -33,10 +33,31 @@ module framebuffer_display #(
     var active     : logic<26>;
     var running    : logic    ;
     var armed      : logic    ;
+    var timing_de         : logic    ;
+    var timing_hsync      : logic    ;
+    var timing_vsync      : logic    ;
+    var stage_de          : logic    ;
+    var stage_hsync       : logic    ;
+    var stage_vsync       : logic    ;
+    var stage_pixel       : logic<32>;
+    var stage_enable      : logic    ;
+    var stage_solid       : logic    ;
+    var stage_color       : logic<24>;
+    var stage_pixel_valid : logic    ;
+    var fault_pending     : logic    ;
+    var fault_context     : logic<64>;
     if VIDEO_1080P :g_timing_1080p {
-        inst timing: video_timing_1080p ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+        inst timing: video_timing_1080p (
+            clk, rst_n, x, y,
+            de: timing_de, hsync: timing_hsync, vsync: timing_vsync,
+            frame_start,
+        );
     } else :g_timing_480p {
-        inst timing: video_timing ( clk, rst_n, x, y, de, hsync, vsync, frame_start );
+        inst timing: video_timing (
+            clk, rst_n, x, y,
+            de: timing_de, hsync: timing_hsync, vsync: timing_vsync,
+            frame_start,
+        );
     }
     let current_settings: logic<26> = if frame_start ? settings : active;
     assign display_active = current_settings[24];
@@ -48,31 +69,97 @@ module framebuffer_display #(
         ? (in_valid && !in_data[256 + INDEX_WIDTH] && (in_data[255 + INDEX_WIDTH:256] == 0))
         : running;
     let pixel       : logic<32> = in_data[(x[2:0] as 9) * 9'd32+:32];
+    // A FIFO beat covers eight pixels and cannot change between them. Check
+    // its index only at the beat boundary, then consume the registered fault
+    // on the following cycle to keep the equality comparator off running's D.
+    let pixel_fault : logic = timing_de && (x[2:0] == 0)
+        && (!consuming || !beat_matches);
     always_comb {
-        in_ready = 0;
-        if !consuming {
-            in_ready = in_valid && ((in_data[255 + INDEX_WIDTH:256] != 0) || in_data[256 + INDEX_WIDTH]);
-        } else if de && beat_matches && (x[2:0] == 7) {
-            in_ready = 1;
-        }
-        rgb = 0;
-        if de && current_settings[24] {
-            if current_settings[25] {
-                rgb = current_settings[23:0];
-            } else if consuming && beat_matches {
-                rgb = pixel[23:0];
+        de    = stage_de;
+        hsync = stage_hsync;
+        vsync = stage_vsync;
+        rgb   = 0;
+        if stage_de && stage_enable {
+            if stage_solid {
+                rgb = stage_color;
+            } else if stage_pixel_valid {
+                rgb = stage_pixel[23:0];
             }
         }
     }
     always_ff {
         if_reset {
+            in_ready       = 0;
+            stage_de         = 0;
+            stage_hsync      = 0;
+            stage_vsync      = 0;
+            stage_pixel      = 0;
+            stage_enable     = 0;
+            stage_solid      = 0;
+            stage_color      = 0;
+            stage_pixel_valid = 0;
             active         = 0;
             running        = 0;
             armed          = 0;
             underflow      = 0;
             vblank_toggle  = 0;
             fault_snapshot = 0;
+            fault_pending  = 0;
+            fault_context  = 0;
         } else {
+            // Register timing, the dynamic 256-to-32-bit pixel selection and
+            // its validity separately. The final RGB choice then has only
+            // registered inputs on the path into the vendor TMDS encoder.
+            stage_de          = timing_de;
+            stage_hsync       = timing_hsync;
+            stage_vsync       = timing_vsync;
+            stage_pixel       = pixel;
+            stage_enable      = current_settings[24];
+            stage_solid       = current_settings[25];
+            stage_color       = current_settings[23:0];
+            // Once a beat has passed the boundary check, all eight pixels
+            // share that result. A mismatch is recorded by fault_pending and
+            // stops running before the later pop point; do not fan the wide
+            // index comparator out into the per-pixel video path as well.
+            stage_pixel_valid = consuming;
+            // Capture context continuously; the one-bit pending register
+            // separates the wide snapshot enables from the index comparator.
+            fault_pending = pixel_fault && current_settings[24]
+                && !current_settings[25] && armed;
+            if VIDEO_1080P {
+                fault_context = ({
+                    x, y, expected, in_data[255 + INDEX_WIDTH:256], settings[24], settings[25],
+                    armed, consuming, in_valid
+                } as 64);
+            } else {
+                fault_context = ({
+                    x, y, expected, in_data[255 + INDEX_WIDTH:256], 4'b0, settings[24], settings[25],
+                    current_settings[24], current_settings[25], armed, consuming, in_valid,
+                    in_data[256 + INDEX_WIDTH]
+                } as 64);
+            }
+            if fault_pending {
+                running = 0;
+                if !underflow {
+                    fault_snapshot = fault_context;
+                }
+                underflow = 1;
+            }
+            // Register FIFO backpressure one pixel ahead. The previous
+            // combinational x/index/error decision drove the clock enables of
+            // every wide output-register bit and could not close at 148 MHz.
+            // A discard pulse is followed by a bubble so a newly exposed
+            // index-zero beat is inspected before it can be removed.
+            if in_ready {
+                in_ready = 0;
+            } else if !consuming {
+                in_ready = in_valid
+                    && ((in_data[255 + INDEX_WIDTH:256] != 0) || in_data[256 + INDEX_WIDTH]);
+            } else {
+                // A bad beat is diagnosed at pixel zero and clears running
+                // before this one-cycle-early pop request at pixel six.
+                in_ready = timing_de && (x[2:0] == 6);
+            }
             if frame_start {
                 vblank_toggle = !vblank_toggle;
             }
@@ -86,26 +173,6 @@ module framebuffer_display #(
             if frame_start {
                 active  = settings;
                 running = consuming;
-            }
-            if de && (!consuming || !beat_matches) {
-                running = 0;
-                if current_settings[24] && !current_settings[25] && armed {
-                    if !underflow {
-                        if VIDEO_1080P {
-                            fault_snapshot = ({
-                                x, y, expected, in_data[255 + INDEX_WIDTH:256], settings[24], settings[25],
-                                armed, consuming, in_valid
-                            } as 64);
-                        } else {
-                            fault_snapshot = ({
-                                x, y, expected, in_data[255 + INDEX_WIDTH:256], 4'b0, settings[24], settings[25],
-                                current_settings[24], current_settings[25], armed, consuming, in_valid,
-                                in_data[256 + INDEX_WIDTH]
-                            } as 64);
-                        }
-                    }
-                    underflow = 1;
-                }
             }
             if (x == LAST_X) && (y == LAST_Y) {
                 running = 0;

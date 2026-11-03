@@ -407,10 +407,16 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     assign fault_snapshot = 64'b0;
 `else
 `ifdef TARUGX_PIPELINED_MEMORY
-    tarugx_scanout_pipeline_engine u_scanout (
+    tarugx_scanout_pipeline_engine #(
 `else
-    tarugx_scanout_engine u_scanout (
+    tarugx_scanout_engine #(
 `endif
+`ifdef TARUGX_VIDEO_1080P
+        .VIDEO_1080P(1'b1)
+`else
+        .VIDEO_1080P(1'b0)
+`endif
+    ) u_scanout (
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),

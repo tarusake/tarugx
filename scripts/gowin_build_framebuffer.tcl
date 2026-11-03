@@ -33,6 +33,7 @@ set auto_rom 0
 set pipelined_memory 0
 set video_1080p 0
 set video_1080p_vendor 0
+set video_1080p_scanout 0
 set video_720p 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
@@ -75,10 +76,14 @@ if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080
     set video_1080p 1
     set video_1080p_vendor 1
 }
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60_scanout"} {
+    set video_1080p 1
+    set video_1080p_scanout 1
+}
 if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "720p60"} {
     set video_720p 1
 }
-set video_link_test [expr {$video_1080p || $video_720p}]
+set video_link_test [expr {($video_1080p && !$video_1080p_scanout) || $video_720p}]
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
     set sample_dir [tarugx_required_dir SIPEED_PCIE_GEN2_DIR]
@@ -141,6 +146,7 @@ puts [exec python3 [file join $repo scripts check_gowin_csr.py] [file join $pcie
 if {$pipelined_memory} { set output_dir [file join $repo build gowin_framebuffer_pipeline] }
 if {$video_1080p} { set output_dir [file join $repo build gowin_framebuffer_1080p] }
 if {$video_1080p_vendor} { set output_dir [file join $repo build gowin_framebuffer_1080p_vendor] }
+if {$video_1080p_scanout} { set output_dir [file join $repo build gowin_framebuffer_1080p_scanout] }
 if {$video_720p} { set output_dir [file join $repo build gowin_framebuffer_720p] }
 
 create_project -name tarugx -dir $output_dir \
@@ -159,8 +165,9 @@ if {[info exists ::env(SIPEED_HDMI_DIR)]} {
 }
 add_file [file join $repo build gowin_video tarugx_video_pll.v]
 foreach source [glob [file join $video_dir dvi-tx *.v]] {
-    if {[file tail $source] ne "dvi_tx_tmds_phy.v"} { add_file $source }
+    if {[file tail $source] ni {dvi_tx_tmds_phy.v dvi_tx_tmds_enc.v}} { add_file $source }
 }
+add_file [file join $repo fpga tang_mega_138k dvi_tx_tmds_enc.sv]
 add_file [file join $repo fpga tang_mega_138k dvi_tx_tmds_phy.sv]
 
 

@@ -15,6 +15,7 @@
 | 本リポジトリの部分 | 出典（上記リポジトリ内） | TaruGXでの変更・扱い |
 | --- | --- | --- |
 | `fpga/tang_mega_138k/dvi_tx_tmds_phy.sv` | `hdmi_colorbar/eda_proj/src/dvi-tx/dvi_tx_tmds_phy.v` | OSER10のリセット解除を高速クロックで同期化。Apache-2.0を維持 |
+| `fpga/tang_mega_138k/dvi_tx_tmds_enc.sv` | `hdmi_colorbar/eda_proj/src/dvi-tx/dvi_tx_tmds_enc.v` | 148MHz向けにq_m生成とディスパリティ計算をパイプライン化。Apache-2.0を維持 |
 | `fpga/tang_mega_138k/Pins.cst` | `pcie_dma_demo/pcie_gen2(5G)/src/Pins.cst`および`hdmi_colorbar`のHDMI0配線 | 必要な信号に絞り、UART・HDMIを統合。Apache-2.0を維持 |
 | `vendor/gowin/pcie_x1/serdes.mod` | `pcie_dma_demo/pcie_gen2(5G)/src/serdes/serdes.mod` | x1化、Rev.B用デバイス設定、相対出力パスへ変更した生成設定 |
 

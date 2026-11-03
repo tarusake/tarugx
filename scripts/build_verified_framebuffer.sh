@@ -48,6 +48,7 @@ test -n "$gowin_sh" || { echo "Set GOWIN_SH to the gw_sh executable" >&2; exit 1
 case "${TARUGX_VIDEO_MODE:-480p60}" in
     1080p60) out=build/gowin_framebuffer_1080p/tarugx/impl/pnr ;;
     1080p60_vendor) out=build/gowin_framebuffer_1080p_vendor/tarugx/impl/pnr ;;
+    1080p60_scanout) out=build/gowin_framebuffer_1080p_scanout/tarugx/impl/pnr ;;
     720p60)  out=build/gowin_framebuffer_720p/tarugx/impl/pnr ;;
     *)       out=build/gowin_framebuffer_pipeline/tarugx/impl/pnr ;;
 esac

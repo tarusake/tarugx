@@ -18,7 +18,7 @@ case "$mode" in
         odiv0=50
         odiv1=10
         ;;
-    1080p60)
+    1080p60|1080p60_scanout)
         # Keep the board-vendor example's 10:2 output-divider topology. The
         # otherwise legal 5:1 topology left ODIV1 at one and produced no
         # physical output on this board.  Reducing only the multiplier from
