@@ -31,6 +31,7 @@ module scanout_prefetch_reader (
     var stride        : logic<22>     ;
     var reserved      : logic<4>      ;
     var capacity      : logic         ;
+    var response_ready: logic         ;
     var available     : logic<4>      ;
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -49,7 +50,7 @@ module scanout_prefetch_reader (
     // Native DDR responses cannot return in the request-accept cycle.  Keep
     // request admission out of the response-ready path so that the arbiter
     // and this response store are separated by a register boundary.
-    assign mem_rsp_ready = reserved != available;
+    assign mem_rsp_ready = response_ready;
     let response: logic = mem_rsp_valid && mem_rsp_ready;
     assign out_valid = available != 0;
     assign out_data  = data[head];
@@ -65,6 +66,7 @@ module scanout_prefetch_reader (
             stride         = 0;
             reserved       = 0;
             capacity       = 1;
+            response_ready = 0;
             available      = 0;
             head           = 0;
             tail           = 0;
@@ -145,6 +147,10 @@ module scanout_prefetch_reader (
             } else if pop && !response {
                 available = available - 4'd1;
             }
+            // Register the response admission decision so the reservation
+            // counter cannot drive every data-register clock enable directly.
+            // A newly issued native-DDR request cannot respond in this cycle.
+            response_ready = (reserved != available) || issue;
         }
     }
 }
