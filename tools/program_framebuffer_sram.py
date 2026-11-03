@@ -21,6 +21,7 @@ PREPARE = r"""
 import json
 from pathlib import Path
 import subprocess
+import time
 endpoint = Path('/sys/bus/pci/devices')/ENDPOINT
 assert endpoint.resolve(strict=True).name == ENDPOINT, 'Endpoint missing'
 assert endpoint.joinpath('vendor').read_text().strip() == '0x22c2', 'Unexpected vendor'
@@ -30,11 +31,17 @@ try:
     # The boot service starts collected transient units.  They can outlive a
     # failed/restarted oneshot service, so stop them explicitly before trying
     # to unload the DRM module.
-    for unit in ('tarugx-terminal', 'tarugx-desktop', 'tarugx-xorg'):
-        subprocess.run(['systemctl', 'stop', unit], check=False)
+    # Stop producers before their parent transient units.  Stopping desktop
+    # before Xorg can otherwise wait for systemd's final SIGKILL timeout and
+    # exhaust the SSH action deadline.
+    for unit in ('tarugx-xorg', 'tarugx-desktop', 'tarugx-terminal'):
+        subprocess.run(['systemctl', 'stop', unit], check=False, timeout=10)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True)
     assert not endpoint.joinpath('driver').exists(), 'Driver remains bound'
     endpoint.joinpath('remove').write_text('1')
+    deadline = time.monotonic()+5
+    while endpoint.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert not endpoint.exists(), 'Endpoint removal failed'
 except Exception:
     subprocess.run(['modprobe', 'tarugx'], check=False)
