@@ -98,6 +98,8 @@ MSI受信回数を確認できます。古いFlashイメージでページ切替
 `flip_fallbacks`は、この互換更新が行われた回数です。部分更新では、更新前にFPGAのblitで表示中ページを
 非表示ページへ同期します。`blit_syncs`と`blit_sync_failures`で成功・失敗回数を
 確認でき、blitが失敗した場合だけCPUによるVRAM内コピーへフォールバックします。
+`update_profile`は直近の更新について、全体、XRGB8888→RGB565変換、PCIe DMA、
+VBlank待ちの時間をそれぞれnsで表示します。
 DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe DMAで非表示
 ページへ転送します。`dma_upload=0`モジュールパラメーターで64-bit BAR2書込みへ
 切り替えられます。DMA非対応の旧FPGAはprobe時に検出し、自動的にBAR2を使用します。
@@ -260,6 +262,11 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   変換してからDMAします。これによりXfceを1920×1080で表示でき、RGB565直接更新は
   `active_full=46.743ms`、XRGB8888変換経路は`active_full=47.616ms`でした。
   いずれもDMA、flip、VBlank timeoutは0です。
+  `tools/test_drm_mode.py --bpp 16`でRGB565を、`--bpp 32`でXRGB8888変換経路を
+  強制できます。2026-11-04の同条件比較ではXRGB8888が変換6.531ms、DMA10.751ms、
+  VBlank待ち30.217ms、全体47.510ms、RGB565が変換0ms、DMA17.215ms、
+  VBlank待ち29.647ms、全体46.871msでした。MSI周期は実測59.93Hzで、約47msの
+  主因はCPU色変換ではなくDDR競合中のページ切替タイミングです。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とします。
   配布済み0.1.0ドライバーへ戻すとGPU 1.2の1080p SRAM版を扱えず黒画面になるため、
   1080p実験中は作業ツリーの0.5.0ドライバーを使用してください。

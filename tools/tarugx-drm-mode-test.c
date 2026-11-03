@@ -62,6 +62,7 @@ int main(int argc, char **argv)
 	uint32_t framebuffer = 0, crtc = 0;
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
+	unsigned requested_bpp = 0;
 	double modeset_started, modeset_seconds, dirty_started;
 	double dirty_seconds[3];
 	drmModeClip clips[2] = {
@@ -71,12 +72,22 @@ int main(int argc, char **argv)
 	drmModeClip full_clip;
 	int fd = -1, rc = 1;
 
-	if (argc < 2 || argc > 3) {
-		fprintf(stderr, "usage: %s /dev/dri/cardN [hold-seconds]\n", argv[0]);
+	if (argc < 2 || argc > 4) {
+		fprintf(stderr,
+			"usage: %s /dev/dri/cardN [hold-seconds] [bpp]\n",
+			argv[0]);
 		return 2;
 	}
-	if (argc == 3)
+	if (argc >= 3)
 		hold_seconds = strtoul(argv[2], NULL, 0);
+	if (argc == 4) {
+		requested_bpp = strtoul(argv[3], NULL, 0);
+		if (requested_bpp != 16 && requested_bpp != 32) {
+			fputs("bpp must be 16 or 32\n", stderr);
+			return 2;
+		}
+		create.bpp = requested_bpp;
+	}
 	fd = open(argv[1], O_RDWR | O_CLOEXEC);
 	if (fd < 0 || drmSetMaster(fd)) {
 		perror("open/master");
@@ -103,7 +114,7 @@ int main(int argc, char **argv)
 	create.width = connector->modes[0].hdisplay;
 	create.height = connector->modes[0].vdisplay;
 	if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create)) {
-		if (errno != EINVAL) {
+		if (errno != EINVAL || requested_bpp) {
 			perror("create dumb buffer");
 			goto out;
 		}

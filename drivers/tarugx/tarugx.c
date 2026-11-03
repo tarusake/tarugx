@@ -62,6 +62,10 @@ struct tarugx {
 	atomic64_t render_failures;
 	atomic64_t render_queue_peak;
 	atomic64_t direct_scanouts;
+	atomic64_t last_update_ns;
+	atomic64_t last_conversion_ns;
+	atomic64_t last_dma_ns;
+	atomic64_t last_vblank_wait_ns;
 	bool dma_available;
 	bool render_available;
 	bool active_fb_base_available;
@@ -787,6 +791,16 @@ static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 	readl(tgx->vram + target + tgx->frame_bytes - 4);
 }
 
+static void tgx_record_update_profile(struct tarugx *tgx, u64 started_ns,
+				      u64 conversion_ns, u64 dma_ns,
+				      u64 vblank_wait_ns)
+{
+	atomic64_set(&tgx->last_update_ns, ktime_get_ns() - started_ns);
+	atomic64_set(&tgx->last_conversion_ns, conversion_ns);
+	atomic64_set(&tgx->last_dma_ns, dma_ns);
+	atomic64_set(&tgx->last_vblank_wait_ns, vblank_wait_ns);
+}
+
 static ssize_t page_flips_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
@@ -958,6 +972,20 @@ static ssize_t physical_pages_synced_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(physical_pages_synced);
 
+static ssize_t update_profile_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf,
+		"update_ns=%lld conversion_ns=%lld dma_ns=%lld vblank_wait_ns=%lld\n",
+		atomic64_read(&tgx->last_update_ns),
+		atomic64_read(&tgx->last_conversion_ns),
+		atomic64_read(&tgx->last_dma_ns),
+		atomic64_read(&tgx->last_vblank_wait_ns));
+}
+static DEVICE_ATTR_RO(update_profile);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -1038,6 +1066,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_render_queue_peak.attr,
 	&dev_attr_direct_scanouts.attr,
 	&dev_attr_physical_pages_synced.attr,
+	&dev_attr_update_profile.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -1300,8 +1329,11 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	bool direct_scanout = false, full_damage, did_flip_fallback = false;
 	bool mirror_damage = false;
 	bool convert_xrgb8888;
+	u64 update_started_ns, stage_started_ns;
+	u64 conversion_ns = 0, dma_ns = 0, vblank_wait_ns = 0;
 	if (!fb || !pipe->crtc.state->active)
 		return;
+	update_started_ns = ktime_get_ns();
 	gem = drm_gem_fb_get_obj(fb, 0);
 	if (gem && gem->funcs == &tgx_vram_object_funcs)
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
@@ -1399,12 +1431,15 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 				dma_offset = copy.y1 * tgx->pitch;
 				dma_length = (copy.y2 - copy.y1) * tgx->pitch;
 			}
-			if (convert_xrgb8888)
+			if (convert_xrgb8888) {
+				stage_started_ns = ktime_get_ns();
 				tgx_xrgb8888_to_rgb565(tgx, host_object,
 							 fb->pitches[0],
 							 dma_offset / tgx->pitch,
 							 (dma_offset + dma_length) /
 							 tgx->pitch);
+				conversion_ns += ktime_get_ns() - stage_started_ns;
+			}
 		} else {
 			dma_length = tgx->frame_bytes;
 		}
@@ -1416,6 +1451,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 					tgx->pitch);
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
+		stage_started_ns = ktime_get_ns();
 		ret = tgx_dma_transfer(tgx,
 				       (convert_xrgb8888 ? tgx->dma_staging_addr :
 				       host_object ? host_object->dma_addr :
@@ -1423,6 +1459,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 				       target + dma_offset, dma_length,
 				       tgx->dma_only_scanout ?
 				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
+		dma_ns += ktime_get_ns() - stage_started_ns;
 		mutex_unlock(&tgx->dma_lock);
 		if (!ret) {
 			atomic64_inc(&tgx->dma_uploads);
@@ -1477,6 +1514,8 @@ upload_complete:
 		 * copying an entire frame while scanout is active. */
 		atomic64_inc(&tgx->flip_fallbacks);
 		atomic64_add(copied, &tgx->bytes_uploaded);
+		tgx_record_update_profile(tgx, update_started_ns, conversion_ns,
+					  dma_ns, vblank_wait_ns);
 		mutex_unlock(&tgx->render_lock);
 		drm_dev_exit(idx);
 		return;
@@ -1491,10 +1530,12 @@ upload_complete:
 	/* The same VBlank both raises MSI and applies FB_COMMIT.  Wait for those
 	 * two facts together instead of polling the flip and then waiting for an
 	 * extra frame.  A pre-commit interrupt cannot satisfy both conditions. */
+	stage_started_ns = ktime_get_ns();
 	wait_ret = wait_event_timeout(tgx->vblank_wait,
 			atomic64_read(&tgx->msi_interrupts) != vblank_before &&
 			tgx_active_fb_base(tgx) == target,
 			msecs_to_jiffies(100));
+	vblank_wait_ns += ktime_get_ns() - stage_started_ns;
 	if (!wait_ret) {
 		active_base = tgx_active_fb_base(tgx);
 		active = active_base == tgx_fb_base(tgx, 0) ? 0 :
@@ -1522,11 +1563,13 @@ upload_complete:
 
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
+		stage_started_ns = ktime_get_ns();
 		mirror_ret = tgx_dma_transfer(tgx,
 				(convert_xrgb8888 ? tgx->dma_staging_addr :
 				 host_object->dma_addr) + mirror_offset,
 				previous_base + mirror_offset, mirror_length,
 				TGX_1080P_DMA_TIMEOUT_US);
+		dma_ns += ktime_get_ns() - stage_started_ns;
 		mutex_unlock(&tgx->dma_lock);
 		if (mirror_ret) {
 			tgx->physical_pages_synced = false;
@@ -1556,6 +1599,8 @@ upload_complete:
 		dev_warn_ratelimited(tgx->drm.dev,
 				     "VBlank wait timed out after flip to base %#x\n",
 				     target);
+	tgx_record_update_profile(tgx, update_started_ns, conversion_ns, dma_ns,
+				  vblank_wait_ns);
 	mutex_unlock(&tgx->render_lock);
 	drm_dev_exit(idx);
 }
