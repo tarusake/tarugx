@@ -18,7 +18,7 @@
 #include "tarugx_drm.h"
 
 #define STRESS_BATCHES 120
-#define DEPENDENCY_PRODUCERS 1
+#define DEPENDENCY_PRODUCERS 3
 
 _Static_assert(sizeof(struct drm_tarugx_submit_gem) == 224,
                "submit GEM ABI size changed");
