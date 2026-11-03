@@ -41,7 +41,7 @@ module bar0_tlp_bridge_end_to_end {
     var dma_done       : logic     ;
     var dma_error      : logic     ;
     var dma_error_code : logic<4>  ;
-    var dma_profile    : logic<128>;
+    var dma_profile    : logic<192>;
     var display_ctrl   : logic<32> ;
     var display_color  : logic<32> ;
     var display_mode   : logic<32> ;

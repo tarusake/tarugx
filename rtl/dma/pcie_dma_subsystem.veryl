@@ -15,7 +15,7 @@ module pcie_dma_subsystem #(
     done            : output logic     ,
     error           : output logic     ,
     error_code      : output logic<4>  ,
-    profile         : output logic<128>,
+    profile         : output logic<192>,
     rx_sop          : input  logic     ,
     rx_eop          : input  logic     ,
     rx_valid        : input  logic<8>  ,
@@ -86,8 +86,13 @@ module pcie_dma_subsystem #(
     var rx_stall_cycles : logic<32> ;
     var mem_stall_cycles: logic<32> ;
     var rx_stall_sample : logic     ;
+    var slot_full_sample: logic     ;
+    var completion_busy_sample: logic;
+    var slot_full_cycles: logic<32> ;
+    var completion_busy_cycles: logic<32>;
 
-    assign profile = {mem_stall_cycles, rx_stall_cycles, tx_stall_cycles, busy_cycles};
+    assign profile = {completion_busy_cycles, slot_full_cycles, mem_stall_cycles,
+        rx_stall_cycles, tx_stall_cycles, busy_cycles};
 
     always_ff {
         if_reset {
@@ -97,6 +102,8 @@ module pcie_dma_subsystem #(
             rx_stall_cycles  = 0;
             mem_stall_cycles = 0;
             rx_stall_sample  = 0;
+            slot_full_cycles = 0;
+            completion_busy_cycles = 0;
         } else {
             requester_id_q = requester_id;
             // Break the raw PCIe receive path before the 32-bit profiling
@@ -108,6 +115,8 @@ module pcie_dma_subsystem #(
                 tx_stall_cycles  = 0;
                 rx_stall_cycles  = 0;
                 mem_stall_cycles = 0;
+                slot_full_cycles = 0;
+                completion_busy_cycles = 0;
             } else if busy {
                 busy_cycles += 1;
                 if |dma_tx_valid && !dma_tx_ready {
@@ -118,6 +127,12 @@ module pcie_dma_subsystem #(
                 }
                 if (dma_fb_req_valid && !dma_fb_req_ready) || dma_fb_window_full {
                     mem_stall_cycles += 1;
+                }
+                if slot_full_sample {
+                    slot_full_cycles += 1;
+                }
+                if completion_busy_sample {
+                    completion_busy_cycles += 1;
                 }
             }
         }
@@ -139,7 +154,7 @@ module pcie_dma_subsystem #(
     ) (
         clk, rst_n, requester_id: requester_id_q,
         cmd_valid, cmd_ready, cmd_host_address, cmd_vram_address, cmd_length_bytes,
-        busy, done, error, error_code,
+        busy, done, error, error_code, slot_full_sample, completion_busy_sample,
         tx_ready: dma_tx_ready,
         tx_valid: dma_tx_valid,
         tx_sop: dma_tx_sop,

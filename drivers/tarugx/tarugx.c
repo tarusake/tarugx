@@ -138,6 +138,8 @@ struct tarugx_vram_object {
 #define TGX_REG_DMA_RX_STALL_CYCLES 0xe0
 #define TGX_REG_DMA_MEMORY_STALL_CYCLES 0xe4
 #define TGX_REG_DMA_ERROR_CODE 0xe8
+#define TGX_REG_DMA_SLOT_FULL_CYCLES 0xec
+#define TGX_REG_DMA_COMPLETION_BUSY_CYCLES 0xf0
 #define TGX_DMA_STATUS_BUSY BIT(0)
 #define TGX_DMA_STATUS_DONE BIT(1)
 #define TGX_DMA_STATUS_ERROR BIT(2)
@@ -834,16 +836,21 @@ static ssize_t dma_profile_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct tarugx *tgx = dev_get_drvdata(dev);
-	u32 busy, tx_stall, rx_stall, memory_stall;
+	u32 busy, tx_stall, rx_stall, memory_stall, slot_full;
+	u32 completion_busy;
 
 	busy = readl(tgx->regs + TGX_REG_DMA_BUSY_CYCLES);
 	tx_stall = readl(tgx->regs + TGX_REG_DMA_TX_STALL_CYCLES);
 	rx_stall = readl(tgx->regs + TGX_REG_DMA_RX_STALL_CYCLES);
 	memory_stall = readl(tgx->regs + TGX_REG_DMA_MEMORY_STALL_CYCLES);
+	slot_full = readl(tgx->regs + TGX_REG_DMA_SLOT_FULL_CYCLES);
+	completion_busy = readl(tgx->regs +
+				TGX_REG_DMA_COMPLETION_BUSY_CYCLES);
 
 	return sysfs_emit(buf,
-			  "busy_cycles=%u tx_stall_cycles=%u rx_stall_cycles=%u memory_stall_cycles=%u\n",
-			  busy, tx_stall, rx_stall, memory_stall);
+			  "busy_cycles=%u tx_stall_cycles=%u rx_stall_cycles=%u memory_stall_cycles=%u slot_full_cycles=%u completion_busy_cycles=%u\n",
+			  busy, tx_stall, rx_stall, memory_stall, slot_full,
+			  completion_busy);
 }
 static DEVICE_ATTR_RO(dma_profile);
 

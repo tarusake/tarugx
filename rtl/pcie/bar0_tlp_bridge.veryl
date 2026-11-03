@@ -44,7 +44,7 @@ module bar0_tlp_bridge (
     dma_done       : input  logic     ,
     dma_error      : input  logic     ,
     dma_error_code : input  logic<4>  ,
-    dma_profile    : input  logic<128>,
+    dma_profile    : input  logic<192>,
     display_ctrl   : output logic<32> ,
     display_color  : output logic<32> ,
     display_mode   : output logic<32> ,

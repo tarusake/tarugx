@@ -31,7 +31,7 @@ module gpu_registers (
     dma_done       : input  logic     ,
     dma_error      : input  logic     ,
     dma_error_code : input  logic<4>  ,
-    dma_profile    : input  logic<128>,
+    dma_profile    : input  logic<192>,
     req_ready      : output logic     ,
     rsp_valid      : output logic     ,
     rsp_rdata      : output logic<32> ,
@@ -149,6 +149,8 @@ module gpu_registers (
                 14'h0038: rsp_rdata = dma_profile[95:64];
                 14'h0039: rsp_rdata = dma_profile[127:96];
                 14'h003a: rsp_rdata = {28'b0, dma_error_code};
+                14'h003b: rsp_rdata = dma_profile[159:128];
+                14'h003c: rsp_rdata = dma_profile[191:160];
                 default : {
                     rsp_rdata = 32'b0;
                     rsp_error = 1'b1;

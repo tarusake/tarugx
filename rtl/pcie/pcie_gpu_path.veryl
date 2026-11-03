@@ -171,7 +171,7 @@ module pcie_gpu_path (
     var dma_done        : logic    ;
     var dma_error       : logic    ;
     var dma_error_code  : logic<4> ;
-    var dma_profile     : logic<128>;
+    var dma_profile     : logic<192>;
     var dma_host_address: logic<64>;
     var dma_vram_address: logic<32>;
     var dma_length_bytes: logic<32>;

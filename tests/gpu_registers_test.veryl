@@ -29,7 +29,7 @@ module gpu_registers_reset_and_read {
     var dma_done       : logic     ;
     var dma_error      : logic     ;
     var dma_error_code : logic<4>  ;
-    var dma_profile    : logic<128>;
+    var dma_profile    : logic<192>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
     var rsp_rdata      : logic<32> ;
@@ -165,7 +165,7 @@ module gpu_registers_reset_and_read {
         req_addr = 16'h0034;
         clk.next(1);
         $assert(rsp_rdata == 32'h0025_8000);
-        dma_profile = 128'h4444_4444_3333_3333_2222_2222_1111_1111;
+        dma_profile = 192'h6666_6666_5555_5555_4444_4444_3333_3333_2222_2222_1111_1111;
         req_addr = 16'h00d8;
         clk.next(1);
         $assert(rsp_rdata == 32'h1111_1111);
@@ -178,6 +178,12 @@ module gpu_registers_reset_and_read {
         req_addr = 16'h00e4;
         clk.next(1);
         $assert(rsp_rdata == 32'h4444_4444);
+        req_addr = 16'h00ec;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h5555_5555);
+        req_addr = 16'h00f0;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h6666_6666);
         req_addr = 16'h0001;
         clk.next(1);
         $assert(rsp_error);
@@ -218,7 +224,7 @@ module gpu_registers_write_byte_enable_and_commit {
     var dma_done       : logic     ;
     var dma_error      : logic     ;
     var dma_error_code : logic<4>  ;
-    var dma_profile    : logic<128>;
+    var dma_profile    : logic<192>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
     var rsp_rdata      : logic<32> ;

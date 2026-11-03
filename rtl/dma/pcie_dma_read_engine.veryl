@@ -19,6 +19,8 @@ module pcie_dma_read_engine #(
     done            : output logic     ,
     error           : output logic     ,
     error_code      : output logic<4>  ,
+    slot_full_sample: output logic     ,
+    completion_busy_sample: output logic,
     mrd_valid       : output logic     ,
     mrd_ready       : input  logic     ,
     mrd_host_address: output logic<64> ,
@@ -233,8 +235,16 @@ module pcie_dma_read_engine #(
             done               = 0;
             error              = 0;
             error_code         = 0;
+            slot_full_sample   = 0;
+            completion_busy_sample = 0;
         } else {
             done = 0;
+            // Register diagnostic state before it reaches the wide profiling
+            // counters, keeping those counters off the 100 MHz DMA datapath.
+            slot_full_sample = (state == State::Run) && (issue_remaining_dw != 0)
+                && !request_pending && !slot_available;
+            completion_busy_sample = (state == State::Run)
+                && (completion_pending || chunk_pending);
             if fb_request_accept && !fb_response_accept {
                 fb_outstanding = fb_outstanding + 4'd1;
             } else if fb_response_accept && !fb_request_accept {
