@@ -26,6 +26,7 @@ def decode(line):
                 **({"raw_bar": f"{payload & 0xfffff:05x}"} if version in (0x46523130, 0x46523131) else {})
             }
         }
+    pipeline_fault = version == 0x46523136
     performance = version in (0x46523133, 0x46523134)
     if performance:
         version = 0x46523033  # FR13 preserves the fault/aux portion only.
@@ -83,6 +84,26 @@ def decode(line):
         status["reset_scope"] = dict(zip(
             ("flags", "before", "during_high", "during_low", "after_high", "after_low", "current"),
             ((trace >> shift) & 255 for shift in (48, 40, 32, 24, 16, 8, 0))))
+    # FR16 is emitted by the pipelined 1080p image.  Its framebuffer snapshot
+    # has wider coordinates/indices and the sticky marker is `armed` at bit 2;
+    # bit 3 is `solid`, so treating bit 3 as the legacy capture marker hides a
+    # real FIFO starvation whenever normal (non-solid) scanout is active.
+    if pipeline_fault:
+        status["fault_captured"] = bool(fault & 4)
+        if status["fault_captured"]:
+            status.update(
+                fault_layout="1080p-rgb565",
+                x=fault >> 52,
+                y=(fault >> 41) & 0x7ff,
+                expected=(fault >> 23) & 0x3ffff,
+                actual=(fault >> 5) & 0x3ffff,
+                display_enable=(fault >> 4) & 1,
+                solid=(fault >> 3) & 1,
+                armed=(fault >> 2) & 1,
+                consuming=(fault >> 1) & 1,
+                fifo_valid=fault & 1,
+            )
+        return status
     # A status flag can precede the bundled snapshot by one diagnostic cycle.
     status["fault_captured"] = bool(fault & 8)
     if status["fault_captured"]:

@@ -16,6 +16,21 @@ class DecodeTest(unittest.TestCase):
         self.assertFalse(data["fault_captured"])
         self.assertNotIn("performance",data)
 
+    def test_fr16_real_1080p_starvation(self):
+        # Captured on hardware: valid fell at x=800, y=717 while the FIFO's
+        # retained index still matched the expected RGB565 beat.
+        raw = "D1111X46523136000000031E061D1E051E030001EFF7170001020F10F3F332059AA8252A0956FD"
+        data = decoder.decode(raw)
+        self.assertTrue(data["fault_captured"])
+        self.assertEqual(data["fault_layout"], "1080p-rgb565")
+        self.assertEqual((data["x"], data["y"]), (800, 717))
+        self.assertEqual((data["expected"], data["actual"]), (86090, 86090))
+        self.assertEqual(data["display_enable"], 1)
+        self.assertEqual(data["solid"], 0)
+        self.assertEqual(data["armed"], 1)
+        self.assertEqual(data["consuming"], 1)
+        self.assertEqual(data["fifo_valid"], 0)
+
     def test_fr14_performance(self):
         data=decoder.decode("D1110X46523134" + "0" * 64)
         self.assertTrue(data["automatic_rom"])
