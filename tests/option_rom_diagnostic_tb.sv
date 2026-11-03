@@ -42,6 +42,7 @@ module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
   .rx_bar_decode(staged_bar),.rx_data(staged_data),.rx_wait(core_rx_wait),.rx_masknp(core_rx_masknp),
   .tx_wait(core_tx_wait),.tx_valid(core_tx_valid),.tx_sop(core_tx_sop),.tx_eop(core_tx_eop),.tx_data(core_tx_data),
   .framing_error,.unsupported,.malformed,.fb_commit_pulse,.display_ctrl,.display_color,.display_mode,.fb_base,.fb_stride,
+  .active_fb_base(32'b0),
   .active_buffer,.vblank_toggle,.irq_enable,.fill_busy,.fill_done,.fill_error,.fill_command,.fill_start,
   .blit_busy,.blit_done,.blit_error,.blit_command,.blit_start,
   .queue_ready,.queue_level,.queue_active,.queue_completed,.queue_error,.queue_error_fence,

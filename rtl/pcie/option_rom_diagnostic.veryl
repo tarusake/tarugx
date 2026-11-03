@@ -59,7 +59,10 @@ module option_rom_diagnostic #(
         && (!(fmt[0] || fmt[1]) || rx_valid[4]);
     let cfg_select     : logic      = rx_bar[0] && !rx_bar[2] && ((fmt == 0) || (fmt == 2)) && (h0[28:24] == 0)
         && ((h2[15:2] == 14'h10) || (h2[15:2] == 14'h11) || (h2[15:2] == 14'h12));
-    let rom_select     : logic      = (rx_bar == 0) && memory_read;
+    // AUTO_ROM receives a wrapper-qualified hit captured with this RX beat.
+    // Using it directly avoids putting the six-bit BAR comparison on the
+    // timing-critical path from the RX skid buffer into the core/DMA router.
+    let rom_select     : logic      = (if AUTO_ROM != 0 ? rom_hit : (rx_bar == 0)) && memory_read;
     let selected       : logic      = framed && (cfg_select || rom_select);
     let core_pending   : logic      = core_rx_masknp || (|core_tx_valid);
     let cfg_ok         : logic      = (h0[9:0] == 1) && (h1[7:4] == 0) && (h1[3:0] != 0) && (h2[1:0] == 0);
