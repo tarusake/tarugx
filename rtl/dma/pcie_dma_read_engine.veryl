@@ -23,7 +23,10 @@ module pcie_dma_read_engine #(
     mrd_host_address: output logic<64> ,
     mrd_length_dw   : output logic<5>  ,
     mrd_tag         : output logic<8>  ,
-    active_tags     : output logic<256>,
+    active0_valid   : output logic     ,
+    active0_tag     : output logic<8>  ,
+    active1_valid   : output logic     ,
+    active1_tag     : output logic<8>  ,
     cpl_valid       : input  logic     ,
     cpl_ready       : output logic     ,
     cpl_has_data    : input  logic     ,
@@ -60,7 +63,6 @@ module pcie_dma_read_engine #(
     var slot_vram         : logic<32> [2];
     var slot_length       : logic<5>  [2];
     var slot_done         : logic<5>  [2];
-    var active_tag_mask   : logic<256>;
     var chunk_pending     : logic     ;
     var chunk_slot        : logic     ;
     var chunk_words       : logic<256>;
@@ -82,7 +84,8 @@ module pcie_dma_read_engine #(
         && ((issue_host + (length_bytes as 64)) >= issue_host);
     let issue_slot: logic = slot_valid[0];
     let slot_available: logic = !(&slot_valid);
-    let tag_available: logic = !active_tags[next_tag];
+    let tag_available: logic = !(slot_valid[0] && (slot_tag[0] == next_tag))
+        && !(slot_valid[1] && (slot_tag[1] == next_tag));
     let issue_possible: logic = (state == State::Run) && (issue_remaining_dw != 0)
         && slot_available && tag_available;
     let cpl_match0: logic = slot_valid[0] && (slot_tag[0] == cpl_tag);
@@ -107,7 +110,10 @@ module pcie_dma_read_engine #(
     let progress: logic = (mrd_valid && mrd_ready) || (cpl_valid && cpl_ready)
         || (fb_req_valid && fb_req_ready) || (fb_rsp_valid && fb_rsp_ready);
 
-    assign active_tags      = active_tag_mask;
+    assign active0_valid    = slot_valid[0];
+    assign active0_tag      = slot_tag[0];
+    assign active1_valid    = slot_valid[1];
+    assign active1_tag      = slot_tag[1];
     assign cmd_ready        = state == State::Idle;
     assign busy             = state != State::Idle;
     assign mrd_valid        = issue_possible;
@@ -140,7 +146,6 @@ module pcie_dma_read_engine #(
             slot_vram          = '{default: '0};
             slot_length        = '{default: '0};
             slot_done          = '{default: '0};
-            active_tag_mask    = 0;
             chunk_pending      = 0;
             chunk_slot         = 0;
             chunk_words        = 0;
@@ -175,7 +180,6 @@ module pcie_dma_read_engine #(
                     length_bytes       = cmd_length_bytes;
                     issue_remaining_dw = cmd_length_bytes[31:2];
                     slot_valid         = 0;
-                    active_tag_mask    = 0;
                     chunk_pending      = 0;
                     fb_outstanding     = 0;
                     error              = 0;
@@ -197,7 +201,6 @@ module pcie_dma_read_engine #(
                         slot_vram[issue_slot]   = issue_vram;
                         slot_length[issue_slot] = next_request_dw;
                         slot_done[issue_slot]   = 0;
-                        active_tag_mask[next_tag] = 1;
                         issue_host              = issue_host + ((next_request_dw as 64) << 2);
                         issue_vram              = issue_vram + ((next_request_dw as 32) << 2);
                         issue_remaining_dw      = issue_remaining_dw - (next_request_dw as 30);
@@ -228,7 +231,6 @@ module pcie_dma_read_engine #(
                         if chunk_left <= write_word_count {
                             chunk_pending = 0;
                             if (slot_done[chunk_slot] + (chunk_total as 5)) >= slot_length[chunk_slot] {
-                                active_tag_mask[slot_tag[chunk_slot]] = 0;
                                 slot_valid[chunk_slot] = 0;
                             } else {
                                 slot_done[chunk_slot] = slot_done[chunk_slot] + (chunk_total as 5);
@@ -254,7 +256,6 @@ module pcie_dma_read_engine #(
                 }
                 State::Fail: {
                     slot_valid    = 0;
-                    active_tag_mask = 0;
                     chunk_pending = 0;
                     if fb_outstanding == 0 {
                         done  = 1;

@@ -7,7 +7,8 @@ module dma_tlp_tb;
  logic request_ready,request_error,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  tarugx_dma_read_request_tx tx(.*);
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;
- logic [15:0] expected_requester=16'h0100;logic [7:0] expected_tag=8'h5a;logic [255:0] active_tags;logic completion_ready=0;
+ logic [15:0] expected_requester=16'h0100;logic [7:0] expected_tag=8'h5a;
+ logic active0_valid=1,active1_valid=0;logic [7:0] active0_tag=8'h5a,active1_tag=0;logic completion_ready=0;
  logic rx_wait,completion_valid,completion_has_data,completion_error;logic [2:0] completion_status;
  logic [3:0] completion_length_dw;logic [11:0] completion_byte_count;logic [6:0] completion_lower_address;logic [7:0] completion_tag;
  logic [255:0] completion_data;
@@ -39,7 +40,6 @@ module dma_tlp_tb;
   @(negedge clk);rx_valid=0;rx_eop=0;
  endtask
  initial begin
-  active_tags=256'b1<<expected_tag;
   repeat(3)tick();@(negedge clk);rst_n=1;
   request_valid=1;#1;
   assert(request_ready&&!request_error&&tx_sop&&tx_eop&&tx_valid==8'hf0)else $fatal(1,"request handshake");

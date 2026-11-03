@@ -4,7 +4,7 @@ module pcie_dma_read_engine_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic cmd_valid=0,cmd_ready;logic [63:0] cmd_host_address=0;logic [31:0] cmd_vram_address=0,cmd_length_bytes=0;
  logic busy,done,error,mrd_valid,mrd_ready=0;logic [63:0] mrd_host_address;logic [4:0] mrd_length_dw;logic [7:0] mrd_tag;
- logic [255:0] active_tags;
+ logic active0_valid,active1_valid;logic [7:0] active0_tag,active1_tag;
  logic cpl_valid=0,cpl_ready,cpl_has_data=0,cpl_error=0;logic [3:0] cpl_length_dw=0;logic [6:0] cpl_lower_address=0;logic [7:0] cpl_tag=0;
  logic [255:0] cpl_data=0;logic fb_req_valid,fb_req_ready=0;logic [31:0] fb_req_addr;logic [255:0] fb_req_wdata;
  logic [31:0] fb_req_wstrb;logic fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
@@ -66,7 +66,8 @@ module pcie_dma_read_engine_tb;
    @(negedge clk);mrd_ready=1;tick();@(negedge clk);mrd_ready=0;request_count++;
    base+=expected_lengths[req];
   end
-  assert(active_tags[issued_tags[0]]&&active_tags[issued_tags[1]])else $fatal(1,"two active tags");
+  assert(active0_valid&&active1_valid&&active0_tag==issued_tags[0]&&active1_tag==issued_tags[1])
+   else $fatal(1,"two active tags");
   completion(8,1,issued_tags[1],issued_lowers[1]);service_writes(8,1);
   completion(3,9,issued_tags[1],issued_lowers[1]+7'd32);service_writes(3,9);
   completion(1,0,issued_tags[0],issued_lowers[0]);service_writes(1,0);
