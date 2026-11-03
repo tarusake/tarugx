@@ -132,7 +132,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [5:0] app_rx_bar;
 `ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
     wire app_rx_busy;
-    wire [19:0] app_raw_bar;
+    wire app_rom_hit;
 `ifdef TARUGX_PCIE_AUTO_ROM
     wire [19:0] rx_raw_tag={u_pcie.tl_rx_bardec0_w,u_pcie.PCIE_Controller_Top_pcie_tl_rx_bardec_i};
     localparam AUTO_ROM = 1;
@@ -144,7 +144,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .clk(tlp_clk), .rst_n(cpu_reset[1]),
         .in_sop(rx_sop), .in_eop(rx_eop), .in_valid(rx_valid), .in_data(rx_data),
         .in_bar(rx_bar_decode), .in_error(rx_error), .in_wait(rx_wait),
-        .in_tag(rx_raw_tag), .out_tag(app_raw_bar),
+        .in_tag(rx_raw_tag), .out_tag_match(app_rom_hit),
         .out_sop(app_rx_sop), .out_eop(app_rx_eop), .out_valid(app_rx_valid), .out_data(app_rx_data),
         .out_bar(app_rx_bar), .out_error(app_rx_error), .out_wait(app_rx_wait), .busy(app_rx_busy)
     );
@@ -172,7 +172,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [31:0] rom_data;
     tarugx_option_rom_diagnostic #(.AUTO_ROM(AUTO_ROM)) u_rom (
         .clk(tlp_clk), .rst_n(cpu_reset[1]), .completer_id({cfg_busdev,3'b000}),
-        .rom_hit(app_raw_bar == 20'h00040),
+        .rom_hit(app_rom_hit),
         .rx_sop(app_rx_sop), .rx_eop(app_rx_eop), .rx_valid(app_rx_valid), .rx_data(app_rx_data),
         .rx_bar(app_rx_bar), .rx_error(app_rx_error), .rx_wait(app_rx_wait), .rx_masknp(app_rx_masknp),
         .core_rx_valid(core_rx_valid), .core_rx_wait(core_rx_wait), .core_rx_masknp(core_rx_masknp),
