@@ -65,6 +65,7 @@ try:
     assert not endpoint.exists(), 'Endpoint removal failed'
 except Exception:
     subprocess.run(['modprobe', 'gpu_sched'], check=False)
+    subprocess.run(['modprobe', 'drm_dma_helper'], check=False)
     subprocess.run(['insmod', str(module_copy)], check=False)
     subprocess.run(['systemctl', 'start', 'tarugx-main-display'], check=False)
     raise
@@ -100,6 +101,7 @@ if Path('/sys/module/tarugx').exists():
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True)
 assert module_copy.is_file(), 'Saved driver module is missing'
 subprocess.run(['modprobe', 'gpu_sched'], check=True)
+subprocess.run(['modprobe', 'drm_dma_helper'], check=True)
 subprocess.run(['insmod', str(module_copy)], check=True)
 assert endpoint.joinpath('driver').resolve(strict=True).name == 'tarugx', 'Driver bind failed'
 subprocess.run(['systemctl', 'start', 'tarugx-main-display'], check=True)

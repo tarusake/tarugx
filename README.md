@@ -131,10 +131,14 @@ submit自体は0.017msで復帰しました。fence、VRAM読戻し、WAITなし
 `render_failures=0`、最大待機深度3を確認しています。
 ドライバー0.14以降は、1080p表示に使うDMA-coherent dumb bufferを標準PRIME
 dma-buf FDへexportできます。同じTaruGXの別DRM fileへself-importしてGEM handleを
-共有でき、XRGB8888とRGB565の両方で表示回帰を実機確認しました。外部デバイスの
-scatter/gather dma-bufは、現時点のDMAが安全に扱えないため`EOPNOTSUPP`で拒否します。
-DMA heapの外部dma-bufを拒否する実機回帰も含みます。同時にschedulerのrunqueue数を
+共有でき、XRGB8888とRGB565の両方で表示回帰を実機確認しました。同時にschedulerのrunqueue数を
 標準priority数に合わせ、probe時のpriority範囲外警告を解消しました。
+ドライバー0.15以降は、外部dma-bufのscatter/gather tableがDMAアドレス空間で
+バッファ全体にわたり連続している場合に限りPRIME importを受け付けます。非連続な
+dma-bufは`EINVAL`で拒否し、PCIe DMAに不正な単一アドレスを渡しません。実機では
+DMA heapから確保したXRGB8888 8,294,400 byteとRGB565 4,149,248 byteを外部PRIME
+framebufferとして登録し、TaruGXのPCIe DMAでVRAMへ転送して1080p表示できることを
+確認しました。各モードでDMA 7回、page flip 5回、全failure／timeout 0です。
 
 2D用のVRAMは`DRM_IOCTL_TARUGX_VRAM_CREATE`でGEM handleとして確保できます。
 DRM coreのhandle所有権とmmap offset検査を通してBAR2へwrite-combine mappingし、

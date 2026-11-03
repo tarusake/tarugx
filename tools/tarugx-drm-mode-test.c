@@ -13,6 +13,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
+#include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
 
 static uint32_t color(unsigned band)
@@ -60,13 +61,14 @@ int main(int argc, char **argv)
 	struct drm_mode_destroy_dumb destroy = {0};
 	struct drm_gem_close import_close = {0};
 	struct dma_heap_allocation_data heap_alloc = {
-		.len = 4096,
 		.fd_flags = O_RDWR | O_CLOEXEC,
 	};
 	drmModeRes *resources = NULL;
 	drmModeConnector *connector = NULL;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
+	uint32_t external_framebuffer = 0, external_handle = 0;
 	uint32_t framebuffer = 0, crtc = 0;
+	uint8_t *external_pixels = MAP_FAILED;
 	uint8_t *pixels = MAP_FAILED;
 	unsigned hold_seconds = 10;
 	unsigned requested_bpp = 0;
@@ -137,6 +139,7 @@ int main(int argc, char **argv)
 		}
 	}
 	destroy.handle = create.handle;
+	heap_alloc.len = create.size;
 	if (drmPrimeHandleToFD(fd, create.handle, DRM_CLOEXEC | DRM_RDWR,
 			       &prime_fd)) {
 		perror("export dumb buffer to PRIME fd");
@@ -151,30 +154,73 @@ int main(int argc, char **argv)
 	puts("DRM PRIME self-import PASS: DMA-backed dumb buffer shared to a second file");
 	heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
 	if (heap_fd >= 0) {
-		uint32_t external_handle = 0;
+		uint32_t external_handles[4] = {0};
+		uint32_t external_pitches[4] = {0};
+		uint32_t external_offsets[4] = {0};
 
 		if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &heap_alloc)) {
 			perror("allocate external dma-buf");
 			goto out;
 		}
 		heap_buffer_fd = heap_alloc.fd;
-		errno = 0;
-		if (!drmPrimeFDToHandle(import_fd, heap_buffer_fd,
-					&external_handle) || errno != EOPNOTSUPP) {
-			fprintf(stderr,
-				"external PRIME import was not rejected (errno=%d)\n",
-				errno);
-			if (external_handle) {
-				struct drm_gem_close external_close = {
-					.handle = external_handle,
-				};
-
-				drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE,
-					 &external_close);
-			}
+		if (drmPrimeFDToHandle(fd, heap_buffer_fd,
+				       &external_handle)) {
+			perror("import contiguous external dma-buf");
 			goto out;
 		}
-		puts("DRM PRIME external import PASS: unsupported dma-buf rejected");
+		external_handles[0] = external_handle;
+		external_pitches[0] = create.pitch;
+		if (drmModeAddFB2(fd, create.width, create.height,
+				  create.bpp == 16 ? DRM_FORMAT_RGB565 :
+				  DRM_FORMAT_XRGB8888,
+				  external_handles, external_pitches,
+				  external_offsets, &external_framebuffer, 0)) {
+			perror("add external PRIME framebuffer");
+			goto out;
+		}
+		external_pixels = mmap(NULL, create.size,
+				       PROT_READ | PROT_WRITE, MAP_SHARED,
+				       heap_buffer_fd, 0);
+		if (external_pixels == MAP_FAILED) {
+			perror("mmap external PRIME framebuffer");
+			goto out;
+		}
+		{
+			struct dma_buf_sync sync = {
+				.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+			};
+
+			if (ioctl(heap_buffer_fd, DMA_BUF_IOCTL_SYNC, &sync)) {
+				perror("begin external dma-buf CPU access");
+				goto out;
+			}
+		}
+		for (unsigned band = 0; band < 6; band++) {
+			drmModeClip band_clip = {
+				0, create.height * band / 6,
+				create.width, create.height * (band + 1) / 6,
+			};
+
+			fill_rect(external_pixels, create.pitch, &band_clip,
+				  color(5 - band), create.bpp);
+		}
+		{
+			struct dma_buf_sync sync = {
+				.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE,
+			};
+
+			if (ioctl(heap_buffer_fd, DMA_BUF_IOCTL_SYNC, &sync)) {
+				perror("end external dma-buf CPU access");
+				goto out;
+			}
+		}
+		if (drmModeSetCrtc(fd, crtc, external_framebuffer, 0, 0,
+				   &connector->connector_id, 1,
+				   &connector->modes[0])) {
+			perror("external PRIME modeset");
+			goto out;
+		}
+		puts("DRM PRIME external scanout PASS: contiguous dma-buf uploaded by PCIe DMA");
 	}
 	handles[0] = create.handle;
 	pitches[0] = create.pitch;
@@ -257,8 +303,19 @@ out:
 		drmModeSetCrtc(fd, crtc, 0, 0, 0, NULL, 0, NULL);
 	if (pixels != MAP_FAILED)
 		munmap(pixels, create.size);
+	if (external_pixels != MAP_FAILED)
+		munmap(external_pixels, create.size);
 	if (framebuffer)
 		drmModeRmFB(fd, framebuffer);
+	if (external_framebuffer)
+		drmModeRmFB(fd, external_framebuffer);
+	if (external_handle && fd >= 0) {
+		struct drm_gem_close external_close = {
+			.handle = external_handle,
+		};
+
+		drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &external_close);
+	}
 	if (destroy.handle)
 		drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 	drmModeFreeConnector(connector);
