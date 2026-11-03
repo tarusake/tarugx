@@ -47,6 +47,6 @@ set_max_delay 10 -from [get_cells {u_memory_path/cdc/responses/wp_sclk_gray_ff*}
 set_max_delay 10 -from [get_cells {u_memory_path/cdc/responses/rp_dclk_gray_ff*}] -to [get_cells {u_memory_path/cdc/responses/u_synchronizer_rp/*rg_0_s0}]
 # Bound Gray-pointer crossing delay by the faster clock period, without a
 # blanket asynchronous-clock exception that could hide these constraints.
-set_max_delay 10 -from [get_cells {u_scanout/fifo/fifo_0/write_gray*}] -to [get_cells {u_scanout/fifo/fifo_0/write_gray_dst_meta*}]
-set_max_delay 10 -from [get_cells {u_scanout/fifo/fifo_0/read_gray*}] -to [get_cells {u_scanout/fifo/fifo_0/read_gray_src_meta*}]
+set_max_delay 10 -from [get_cells {u_scanout/fifo/fifo_0/write_gray_?_s0}] -to [get_cells {u_scanout/fifo/fifo_0/write_gray_dst_meta_?_s0}]
+set_max_delay 10 -from [get_cells {u_scanout/fifo/fifo_0/read_gray_?_s0}] -to [get_cells {u_scanout/fifo/fifo_0/read_gray_src_meta_?_s0}]
 report_timing -setup -max_paths 100 -max_common_paths 1
