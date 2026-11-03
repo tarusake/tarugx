@@ -4,33 +4,44 @@
 module pcie_rx_probe #(
     param REPLACE_UNMATCHED: u32 = 0,
 ) (
-    clk: input clock, rst_n: input reset,
-    rx_sop: input logic, rx_eop: input logic, rx_wait: input logic,
-    rx_valid: input logic<8>, rx_error: input logic<8>,
-    rx_bar: input logic<6>, rx_data: input logic<256>,
+    clk     : input  clock     ,
+    rst_n   : input  reset     ,
+    rx_sop  : input  logic     ,
+    rx_eop  : input  logic     ,
+    rx_wait : input  logic     ,
+    rx_valid: input  logic<8>  ,
+    rx_error: input  logic<8>  ,
+    rx_bar  : input  logic<6>  ,
+    rx_data : input  logic<256>,
     snapshot: output logic<256>,
 ) {
-    var count: logic<32>;
-    var unmatched_count: logic<32>;
-    var captured: logic;
-    var unmatched_captured: logic;
-    var held: logic<192>;
-    let unmatched: logic = (rx_bar & 6'b000101) == 0;
+    var count             : logic<32> ;
+    var unmatched_count   : logic<32> ;
+    var captured          : logic     ;
+    var unmatched_captured: logic     ;
+    var held              : logic<192>;
+    let unmatched         : logic      = (rx_bar & 6'b000101) == 0;
     assign snapshot = {count, unmatched_count, held};
     always_ff {
         if_reset {
-            count = 0; unmatched_count = 0;
-            captured = 0; unmatched_captured = 0; held = 0;
+            count              = 0;
+            unmatched_count    = 0;
+            captured           = 0;
+            unmatched_captured = 0;
+            held               = 0;
         } else if (|rx_valid) && rx_sop && !rx_wait {
-            if count != 32'hffffffff { count = count + 32'd1; }
+            if count != 32'hffffffff {
+                count = count + 32'd1;
+            }
             if unmatched && (unmatched_count != 32'hffffffff) {
                 unmatched_count = unmatched_count + 32'd1;
             }
             if !captured || (unmatched && (!unmatched_captured || (REPLACE_UNMATCHED != 0))) {
                 captured = 1;
-                if unmatched { unmatched_captured = 1; }
-                held = {4'b0, unmatched, rx_eop, rx_sop, 1'b1,
-                        2'b0, rx_bar, rx_valid, rx_error, rx_data[255:96]};
+                if unmatched {
+                    unmatched_captured = 1;
+                }
+                held = {4'b0, unmatched, rx_eop, rx_sop, 1'b1, 2'b0, rx_bar, rx_valid, rx_error, rx_data[255:96]};
             }
         }
     }

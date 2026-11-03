@@ -4,6 +4,7 @@ module scanout_reader_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic enable=0;logic [31:0] fb_base=0,fb_stride=2560;
  logic config_error,mem_valid,mem_ready=0,mem_rsp_valid=0,mem_rsp_ready;
+ logic active_buffer;
  logic [21:0] mem_addr;logic [255:0] mem_rsp_data=0;
  logic mem_rsp_error=0,out_valid,out_ready=0,out_error;
  logic [15:0] out_index;logic [255:0] out_data;

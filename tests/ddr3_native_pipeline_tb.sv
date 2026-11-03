@@ -41,15 +41,16 @@ module ddr3_native_pipeline_tb;
     @(negedge clk);mem_rsp_ready=1;tick();@(negedge clk);mem_rsp_ready=0;
    end
   end
-  request(0,64);cmd_ready=1;rd_data_valid=1;rd_data=256'hbeef;tick();
-  @(negedge clk);cmd_ready=0;rd_data_valid=0;
-  assert(mem_rsp_valid && mem_rsp_data==256'hbeef && !mem_rsp_error)else $fatal(1,"zero latency");
+  request(0,64);cmd_ready=1;tick();
+  @(negedge clk);cmd_ready=0;rd_data_valid=1;rd_data=256'hbeef;tick();
+  @(negedge clk);rd_data_valid=0;
+  assert(mem_rsp_valid && mem_rsp_data==256'hbeef && !mem_rsp_error)else $fatal(1,"registered read return");
   mem_rsp_ready=1;tick();@(negedge clk);mem_rsp_ready=0;
   request(1,4);assert(mem_rsp_valid && mem_rsp_error && !cmd_en)else $fatal(1,"alignment");
   mem_rsp_ready=1;tick();@(negedge clk);mem_rsp_ready=0;
   request(0,0);cmd_ready=1;tick();@(negedge clk);cmd_ready=0;rst_n=0;tick();
   assert(!cmd_en && !mem_rsp_valid)else $fatal(1,"reset pending");
-  $display("Native pipeline: 8 reserved slots, mixed ordered responses, return bursts, backpressure, wrap, zero latency, errors, reset PASS");$finish;
+  $display("Native pipeline: 8 reserved slots, mixed ordered responses, return bursts, backpressure, wrap, errors, reset PASS");$finish;
  end
  initial begin #100000;$fatal(1,"timeout");end
 endmodule

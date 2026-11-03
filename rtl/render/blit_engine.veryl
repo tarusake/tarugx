@@ -1,0 +1,296 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// One-command 32-bpp VRAM-to-VRAM rectangle copy engine.
+///
+/// Aligned forward copies move eight pixels per read/write pair.  Unaligned,
+/// tail, and overlapping copies fall back to one pixel while every native
+/// request remains 256-bit aligned.  Backwards traversal provides memmove
+/// semantics for overlapping rectangles.
+module blit_engine (
+    clk           : input  clock     ,
+    rst_n         : input  reset     ,
+    cmd_valid     : input  logic     ,
+    cmd_ready     : output logic     ,
+    cmd_src_addr  : input  logic<32> ,
+    cmd_dst_addr  : input  logic<32> ,
+    cmd_src_stride: input  logic<32> ,
+    cmd_dst_stride: input  logic<32> ,
+    cmd_width     : input  logic<16> ,
+    cmd_height    : input  logic<16> ,
+    busy          : output logic     ,
+    done          : output logic     ,
+    error         : output logic     ,
+    mem_valid     : output logic     ,
+    mem_ready     : input  logic     ,
+    mem_write     : output logic     ,
+    mem_addr      : output logic<22> ,
+    mem_wdata     : output logic<256>,
+    mem_wstrb     : output logic<32> ,
+    mem_rsp_valid : input  logic     ,
+    mem_rsp_ready : output logic     ,
+    mem_rsp_data  : input  logic<256>,
+    mem_rsp_error : input  logic     ,
+) {
+    enum State: logic<5> {
+        Idle,
+        Validate,
+        ValidateStride,
+        PrepareMultiply,
+        Multiply,
+        CaptureEnds,
+        Bounds,
+        Direction,
+        SetupRows,
+        SetupPixels,
+        ReadIssue,
+        ReadWait,
+        WriteIssue,
+        WriteWait,
+        Advance,
+        RowCheck,
+        NextRow,
+        SetupNextPixels,
+        Finish,
+    }
+    #[sv("syn_preserve=1")]
+    var state      : State    ;
+    var src_base   : logic<32>;
+    var dst_base   : logic<32>;
+    var src_stride : logic<32>;
+    var dst_stride : logic<32>;
+    var width      : logic<16>;
+    var height     : logic<16>;
+    var row_src    : logic<32>;
+    var row_dst    : logic<32>;
+    var src_pixel  : logic<32>;
+    var dst_pixel  : logic<32>;
+    var pixels_left: logic<16>;
+    var rows_left  : logic<16>;
+    var backward   : logic    ;
+    var transfer_count: logic<4>;
+    var transfer_data: logic<256>;
+    var src_tail   : logic<64>;
+    var dst_tail   : logic<64>;
+    var src_end    : logic<64>;
+    var dst_end    : logic<64>;
+    var multiplicand_src: logic<64>;
+    var multiplicand_dst: logic<64>;
+    var multiplier      : logic<16>;
+    var multiply_step   : logic<5> ;
+
+    let row_bytes     : logic<64> = (width as 64) << 2;
+    let last_pixel    : logic<32> = ((width as 32) - 32'd1) << 2;
+    let ranges_overlap: logic     = (src_base as 64) <: dst_end && (dst_base as 64) <: src_end;
+    let command_basic_ok: logic   = (src_base[1:0] == 0) && (dst_base[1:0] == 0) && (src_stride[1:0] == 0)
+        && (dst_stride[1:0] == 0) && (width != 0) && (height != 0);
+    let command_stride_ok: logic  = ((src_stride as 64) >= row_bytes) && ((dst_stride as 64) >= row_bytes);
+    let bounds_ok: logic = (src_end <= 64'h400000) && (dst_end <= 64'h400000);
+    assign cmd_ready     = state == State::Idle;
+    assign busy          = state != State::Idle;
+    assign mem_valid     = (state == State::ReadIssue) || (state == State::WriteIssue);
+    assign mem_write     = state == State::WriteIssue;
+    assign mem_addr      = if state == State::WriteIssue ? {dst_pixel[21:5], 5'b0} : {src_pixel[21:5], 5'b0};
+    assign mem_rsp_ready = (state == State::ReadWait) || (state == State::WriteWait);
+
+    always_comb {
+        mem_wdata = 0;
+        mem_wstrb = 0;
+        if transfer_count == 4'd8 {
+            mem_wdata = transfer_data;
+            mem_wstrb = 32'hffff_ffff;
+        } else {
+            for i in 0..8 {
+                if (i as 3) == dst_pixel[4:2] {
+                    mem_wdata[i * 32+:32] = transfer_data[31:0];
+                    mem_wstrb[i * 4+:4]   = 4'hf;
+                }
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            state       = State::Idle;
+            src_base    = 0;
+            dst_base    = 0;
+            src_stride  = 0;
+            dst_stride  = 0;
+            width       = 0;
+            height      = 0;
+            row_src     = 0;
+            row_dst     = 0;
+            src_pixel   = 0;
+            dst_pixel   = 0;
+            pixels_left = 0;
+            rows_left   = 0;
+            backward    = 0;
+            transfer_count = 1;
+            transfer_data = 0;
+            src_tail    = 0;
+            dst_tail    = 0;
+            src_end     = 0;
+            dst_end     = 0;
+            multiplicand_src = 0;
+            multiplicand_dst = 0;
+            multiplier       = 0;
+            multiply_step    = 0;
+            done        = 0;
+            error       = 0;
+        } else {
+            done = 0;
+            case state {
+                State::Idle    : if cmd_valid {
+                    src_base   = cmd_src_addr;
+                    dst_base   = cmd_dst_addr;
+                    src_stride = cmd_src_stride;
+                    dst_stride = cmd_dst_stride;
+                    width      = cmd_width;
+                    height     = cmd_height;
+                    error      = 0;
+                    state      = State::Validate;
+                }
+                State::Validate: {
+                    if command_basic_ok {
+                        state = State::ValidateStride;
+                    } else {
+                        error = 1;
+                        state = State::Finish;
+                    }
+                }
+                State::ValidateStride: {
+                    if command_stride_ok {
+                        state = State::PrepareMultiply;
+                    } else {
+                        error = 1;
+                        state = State::Finish;
+                    }
+                }
+                State::PrepareMultiply: {
+                    src_tail         = 0;
+                    dst_tail         = 0;
+                    multiplicand_src = src_stride as 64;
+                    multiplicand_dst = dst_stride as 64;
+                    multiplier       = height - 16'd1;
+                    multiply_step    = 0;
+                    state            = State::Multiply;
+                }
+                State::Multiply: {
+                    if multiplier[0] {
+                        src_tail = src_tail + multiplicand_src;
+                        dst_tail = dst_tail + multiplicand_dst;
+                    }
+                    multiplicand_src = multiplicand_src << 1;
+                    multiplicand_dst = multiplicand_dst << 1;
+                    multiplier       = multiplier >> 1;
+                    if multiply_step == 5'd15 {
+                        state = State::CaptureEnds;
+                    } else {
+                        multiply_step = multiply_step + 5'd1;
+                    }
+                }
+                State::CaptureEnds: {
+                    src_end = (src_base as 64) + src_tail + row_bytes;
+                    dst_end = (dst_base as 64) + dst_tail + row_bytes;
+                    state   = State::Bounds;
+                }
+                State::Bounds: {
+                    error = !bounds_ok;
+                    state = if bounds_ok ? State::Direction : State::Finish;
+                }
+                State::Direction: {
+                    backward    = ranges_overlap && (dst_base >: src_base);
+                    state       = State::SetupRows;
+                }
+                State::SetupRows: {
+                    row_src     = if ranges_overlap && (dst_base >: src_base) ?
+                        src_base + src_tail[31:0]
+                    :
+                        src_base
+                    ;
+                    row_dst     = if ranges_overlap && (dst_base >: src_base) ?
+                        dst_base + dst_tail[31:0]
+                    :
+                        dst_base
+                    ;
+                    state       = State::SetupPixels;
+                }
+                State::SetupPixels: {
+                    src_pixel   = if backward ? row_src + last_pixel : row_src;
+                    dst_pixel   = if backward ? row_dst + last_pixel : row_dst;
+                    pixels_left = width;
+                    rows_left   = height;
+                    state       = State::ReadIssue;
+                }
+                State::ReadIssue : {
+                    transfer_count = if !backward && (src_pixel[4:0] == 0)
+                        && (dst_pixel[4:0] == 0) && (pixels_left >= 16'd8) ? 4'd8 : 4'd1;
+                    if mem_ready {
+                        state = State::ReadWait;
+                    }
+                }
+                State::ReadWait  : if mem_rsp_valid {
+                    if mem_rsp_error {
+                        error = 1;
+                        state = State::Finish;
+                    } else if transfer_count == 4'd8 {
+                        transfer_data = mem_rsp_data;
+                        state         = State::WriteIssue;
+                    } else {
+                        for i in 0..8 {
+                            if (i as 3) == src_pixel[4:2] {
+                                transfer_data[31:0] = mem_rsp_data[i * 32+:32];
+                            }
+                        }
+                        state = State::WriteIssue;
+                    }
+                }
+                State::WriteIssue: if mem_ready {
+                    state = State::WriteWait;
+                }
+                State::WriteWait : if mem_rsp_valid {
+                    if mem_rsp_error {
+                        error = 1;
+                        state = State::Finish;
+                    } else {
+                        state = State::Advance;
+                    }
+                }
+                State::Advance   : {
+                    if pixels_left >: (transfer_count as 16) {
+                        pixels_left = pixels_left - (transfer_count as 16);
+                        src_pixel   = if backward ? src_pixel - 32'd4
+                            : src_pixel + ((transfer_count as 32) << 2);
+                        dst_pixel   = if backward ? dst_pixel - 32'd4
+                            : dst_pixel + ((transfer_count as 32) << 2);
+                        state       = State::ReadIssue;
+                    } else {
+                        state = State::RowCheck;
+                    }
+                }
+                State::RowCheck: {
+                    state = if rows_left >: 1 ? State::NextRow : State::Finish;
+                }
+                State::NextRow: {
+                    row_src     = if backward ? row_src - src_stride : row_src + src_stride;
+                    row_dst     = if backward ? row_dst - dst_stride : row_dst + dst_stride;
+                    pixels_left = width;
+                    rows_left   = rows_left - 16'd1;
+                    state       = State::SetupNextPixels;
+                }
+                State::SetupNextPixels: {
+                    src_pixel   = if backward ? row_src + last_pixel : row_src;
+                    dst_pixel   = if backward ? row_dst + last_pixel : row_dst;
+                    state       = State::ReadIssue;
+                }
+                State::Finish: {
+                    done  = 1;
+                    state = State::Idle;
+                }
+                default: {
+                    error = 1;
+                    done  = 1;
+                    state = State::Idle;
+                }
+            }
+        }
+    }
+}

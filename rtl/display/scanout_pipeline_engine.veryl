@@ -8,7 +8,8 @@ module scanout_pipeline_engine (
     fb_base       : input  'mem   logic<32> ,
     fb_stride     : input  'mem   logic<32> ,
     config_error  : output 'mem   logic     ,
-    scan_urgent   : output 'mem   logic,
+    active_buffer : output 'mem   logic     ,
+    scan_urgent   : output 'mem   logic     ,
     mem_valid     : output 'mem   logic     ,
     mem_ready     : input  'mem   logic     ,
     mem_addr      : output 'mem   logic<22> ,
@@ -24,9 +25,10 @@ module scanout_pipeline_engine (
     vsync         : output 'pixel logic     ,
     rgb           : output 'pixel logic<24> ,
     underflow     : output 'pixel logic     ,
+    vblank_toggle : output 'pixel logic     ,
     fault_snapshot: output 'pixel logic<64> ,
 ) {
-    var buffered: 'mem logic;
+    var buffered      : 'mem   logic     ;
     var push_valid    : 'mem   logic     ;
     var push_ready    : 'mem   logic     ;
     var push_index    : 'mem   logic<16> ;
@@ -56,6 +58,7 @@ module scanout_pipeline_engine (
         fb_base                                        ,
         fb_stride                                      ,
         config_error                                   ,
+        active_buffer                                  ,
         mem_valid                                      ,
         mem_ready                                      ,
         mem_addr                                       ,
@@ -70,17 +73,17 @@ module scanout_pipeline_engine (
         out_error    : push_error                      ,
     );
     inst fifo: scanout_fifo (
-        src_clk  : mem_clk                            ,
-        src_rst_n: mem_rst_n                          ,
-        src_valid: push_valid                         ,
-        src_buffered: buffered,
-        src_ready: push_ready                         ,
-        src_data : {push_error, push_index, push_data},
-        dst_clk  : pixel_clk                          ,
-        dst_rst_n: pixel_rst_n                        ,
-        dst_valid: pop_valid                          ,
-        dst_ready: pop_ready                          ,
-        dst_data : pop_data                           ,
+        src_clk     : mem_clk                            ,
+        src_rst_n   : mem_rst_n                          ,
+        src_valid   : push_valid                         ,
+        src_buffered: buffered                           ,
+        src_ready   : push_ready                         ,
+        src_data    : {push_error, push_index, push_data},
+        dst_clk     : pixel_clk                          ,
+        dst_rst_n   : pixel_rst_n                        ,
+        dst_valid   : pop_valid                          ,
+        dst_ready   : pop_ready                          ,
+        dst_data    : pop_data                           ,
     );
     inst display: framebuffer_display (
         clk           : pixel_clk  ,
@@ -94,6 +97,7 @@ module scanout_pipeline_engine (
         vsync                      ,
         rgb                        ,
         underflow                  ,
+        vblank_toggle              ,
         display_active             ,
         fault_snapshot             ,
     );

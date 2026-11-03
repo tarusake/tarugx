@@ -27,13 +27,21 @@ module tarugx_top (
     display_ctrl : output logic<32> ,
     display_color: output logic<32> ,
 ) {
-    var framing_error: logic    ;
-    var unsupported  : logic    ;
-    var malformed    : logic    ;
-    var display_mode : logic<32>;
-    var fb_base      : logic<32>;
-    var fb_stride    : logic<32>;
-    var fb_commit    : logic    ;
+    var framing_error: logic     ;
+    var unsupported  : logic     ;
+    var malformed    : logic     ;
+    var display_mode : logic<32> ;
+    var fb_base      : logic<32> ;
+    var fb_stride    : logic<32> ;
+    var fb_commit    : logic     ;
+    var irq_enable   : logic<2>  ;
+    var fill_command : logic<128>;
+    var fill_start   : logic     ;
+    var blit_command : logic<160>;
+    var blit_start   : logic     ;
+    var queue_command: logic<194>;
+    var queue_submit : logic     ;
+    var queue_clear_error: logic ;
 
     inst app: pcie_bar0_path (
         clk            : tlp_clk  ,
@@ -55,12 +63,34 @@ module tarugx_top (
         framing_error             ,
         unsupported               ,
         malformed                 ,
+        active_buffer  : 1'b0     ,
+        vblank_toggle  : 1'b0     ,
+        fill_busy      : 1'b0     ,
+        fill_done      : 1'b0     ,
+        fill_error     : 1'b0     ,
+        blit_busy      : 1'b0     ,
+        blit_done      : 1'b0     ,
+        blit_error     : 1'b0     ,
+        queue_ready    : 1'b0     ,
+        queue_level    : 3'b0     ,
+        queue_active   : 1'b0     ,
+        queue_completed: 32'b0    ,
+        queue_error    : 1'b0     ,
+        queue_error_fence: 32'b0  ,
         display_ctrl              ,
         display_color             ,
         display_mode              ,
         fb_base                   ,
         fb_stride                 ,
         fb_commit_pulse: fb_commit,
+        irq_enable                ,
+        fill_command              ,
+        fill_start                ,
+        blit_command              ,
+        blit_start                ,
+        queue_command             ,
+        queue_submit              ,
+        queue_clear_error         ,
     );
 
     assign led_status[0] = !tlp_rst_n;

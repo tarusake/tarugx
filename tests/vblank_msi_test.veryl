@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+
+#[test(vblank_msi_holds_and_coalesces)]
+module vblank_msi_holds_and_coalesces {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var vblank_toggle   : logic;
+    var render_done     : logic;
+    var enable          : logic<2>;
+    var interrupt_ack   : logic;
+    var interrupt_req   : logic;
+    var interrupt_status: logic;
+
+    inst dut: tarugx::vblank_msi (
+        clk                  ,
+        rst_n           : rst,
+        enable               ,
+        vblank_toggle        ,
+        render_done          ,
+        interrupt_ack        ,
+        interrupt_req        ,
+        interrupt_status     ,
+    );
+
+    initial {
+        vblank_toggle = 0;
+        render_done   = 0;
+        enable        = 0;
+        interrupt_ack = 0;
+        rst.assert();
+        clk.next(2);
+        $assert(!interrupt_req && !interrupt_status);
+
+        vblank_toggle = 1;
+        clk.next(1);
+        $assert(!interrupt_req);
+        enable        = 1;
+        vblank_toggle = 0;
+        clk.next(1);
+        $assert(interrupt_req && interrupt_status);
+        clk.next(3);
+        $assert(interrupt_req);
+
+        interrupt_ack = 1;
+        clk.next(1);
+        $assert(!interrupt_req);
+        interrupt_ack = 0;
+
+        vblank_toggle = 1;
+        clk.next(1);
+        $assert(interrupt_req);
+        // A simultaneous new edge wins over ACK and remains pending.
+        vblank_toggle = 0;
+        interrupt_ack = 1;
+        clk.next(1);
+        $assert(interrupt_req);
+        interrupt_ack = 0;
+        clk.next(1);
+        interrupt_ack = 1;
+        clk.next(1);
+        $assert(!interrupt_req);
+
+        // Bit 1 enables render completion without enabling VBlank.
+        interrupt_ack = 0;
+        enable        = 2;
+        render_done   = 1;
+        clk.next(1);
+        render_done = 0;
+        $assert(interrupt_req && interrupt_status);
+        interrupt_ack = 1;
+        clk.next(1);
+        $assert(!interrupt_req);
+        $finish();
+    }
+}

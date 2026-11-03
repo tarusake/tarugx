@@ -13,6 +13,7 @@ module framebuffer_display (
     vsync         : output logic     ,
     rgb           : output logic<24> ,
     underflow     : output logic     ,
+    vblank_toggle : output logic     ,
     display_active: output logic     ,
     fault_snapshot: output logic<64> ,
 ) {
@@ -51,8 +52,12 @@ module framebuffer_display (
             running        = 0;
             armed          = 0;
             underflow      = 0;
+            vblank_toggle  = 0;
             fault_snapshot = 0;
         } else {
+            if frame_start {
+                vblank_toggle = !vblank_toggle;
+            }
             // Enabling scanout starts an asynchronous DDR prefill. Wait for
             // index zero at a frame boundary before diagnosing starvation.
             if !current_settings[24] || current_settings[25] {

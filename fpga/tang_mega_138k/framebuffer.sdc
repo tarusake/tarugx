@@ -17,9 +17,10 @@ set_false_path -from [get_clocks {ddr400}] -to [get_clocks {sys_clk}]
 # Mailbox toggle first stages only; subsequent synchronizer stages remain timed.
 set_false_path -to [get_pins {u_display_cdc/ack_sync_0_s0/D u_display_cdc/request_sync_0_s0/D}]
 set_false_path -to [get_pins {u_memory_config_cdc/ack_sync_0_s0/D u_memory_config_cdc/request_sync_0_s0/D}]
-set_false_path -to [get_pins {u_memory_path/cdc/request_sync_0_s0/D u_memory_path/cdc/response_sync_0_s0/D}]
+set_false_path -to [get_pins {u_active_buffer_cdc/ack_sync_0_s0/D u_active_buffer_cdc/request_sync_0_s0/D}]
+set_false_path -to [get_pins {u_vblank_toggle_cdc/ack_sync_0_s0/D u_vblank_toggle_cdc/request_sync_0_s0/D}]
 set_false_path -to [get_pins {u_scanout/display_active_sync_0_s0/D}]
-set_max_delay 10 -from [get_cells {u_scanout/display/fault_snapshot*}] -to [get_cells {debug_fault*}]
+set_max_delay 10 -from [get_pins {u_scanout/display/fault_snapshot*/Q}] -to [get_pins {debug_fault*/D}]
 set_false_path -to [get_pins {status_meta*/D}]
 set_false_path -to [get_pins {debug_aux_meta*/D sys_toggle_sync_0_s0/D}]
 set_false_path -to [get_pins {u_pcie_debug/flags_meta*/D u_pcie_debug/beat_sync_0_s0/D}]
@@ -33,8 +34,14 @@ set_false_path -to [get_pins {u_dvi/*dvi_tx_tmds_phy_inst/reset_release*/CLEAR}]
 # Bundled payloads settle before the synchronized toggles can be consumed.
 set_max_delay 10 -from [get_cells {u_display_cdc/held*}] -to [get_cells {u_display_cdc/dst_config*}]
 set_max_delay 10 -from [get_cells {u_memory_config_cdc/held*}] -to [get_cells {u_memory_config_cdc/dst_config*}]
-set_max_delay 10 -from [get_cells {u_memory_path/cdc/held_request*}] -to [get_cells {u_memory_path/cdc/dst_request*}]
-set_max_delay 10 -from [get_cells {u_memory_path/cdc/held_response*}] -to [get_cells {u_memory_path/cdc/src_response*}]
+set_max_delay 10 -from [get_cells {u_active_buffer_cdc/held*}] -to [get_cells {u_active_buffer_cdc/dst_config*}]
+set_max_delay 10 -from [get_cells {u_vblank_toggle_cdc/held*}] -to [get_cells {u_vblank_toggle_cdc/dst_config*}]
+# Request/response CDC now uses asynchronous FIFOs. Bound both Gray-pointer
+# crossings by the faster clock period; FIFO payload storage is dual-clock RAM.
+set_max_delay 10 -from [get_cells {u_memory_path/cdc/requests/wp_sclk_gray_ff*}] -to [get_cells {u_memory_path/cdc/requests/u_synchronizer_wp/*rg_0_s0}]
+set_max_delay 10 -from [get_cells {u_memory_path/cdc/requests/rp_dclk_gray_ff*}] -to [get_cells {u_memory_path/cdc/requests/u_synchronizer_rp/*rg_0_s0}]
+set_max_delay 10 -from [get_cells {u_memory_path/cdc/responses/wp_sclk_gray_ff*}] -to [get_cells {u_memory_path/cdc/responses/u_synchronizer_wp/*rg_0_s0}]
+set_max_delay 10 -from [get_cells {u_memory_path/cdc/responses/rp_dclk_gray_ff*}] -to [get_cells {u_memory_path/cdc/responses/u_synchronizer_rp/*rg_0_s0}]
 # Bound Gray-pointer crossing delay by the faster clock period, without a
 # blanket asynchronous-clock exception that could hide these constraints.
 set_max_delay 10 -from [get_cells {u_scanout/fifo/fifo_0/wp_sclk_gray_ff*}] -to [get_cells {u_scanout/fifo/fifo_0/u_synchronizer_wp/*rg_0_s0}]

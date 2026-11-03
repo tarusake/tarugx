@@ -9,8 +9,14 @@ module framebuffer_commit_tb;
  logic rx_wait,rx_masknp,tx_wait=0,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  logic [3:0] led_status;logic uart_tx_o;
  logic [31:0] display_ctrl,display_color,committed_base,committed_stride;
+ logic active_buffer=0,vblank_toggle=0;logic [1:0] irq_enable;
+ logic fill_busy=0,fill_done=0,fill_error=0,fill_start;logic [127:0] fill_command;
+ logic blit_busy=0,blit_done=0,blit_error=0,blit_start;logic [159:0] blit_command;
+ logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;
+ logic [2:0] queue_level=0;logic [31:0] queue_completed=0,queue_error_fence=0;
+ logic [193:0] queue_command;
  logic fb_req_valid,fb_req_ready=0,fb_req_write,fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
- logic [31:0] fb_req_addr,fb_req_wdata,fb_rsp_rdata=0;logic [3:0] fb_req_wstrb;
+ logic [31:0] fb_req_addr,fb_rsp_rdata=0;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  tarugx_tarugx_framebuffer_top dut(.*);
  logic dst_clk=0,dst_rst_n=0;always #7 dst_clk=~dst_clk;
  wire [64:0] dst_config;
@@ -18,10 +24,12 @@ module framebuffer_commit_tb;
   .src_clk(tlp_clk),.src_rst_n(tlp_rst_n),.dst_clk(dst_clk),.dst_rst_n(dst_rst_n),
   .src_config({display_ctrl[0],committed_base,committed_stride}),.dst_config(dst_config));
  task write_reg(input int address,input int value);
-  @(negedge tlp_clk);
+  @(negedge tlp_clk);while(rx_wait)@(negedge tlp_clk);
   rx_valid=8'hf0;rx_data={32'h40000001,32'h12345a0f,address,value[7:0],value[15:8],value[23:16],value[31:24],128'b0};
-  @(posedge tlp_clk);#1;assert(!rx_wait) else $fatal;
+  @(posedge tlp_clk);#1;
   @(negedge tlp_clk);rx_valid=0;
+  while(rx_wait)@(negedge tlp_clk);
+  @(posedge tlp_clk);#1;
  endtask
  always @(negedge dst_clk) if(dst_rst_n) begin
   assert(dst_config==0 || dst_config==65'h00000000000000a00 ||

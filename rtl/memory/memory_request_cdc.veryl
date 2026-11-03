@@ -1,86 +1,104 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// One outstanding request/reply mailbox. Both domains must reset together.
-/// Payloads remain held across two-stage toggle synchronizers.
-module memory_request_cdc (
-    src_clk      : input  'src clock    ,
-    src_rst_n    : input  'src reset    ,
-    src_valid    : input  'src logic    ,
-    src_ready    : output 'src logic    ,
-    src_request  : input  'src logic<69>,
-    src_rsp_valid: output 'src logic    ,
-    src_rsp_ready: input  'src logic    ,
-    src_response : output 'src logic<33>,
-    dst_clk      : input  'dst clock    ,
-    dst_rst_n    : input  'dst reset    ,
-    dst_valid    : output 'dst logic    ,
-    dst_ready    : input  'dst logic    ,
-    dst_request  : output 'dst logic<69>,
-    dst_rsp_valid: input  'dst logic    ,
-    dst_rsp_ready: output 'dst logic    ,
-    dst_response : input  'dst logic<33>,
+/// Ordered request/reply clock crossing with eight requests in flight.
+/// Both domains must reset together; release is synchronized by the caller.
+module memory_request_cdc #(
+    param REQUEST_WIDTH: u32 = 321,
+    param DEPTH        : u32 = 8,
+) (
+    src_clk      : input  'src clock     ,
+    src_rst_n    : input  'src reset     ,
+    src_valid    : input  'src logic     ,
+    src_ready    : output 'src logic     ,
+    src_request  : input  'src logic<REQUEST_WIDTH>,
+    src_rsp_valid: output 'src logic     ,
+    src_rsp_ready: input  'src logic     ,
+    src_response : output 'src logic<33> ,
+    dst_clk      : input  'dst clock     ,
+    dst_rst_n    : input  'dst reset     ,
+    dst_valid    : output 'dst logic     ,
+    dst_ready    : input  'dst logic     ,
+    dst_request  : output 'dst logic<REQUEST_WIDTH>,
+    dst_rsp_valid: input  'dst logic     ,
+    dst_rsp_ready: output 'dst logic     ,
+    dst_response : input  'dst logic<33> ,
 ) {
-    var held_request   : 'src logic<69>;
-    var held_response  : 'dst logic<33>;
-    var request_toggle : 'src logic    ;
-    var response_toggle: 'dst logic    ;
-    var busy           : 'src logic    ;
-    var waiting        : 'dst logic    ;
-    #[sv("async_reg = \"true\", syn_preserve = 1")]
-    var request_sync: 'dst logic<2>;
-    #[sv("async_reg = \"true\", syn_preserve = 1")]
-    var response_sync: 'src logic<2>;
-    assign src_ready     = !busy && !src_rsp_valid;
-    assign dst_rsp_ready = waiting || (dst_valid && dst_ready);
-    unsafe (cdc) {
-        always_ff (src_clk, src_rst_n) {
-            if_reset {
-                held_request   = 0;
-                request_toggle = 0;
-                response_sync  = 0;
-                busy           = 0;
-                src_rsp_valid  = 0;
-                src_response   = 0;
-            } else {
-                response_sync = {response_sync[0], response_toggle};
-                if src_valid && src_ready {
-                    held_request   = src_request;
-                    request_toggle = !request_toggle;
-                    busy           = 1;
-                }
-                if busy && (response_sync[1] == request_toggle) {
-                    src_response  = held_response;
-                    src_rsp_valid = 1;
-                    busy          = 0;
-                }
-                if src_rsp_valid && src_rsp_ready {
-                    src_rsp_valid = 0;
-                }
-            }
-        }
-        always_ff (dst_clk, dst_rst_n) {
-            if_reset {
-                held_response   = 0;
-                response_toggle = 0;
-                request_sync    = 0;
-                dst_valid       = 0;
-                dst_request     = 0;
-                waiting         = 0;
-            } else {
-                request_sync = {request_sync[0], request_toggle};
-                if !dst_valid && !waiting && (request_sync[1] != response_toggle) {
-                    dst_request = held_request;
-                    dst_valid   = 1;
-                }
-                if dst_valid && dst_ready {
-                    dst_valid = 0;
-                    waiting   = 1;
-                }
-                if dst_rsp_valid && dst_rsp_ready {
-                    held_response   = dst_response;
-                    response_toggle = request_sync[1];
-                    waiting         = 0;
-                }
-            }
+    var request_full  : 'src logic;
+    var request_empty : 'dst logic;
+    var response_full : 'dst logic;
+    var response_empty: 'src logic;
+    var request_almost_full : 'src logic;
+    var response_almost_full: 'dst logic;
+    var request_fifo_data   : 'dst logic<REQUEST_WIDTH>;
+    var response_fifo_data  : 'src logic<33>;
+    var request_buffer_valid: 'dst logic;
+    var response_buffer_valid: 'src logic;
+    var request_pop         : 'dst logic;
+    var response_pop        : 'src logic;
+
+    assign src_ready     = !request_full;
+    assign dst_valid     = request_buffer_valid;
+    assign dst_rsp_ready = !response_full;
+    assign src_rsp_valid = response_buffer_valid;
+    assign request_pop   = !request_empty && (!request_buffer_valid || dst_ready);
+    assign response_pop  = !response_empty && (!response_buffer_valid || src_rsp_ready);
+
+    always_ff (dst_clk, dst_rst_n) {
+        if_reset {
+            request_buffer_valid = 0;
+            dst_request          = 0;
+        } else if request_pop {
+            request_buffer_valid = 1;
+            dst_request          = request_fifo_data;
+        } else if dst_ready {
+            request_buffer_valid = 0;
         }
     }
+
+    always_ff (src_clk, src_rst_n) {
+        if_reset {
+            response_buffer_valid = 0;
+            src_response          = 0;
+        } else if response_pop {
+            response_buffer_valid = 1;
+            src_response          = response_fifo_data;
+        } else if src_rsp_ready {
+            response_buffer_valid = 0;
+        }
+    }
+
+    inst requests: $std::async_fifo::<$std::synchronizer_basic> #(
+        WIDTH    : REQUEST_WIDTH,
+        DEPTH                 ,
+        THRESHOLD: DEPTH / 2  ,
+    ) (
+        is_clk        : src_clk               ,
+        is_rst        : src_rst_n             ,
+        os_almost_full: request_almost_full   ,
+        os_full       : request_full          ,
+        is_push       : src_valid && src_ready,
+        is_data       : src_request           ,
+        id_clk        : dst_clk               ,
+        id_rst        : dst_rst_n             ,
+        od_empty      : request_empty         ,
+        id_pop        : request_pop            ,
+        od_data       : request_fifo_data      ,
+    );
+
+    inst responses: $std::async_fifo::<$std::synchronizer_basic> #(
+        WIDTH    : 33       ,
+        DEPTH               ,
+        THRESHOLD: DEPTH / 2,
+    ) (
+        is_clk        : dst_clk                       ,
+        is_rst        : dst_rst_n                     ,
+        os_almost_full: response_almost_full          ,
+        os_full       : response_full                 ,
+        is_push       : dst_rsp_valid && dst_rsp_ready,
+        is_data       : dst_response                  ,
+        id_clk        : src_clk                       ,
+        id_rst        : src_rst_n                     ,
+        od_empty      : response_empty                ,
+        id_pop        : response_pop                   ,
+        od_data       : response_fifo_data             ,
+    );
 }

@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Fair CPU/DMA admission with eight ordered responses in flight.
+module framebuffer_request_arbiter (
+    clk            : input  clock    ,
+    rst_n          : input  reset    ,
+    cpu_req_valid  : input  logic    ,
+    cpu_req_ready  : output logic    ,
+    cpu_req_write  : input  logic    ,
+    cpu_req_addr   : input  logic<32>,
+    cpu_req_wdata  : input  logic<64>,
+    cpu_req_wstrb  : input  logic<8> ,
+    cpu_rsp_valid  : output logic    ,
+    cpu_rsp_ready  : input  logic    ,
+    cpu_rsp_rdata  : output logic<32>,
+    cpu_rsp_error  : output logic    ,
+    dma_req_valid  : input  logic    ,
+    dma_req_ready  : output logic    ,
+    dma_req_addr   : input  logic<32>,
+    dma_req_wdata  : input  logic<256>,
+    dma_req_wstrb  : input  logic<32> ,
+    dma_rsp_valid  : output logic    ,
+    dma_rsp_ready  : input  logic    ,
+    dma_rsp_error  : output logic    ,
+    out_req_valid  : output logic    ,
+    out_req_ready  : input  logic    ,
+    out_req_write  : output logic    ,
+    out_req_addr   : output logic<32>,
+    out_req_wdata  : output logic<256>,
+    out_req_wstrb  : output logic<32> ,
+    out_rsp_valid  : input  logic    ,
+    out_rsp_ready  : output logic    ,
+    out_rsp_rdata  : input  logic<32>,
+    out_rsp_error  : input  logic    ,
+) {
+    var issuing       : logic      ;
+    var prefer_dma    : logic      ;
+    var owners_dma    : logic   [8];
+    var head          : logic<3>   ;
+    var tail          : logic<3>   ;
+    var count         : logic<4>   ;
+    var response_valid: logic      ;
+    var response_owner: logic      ;
+    var response_rdata: logic<32>  ;
+    var response_error: logic      ;
+
+    let choose_dma: logic = dma_req_valid && (prefer_dma || !cpu_req_valid);
+    let issue_accept: logic = issuing && out_req_ready;
+    let capacity: logic = (count <: 8) && (!issuing || out_req_ready);
+    assign cpu_req_ready = capacity && cpu_req_valid && !choose_dma;
+    assign dma_req_ready = capacity && choose_dma;
+    let push: logic = (cpu_req_valid && cpu_req_ready) || (dma_req_valid && dma_req_ready);
+
+    assign out_req_valid = issuing;
+    assign cpu_rsp_valid = response_valid && !response_owner;
+    assign dma_rsp_valid = response_valid && response_owner;
+    assign cpu_rsp_rdata = response_rdata;
+    assign cpu_rsp_error = response_error;
+    assign dma_rsp_error = response_error;
+    let response_accept: logic = response_valid
+        && (if response_owner ? dma_rsp_ready : cpu_rsp_ready);
+    assign out_rsp_ready = (count != 0) && (!response_valid || response_accept);
+    let pop: logic = out_rsp_valid && out_rsp_ready;
+
+    always_ff {
+        if_reset {
+            issuing        = 0;
+            prefer_dma     = 0;
+            owners_dma     = '{default: '0};
+            head           = 0;
+            tail           = 0;
+            count          = 0;
+            response_valid = 0;
+            response_owner = 0;
+            response_rdata = 0;
+            response_error = 0;
+            out_req_write  = 0;
+            out_req_addr   = 0;
+            out_req_wdata  = 0;
+            out_req_wstrb  = 0;
+        } else {
+            if issue_accept {
+                issuing = 0;
+            }
+            if push {
+                issuing         = 1;
+                owners_dma[tail] = choose_dma;
+                tail            = tail + 3'd1;
+                prefer_dma      = !choose_dma;
+                out_req_write   = if choose_dma ? 1'b1 : cpu_req_write;
+                out_req_addr    = if choose_dma ? dma_req_addr : cpu_req_addr;
+                out_req_wdata   = if choose_dma ?
+                    dma_req_wdata << ((dma_req_addr[4:0] as 8) * 8'd8)
+                :
+                    (cpu_req_wdata as 256) << ((cpu_req_addr[4:0] as 8) * 8'd8)
+                ;
+                out_req_wstrb   = if choose_dma ?
+                    dma_req_wstrb << dma_req_addr[4:0]
+                :
+                    (cpu_req_wstrb as 32) << cpu_req_addr[4:0]
+                ;
+            }
+            if pop {
+                response_valid = 1;
+                response_owner = owners_dma[head];
+                response_rdata = out_rsp_rdata;
+                response_error = out_rsp_error;
+                head           = head + 3'd1;
+            } else if response_accept {
+                response_valid = 0;
+            }
+            if push && !pop {
+                count = count + 4'd1;
+            } else if pop && !push {
+                count = count - 4'd1;
+            }
+        }
+    }
+}

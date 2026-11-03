@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Complete one-outstanding DMA requester channel at the raw Gowin TLP edge.
+module pcie_dma_channel #(
+    param TIMEOUT_CYCLES: u32 = 1000000,
+) (
+    clk             : input  clock     ,
+    rst_n           : input  reset     ,
+    requester_id    : input  logic<16> ,
+    cmd_valid       : input  logic     ,
+    cmd_ready       : output logic     ,
+    cmd_host_address: input  logic<64> ,
+    cmd_vram_address: input  logic<32> ,
+    cmd_length_bytes: input  logic<32> ,
+    busy            : output logic     ,
+    done            : output logic     ,
+    error           : output logic     ,
+    tx_ready        : input  logic     ,
+    tx_valid        : output logic<8>  ,
+    tx_sop          : output logic     ,
+    tx_eop          : output logic     ,
+    tx_data         : output logic<256>,
+    rx_sop          : input  logic     ,
+    rx_eop          : input  logic     ,
+    rx_valid        : input  logic<8>  ,
+    rx_data         : input  logic<256>,
+    rx_error        : input  logic<8>  ,
+    rx_claim        : output logic     ,
+    rx_wait         : output logic     ,
+    fb_req_valid    : output logic     ,
+    fb_req_ready    : input  logic     ,
+    fb_req_addr     : output logic<32> ,
+    fb_req_wdata    : output logic<256>,
+    fb_req_wstrb    : output logic<32> ,
+    fb_rsp_valid    : input  logic     ,
+    fb_rsp_ready    : output logic     ,
+    fb_rsp_error    : input  logic     ,
+) {
+    var mrd_valid       : logic    ;
+    var mrd_ready       : logic    ;
+    var mrd_host_address: logic<64>;
+    var mrd_length_dw   : logic<5> ;
+    var mrd_tag         : logic<8> ;
+    var active_tags     : logic<256>;
+    var cpl_valid       : logic    ;
+    var cpl_ready       : logic    ;
+    var cpl_has_data    : logic    ;
+    var cpl_error       : logic    ;
+    var cpl_status      : logic<3> ;
+    var cpl_length_dw   : logic<4> ;
+    var cpl_byte_count  : logic<12>;
+    var cpl_lower_address: logic<7>;
+    var cpl_tag         : logic<8>;
+    var cpl_data        : logic<256>;
+    var tx_parameter_error: logic;
+
+    inst engine: pcie_dma_read_engine #(
+        TIMEOUT_CYCLES,
+    ) (
+        clk,
+        rst_n,
+        cmd_valid,
+        cmd_ready,
+        cmd_host_address,
+        cmd_vram_address,
+        cmd_length_bytes,
+        busy,
+        done,
+        error,
+        mrd_valid,
+        mrd_ready,
+        mrd_host_address,
+        mrd_length_dw,
+        mrd_tag,
+        active_tags,
+        cpl_valid,
+        cpl_ready,
+        cpl_has_data,
+        cpl_error,
+        cpl_length_dw,
+        cpl_lower_address,
+        cpl_tag,
+        cpl_data,
+        fb_req_valid,
+        fb_req_ready,
+        fb_req_addr,
+        fb_req_wdata,
+        fb_req_wstrb,
+        fb_rsp_valid,
+        fb_rsp_ready,
+        fb_rsp_error,
+    );
+
+    inst request_tx: dma_read_request_tx (
+        request_valid: mrd_valid       ,
+        requester_id                   ,
+        request_tag  : mrd_tag         ,
+        host_address : mrd_host_address,
+        length_dw    : mrd_length_dw   ,
+        tx_wait      : !tx_ready       ,
+        request_ready: mrd_ready       ,
+        request_error: tx_parameter_error,
+        tx_sop                         ,
+        tx_eop                         ,
+        tx_valid                       ,
+        tx_data                        ,
+    );
+
+    inst completion_rx: dma_completion_rx (
+        clk,
+        rst_n,
+        rx_sop,
+        rx_eop,
+        rx_valid,
+        rx_data,
+        rx_error,
+        expected_requester  : requester_id,
+        active_tags,
+        completion_ready    : cpl_ready   ,
+        rx_wait,
+        completion_valid    : cpl_valid   ,
+        completion_has_data : cpl_has_data,
+        completion_error    : cpl_error   ,
+        completion_status   : cpl_status  ,
+        completion_length_dw: cpl_length_dw,
+        completion_byte_count: cpl_byte_count,
+        completion_lower_address: cpl_lower_address,
+        completion_tag      : cpl_tag,
+        completion_data     : cpl_data,
+    );
+
+    let rx_header_dw0: logic<32> = rx_data[255:224];
+    let rx_header_dw2: logic<32> = rx_data[191:160];
+    let rx_completion_match: logic = rx_sop
+        && ((rx_header_dw0[31:24] == 8'h4a) || (rx_header_dw0[31:24] == 8'h0a))
+        && (rx_header_dw2[31:16] == requester_id)
+        && active_tags[rx_header_dw2[15:8]];
+    assign rx_claim = cpl_valid || rx_completion_match;
+}

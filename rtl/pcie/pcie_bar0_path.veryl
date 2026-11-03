@@ -20,12 +20,34 @@ module pcie_bar0_path (
     framing_error  : output logic     ,
     unsupported    : output logic     ,
     malformed      : output logic     ,
+    active_buffer  : input  logic     ,
+    vblank_toggle  : input  logic     ,
+    fill_busy      : input  logic     ,
+    fill_done      : input  logic     ,
+    fill_error     : input  logic     ,
+    blit_busy      : input  logic     ,
+    blit_done      : input  logic     ,
+    blit_error     : input  logic     ,
+    queue_ready    : input  logic     ,
+    queue_level    : input  logic<3>  ,
+    queue_active   : input  logic     ,
+    queue_completed: input  logic<32> ,
+    queue_error    : input  logic     ,
+    queue_error_fence: input logic<32>,
     display_ctrl   : output logic<32> ,
     display_color  : output logic<32> ,
     display_mode   : output logic<32> ,
     fb_base        : output logic<32> ,
     fb_stride      : output logic<32> ,
     fb_commit_pulse: output logic     ,
+    irq_enable     : output logic<2>  ,
+    fill_command   : output logic<128>,
+    fill_start     : output logic     ,
+    blit_command   : output logic<160>,
+    blit_start     : output logic     ,
+    queue_command  : output logic<194>,
+    queue_submit   : output logic     ,
+    queue_clear_error: output logic   ,
 ) {
     var request_valid: logic    ;
     var request_ready: logic    ;
@@ -35,6 +57,7 @@ module pcie_bar0_path (
     var header_dw2   : logic<32>;
     var header_dw3   : logic<32>;
     var payload_dw0  : logic<32>;
+    var payload_dw1  : logic<32>;
 
     inst rx_adapter: tlp_rx_decoder (
         rx_sop         ,
@@ -52,6 +75,7 @@ module pcie_bar0_path (
         header_dw2     ,
         header_dw3     ,
         payload_dw0    ,
+        payload_dw1    ,
         framing_error  ,
     );
 
@@ -61,6 +85,10 @@ module pcie_bar0_path (
     var completion_header1: logic<32>;
     var completion_header2: logic<32>;
     var completion_payload: logic<32>;
+    var unused_dma_host_address: logic<64>;
+    var unused_dma_vram_address: logic<32>;
+    var unused_dma_length_bytes: logic<32>;
+    var unused_dma_cmd_valid   : logic    ;
 
     inst bridge: bar0_tlp_bridge (
         clk                                ,
@@ -82,12 +110,42 @@ module pcie_bar0_path (
         tx_payload_dw0 : completion_payload,
         unsupported                        ,
         malformed                          ,
+        active_buffer                      ,
+        vblank_toggle                      ,
+        fill_busy                          ,
+        fill_done                          ,
+        fill_error                         ,
+        blit_busy                          ,
+        blit_done                          ,
+        blit_error                         ,
+        queue_ready                        ,
+        queue_level                        ,
+        queue_active                       ,
+        queue_completed                    ,
+        queue_error                        ,
+        queue_error_fence                  ,
+        dma_cmd_ready  : 1'b0              ,
+        dma_busy       : 1'b1              ,
+        dma_done       : 1'b0              ,
+        dma_error      : 1'b0              ,
         display_ctrl                       ,
         display_color                      ,
         display_mode                       ,
         fb_base                            ,
         fb_stride                          ,
         fb_commit_pulse                    ,
+        irq_enable                         ,
+        fill_command                       ,
+        fill_start                         ,
+        blit_command                       ,
+        blit_start                         ,
+        queue_command                      ,
+        queue_submit                       ,
+        queue_clear_error                  ,
+        dma_host_address: unused_dma_host_address,
+        dma_vram_address: unused_dma_vram_address,
+        dma_length_bytes: unused_dma_length_bytes,
+        dma_cmd_valid   : unused_dma_cmd_valid,
     );
 
     inst tx_adapter: tlp_tx_completion (

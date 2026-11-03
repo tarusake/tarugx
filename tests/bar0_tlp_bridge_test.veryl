@@ -4,29 +4,59 @@ module bar0_tlp_bridge_end_to_end {
     inst clk: $tb::clock_gen;
     inst rst: $tb::reset_gen ( clk );
 
-    var completer_id   : logic<16>;
-    var rx_valid       : logic    ;
-    var rx_ready       : logic    ;
-    var rx_bar_decode  : logic<6> ;
-    var rx_header_dw0  : logic<32>;
-    var rx_header_dw1  : logic<32>;
-    var rx_header_dw2  : logic<32>;
-    var rx_header_dw3  : logic<32>;
-    var rx_payload_dw0 : logic<32>;
-    var tx_valid       : logic    ;
-    var tx_ready       : logic    ;
-    var tx_header_dw0  : logic<32>;
-    var tx_header_dw1  : logic<32>;
-    var tx_header_dw2  : logic<32>;
-    var tx_payload_dw0 : logic<32>;
-    var unsupported    : logic    ;
-    var malformed      : logic    ;
-    var display_ctrl   : logic<32>;
-    var display_color  : logic<32>;
-    var display_mode   : logic<32>;
-    var fb_base        : logic<32>;
-    var fb_stride      : logic<32>;
-    var fb_commit_pulse: logic    ;
+    var completer_id   : logic<16> ;
+    var rx_valid       : logic     ;
+    var rx_ready       : logic     ;
+    var rx_bar_decode  : logic<6>  ;
+    var rx_header_dw0  : logic<32> ;
+    var rx_header_dw1  : logic<32> ;
+    var rx_header_dw2  : logic<32> ;
+    var rx_header_dw3  : logic<32> ;
+    var rx_payload_dw0 : logic<32> ;
+    var tx_valid       : logic     ;
+    var tx_ready       : logic     ;
+    var tx_header_dw0  : logic<32> ;
+    var tx_header_dw1  : logic<32> ;
+    var tx_header_dw2  : logic<32> ;
+    var tx_payload_dw0 : logic<32> ;
+    var unsupported    : logic     ;
+    var malformed      : logic     ;
+    var active_buffer  : logic     ;
+    var vblank_toggle  : logic     ;
+    var fill_busy      : logic     ;
+    var fill_done      : logic     ;
+    var fill_error     : logic     ;
+    var blit_busy      : logic     ;
+    var blit_done      : logic     ;
+    var blit_error     : logic     ;
+    var queue_ready    : logic     ;
+    var queue_level    : logic<3>  ;
+    var queue_active   : logic     ;
+    var queue_completed: logic<32> ;
+    var queue_error    : logic     ;
+    var queue_error_fence: logic<32>;
+    var dma_cmd_ready  : logic     ;
+    var dma_busy       : logic     ;
+    var dma_done       : logic     ;
+    var dma_error      : logic     ;
+    var display_ctrl   : logic<32> ;
+    var display_color  : logic<32> ;
+    var display_mode   : logic<32> ;
+    var fb_base        : logic<32> ;
+    var fb_stride      : logic<32> ;
+    var fb_commit_pulse: logic     ;
+    var irq_enable     : logic<2>  ;
+    var fill_command   : logic<128>;
+    var fill_start     : logic     ;
+    var blit_command   : logic<160>;
+    var blit_start     : logic     ;
+    var queue_command  : logic<194>;
+    var queue_submit   : logic     ;
+    var queue_clear_error: logic   ;
+    var dma_host_address: logic<64>;
+    var dma_vram_address: logic<32>;
+    var dma_length_bytes: logic<32>;
+    var dma_cmd_valid   : logic    ;
 
     inst dut: bar0_tlp_bridge (
         clk              ,
@@ -48,12 +78,42 @@ module bar0_tlp_bridge_end_to_end {
         tx_payload_dw0   ,
         unsupported      ,
         malformed        ,
+        active_buffer    ,
+        vblank_toggle    ,
+        fill_busy        ,
+        fill_done        ,
+        fill_error       ,
+        blit_busy        ,
+        blit_done        ,
+        blit_error       ,
+        queue_ready      ,
+        queue_level      ,
+        queue_active     ,
+        queue_completed  ,
+        queue_error      ,
+        queue_error_fence,
+        dma_cmd_ready    ,
+        dma_busy         ,
+        dma_done         ,
+        dma_error        ,
         display_ctrl     ,
         display_color    ,
         display_mode     ,
         fb_base          ,
         fb_stride        ,
         fb_commit_pulse  ,
+        irq_enable       ,
+        fill_command     ,
+        fill_start       ,
+        blit_command     ,
+        blit_start       ,
+        queue_command    ,
+        queue_submit     ,
+        queue_clear_error,
+        dma_host_address ,
+        dma_vram_address ,
+        dma_length_bytes ,
+        dma_cmd_valid    ,
     );
 
     initial {
@@ -66,6 +126,24 @@ module bar0_tlp_bridge_end_to_end {
         rx_header_dw3  = 0;
         rx_payload_dw0 = 0;
         tx_ready       = 0;
+        active_buffer  = 0;
+        vblank_toggle  = 0;
+        fill_busy      = 0;
+        fill_done      = 0;
+        fill_error     = 0;
+        blit_busy      = 0;
+        blit_done      = 0;
+        blit_error     = 0;
+        queue_ready    = 0;
+        queue_level    = 0;
+        queue_active   = 0;
+        queue_completed = 0;
+        queue_error    = 0;
+        queue_error_fence = 0;
+        dma_cmd_ready = 0;
+        dma_busy      = 0;
+        dma_done      = 0;
+        dma_error     = 0;
         rst.assert();
         clk.next(1);
         clk.next(1);
@@ -76,6 +154,7 @@ module bar0_tlp_bridge_end_to_end {
         rx_header_dw1  = 32'h1234_1105;
         rx_header_dw2  = 32'h0000_0014;
         rx_payload_dw0 = 32'h1122_3344;
+        clk.next(1);
         clk.next(1);
         $assert(display_color == 32'h0022_0044);
         $assert(!tx_valid);

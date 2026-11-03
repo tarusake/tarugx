@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Coalesce enabled VBlank and render-completion events into one MSI request.
+module vblank_msi (
+    clk             : input  clock,
+    rst_n           : input  reset,
+    enable          : input  logic<2>,
+    vblank_toggle   : input  logic,
+    render_done     : input  logic,
+    interrupt_ack   : input  logic,
+    interrupt_req   : output logic,
+    interrupt_status: output logic,
+) {
+    var previous: logic;
+    var pending : logic;
+    let vblank_event: logic = enable[0] && (vblank_toggle != previous);
+    let render_event: logic = enable[1] && render_done;
+
+    always_ff {
+        if_reset {
+            previous = 0;
+            pending  = 0;
+        } else {
+            if vblank_toggle != previous {
+                previous = vblank_toggle;
+            }
+            if enable == 0 {
+                pending  = 0;
+            } else if vblank_event || render_event {
+                pending  = 1;
+            } else if interrupt_ack {
+                pending = 0;
+            }
+        }
+    }
+
+    assign interrupt_req    = pending;
+    assign interrupt_status = pending;
+}

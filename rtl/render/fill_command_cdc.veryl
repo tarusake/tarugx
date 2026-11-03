@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Compatibility wrapper for the original 128-bit fill command mailbox.
+module fill_command_cdc (
+    src_clk    : input  'src clock     ,
+    src_rst_n  : input  'src reset     ,
+    src_valid  : input  'src logic     ,
+    src_ready  : output 'src logic     ,
+    src_command: input  'src logic<128>,
+    src_busy   : output 'src logic     ,
+    src_done   : output 'src logic     ,
+    src_error  : output 'src logic     ,
+    dst_clk    : input  'dst clock     ,
+    dst_rst_n  : input  'dst reset     ,
+    dst_valid  : output 'dst logic     ,
+    dst_ready  : input  'dst logic     ,
+    dst_command: output 'dst logic<128>,
+    dst_done   : input  'dst logic     ,
+    dst_error  : input  'dst logic     ,
+) {
+    inst command_mailbox: render_command_cdc #(
+        WIDTH: 128,
+    ) (
+        src_clk    ,
+        src_rst_n  ,
+        src_valid  ,
+        src_ready  ,
+        src_command,
+        src_busy   ,
+        src_done   ,
+        src_error  ,
+        dst_clk    ,
+        dst_rst_n  ,
+        dst_valid  ,
+        dst_ready  ,
+        dst_command,
+        dst_done   ,
+        dst_error  ,
+    );
+}

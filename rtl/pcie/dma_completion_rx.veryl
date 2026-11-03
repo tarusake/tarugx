@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Decode a PCIe Completion into payload chunks of at most eight DWORDs.
+///
+/// The first beat contains three header DWORDs and up to five payload DWORDs.
+/// Continuation beats contain up to eight payload DWORDs. One chunk is held
+/// until the DMA engine accepts it, applying backpressure to the raw RX link.
+module dma_completion_rx (
+    clk                 : input  clock     ,
+    rst_n               : input  reset     ,
+    rx_sop              : input  logic     ,
+    rx_eop              : input  logic     ,
+    rx_valid            : input  logic<8>  ,
+    rx_data             : input  logic<256>,
+    rx_error            : input  logic<8>  ,
+    expected_requester  : input  logic<16> ,
+    active_tags         : input  logic<256>,
+    completion_ready    : input  logic     ,
+    rx_wait             : output logic     ,
+    completion_valid    : output logic     ,
+    completion_has_data : output logic     ,
+    completion_error    : output logic     ,
+    completion_status   : output logic<3>  ,
+    completion_length_dw: output logic<4>  ,
+    completion_byte_count: output logic<12>,
+    completion_lower_address: output logic<7>,
+    completion_tag      : output logic<8>  ,
+    completion_data     : output logic<256>,
+) {
+    var beat_pending: logic;
+    var beat_sop    : logic;
+    var beat_eop    : logic;
+    var beat_valid  : logic<8>;
+    var beat_data   : logic<256>;
+    var beat_error  : logic<8>;
+    var beat_tag_active: logic;
+
+    let header_dw0: logic<32> = beat_data[255:224];
+    let header_dw1: logic<32> = beat_data[223:192];
+    let header_dw2: logic<32> = beat_data[191:160];
+    let is_cpld   : logic = header_dw0[31:24] == 8'h4a;
+    let is_cpl    : logic = header_dw0[31:24] == 8'h0a;
+    let tag_match : logic = (header_dw2[31:16] == expected_requester)
+        && beat_tag_active;
+    let matched: logic = beat_sop && (is_cpld || is_cpl) && tag_match;
+    let raw_length: logic<10> = header_dw0[9:0];
+    let transfer_present: logic = |rx_valid;
+
+    var packet_active : logic;
+    var words_remaining: logic<5>;
+    var next_lower_address: logic<7>;
+    var packet_tag    : logic<8>;
+    var chunk_pending : logic;
+    var chunk_has_data: logic;
+    var chunk_error   : logic;
+    var chunk_status  : logic<3>;
+    var chunk_length  : logic<4>;
+    var chunk_byte_count: logic<12>;
+    var chunk_lower_address: logic<7>;
+    var chunk_tag     : logic<8>;
+    var chunk_data    : logic<256>;
+    var incoming_count: logic<4>;
+    var expected_lanes: logic<8>;
+    var incoming_data : logic<256>;
+    var incoming_framing_ok: logic;
+    let beat_can_process: logic = beat_pending && (!chunk_pending || completion_ready);
+
+    always_comb {
+        incoming_count = 0;
+        expected_lanes = 0;
+        incoming_data  = 0;
+        incoming_framing_ok = 0;
+        if packet_active {
+            incoming_count = if words_remaining >: 8 ? 4'd8 : words_remaining[3:0];
+            case incoming_count {
+                4'd1: expected_lanes = 8'h80;
+                4'd2: expected_lanes = 8'hc0;
+                4'd3: expected_lanes = 8'he0;
+                4'd4: expected_lanes = 8'hf0;
+                4'd5: expected_lanes = 8'hf8;
+                4'd6: expected_lanes = 8'hfc;
+                4'd7: expected_lanes = 8'hfe;
+                4'd8: expected_lanes = 8'hff;
+                default: expected_lanes = 0;
+            }
+            incoming_data[31:0] = {beat_data[231:224], beat_data[239:232], beat_data[247:240], beat_data[255:248]};
+            incoming_data[63:32] = {beat_data[199:192], beat_data[207:200], beat_data[215:208], beat_data[223:216]};
+            incoming_data[95:64] = {beat_data[167:160], beat_data[175:168], beat_data[183:176], beat_data[191:184]};
+            incoming_data[127:96] = {beat_data[135:128], beat_data[143:136], beat_data[151:144], beat_data[159:152]};
+            incoming_data[159:128] = {beat_data[103:96], beat_data[111:104], beat_data[119:112], beat_data[127:120]};
+            incoming_data[191:160] = {beat_data[71:64], beat_data[79:72], beat_data[87:80], beat_data[95:88]};
+            incoming_data[223:192] = {beat_data[39:32], beat_data[47:40], beat_data[55:48], beat_data[63:56]};
+            incoming_data[255:224] = {beat_data[7:0], beat_data[15:8], beat_data[23:16], beat_data[31:24]};
+            incoming_framing_ok = !beat_sop && !(|beat_error) && (beat_valid == expected_lanes)
+                && (beat_eop == (words_remaining <= 5'd8));
+        } else if matched {
+            incoming_count = if raw_length >: 10'd5 ? 4'd5 : raw_length[3:0];
+            case incoming_count {
+                4'd1: expected_lanes = 8'hf0;
+                4'd2: expected_lanes = 8'hf8;
+                4'd3: expected_lanes = 8'hfc;
+                4'd4: expected_lanes = 8'hfe;
+                4'd5: expected_lanes = 8'hff;
+                default: expected_lanes = 8'he0;
+            }
+            incoming_data[31:0] = {beat_data[135:128], beat_data[143:136], beat_data[151:144], beat_data[159:152]};
+            incoming_data[63:32] = {beat_data[103:96], beat_data[111:104], beat_data[119:112], beat_data[127:120]};
+            incoming_data[95:64] = {beat_data[71:64], beat_data[79:72], beat_data[87:80], beat_data[95:88]};
+            incoming_data[127:96] = {beat_data[39:32], beat_data[47:40], beat_data[55:48], beat_data[63:56]};
+            incoming_data[159:128] = {beat_data[7:0], beat_data[15:8], beat_data[23:16], beat_data[31:24]};
+            incoming_framing_ok = !(|beat_error) && (beat_valid == expected_lanes)
+                && ((is_cpl && (raw_length == 0) && beat_eop)
+                    || (is_cpld && (raw_length != 0) && (raw_length <= 10'd16)
+                        && (beat_eop == (raw_length <= 10'd5))));
+        }
+    }
+
+    assign completion_valid         = chunk_pending;
+    assign completion_has_data      = chunk_has_data;
+    assign completion_error         = chunk_error;
+    assign completion_status        = chunk_status;
+    assign completion_length_dw     = chunk_length;
+    assign completion_byte_count    = chunk_byte_count;
+    assign completion_lower_address = chunk_lower_address;
+    assign completion_tag           = chunk_tag;
+    assign completion_data          = chunk_data;
+    assign rx_wait = transfer_present && (beat_pending || chunk_pending);
+
+    always_ff {
+        if_reset {
+            packet_active       = 0;
+            beat_pending        = 0;
+            beat_sop            = 0;
+            beat_eop            = 0;
+            beat_valid          = 0;
+            beat_data           = 0;
+            beat_error          = 0;
+            beat_tag_active     = 0;
+            words_remaining     = 0;
+            next_lower_address  = 0;
+            packet_tag          = 0;
+            chunk_pending       = 0;
+            chunk_has_data      = 0;
+            chunk_error         = 0;
+            chunk_status        = 0;
+            chunk_length        = 0;
+            chunk_byte_count    = 0;
+            chunk_lower_address = 0;
+            chunk_tag           = 0;
+            chunk_data          = 0;
+        } else {
+            if chunk_pending && completion_ready {
+                chunk_pending = 0;
+            }
+            if beat_can_process {
+                beat_pending = 0;
+                if packet_active {
+                    chunk_pending       = 1;
+                    chunk_has_data      = 1;
+                    chunk_error         = !incoming_framing_ok;
+                    chunk_length        = incoming_count;
+                    chunk_lower_address = next_lower_address;
+                    chunk_tag           = packet_tag;
+                    chunk_data          = incoming_data;
+                    words_remaining     = words_remaining - (incoming_count as 5);
+                    next_lower_address  = next_lower_address + ((incoming_count as 7) << 2);
+                    if beat_eop {
+                        packet_active = 0;
+                    }
+                } else if matched {
+                    chunk_pending       = 1;
+                    chunk_has_data      = is_cpld;
+                    chunk_error         = !incoming_framing_ok || (header_dw1[15:13] != 0);
+                    chunk_status        = header_dw1[15:13];
+                    chunk_length        = incoming_count;
+                    chunk_byte_count    = header_dw1[11:0];
+                    chunk_lower_address = header_dw2[6:0];
+                    chunk_tag           = header_dw2[15:8];
+                    chunk_data          = incoming_data;
+                    words_remaining     = (raw_length[4:0] as 5) - (incoming_count as 5);
+                    next_lower_address  = header_dw2[6:0] + ((incoming_count as 7) << 2);
+                    packet_tag          = header_dw2[15:8];
+                    packet_active       = !beat_eop;
+                }
+            }
+            if transfer_present && !rx_wait {
+                beat_pending = 1;
+                beat_sop     = rx_sop;
+                beat_eop     = rx_eop;
+                beat_valid   = rx_valid;
+                beat_data    = rx_data;
+                beat_error   = rx_error;
+                beat_tag_active = active_tags[rx_data[175:168]];
+            }
+        }
+    }
+}

@@ -4,30 +4,30 @@
 module scanout_fifo #(
     param DEPTH: u32 = 512,
 ) (
-    src_clk  : input  'src clock     ,
-    src_rst_n: input  'src reset     ,
-    src_valid: input  'src logic     ,
-    src_ready: output 'src logic     ,
-    src_buffered: output 'src logic, // At least half the FIFO, conservative UI estimate.
-    src_data : input  'src logic<273>,
-    dst_clk  : input  'dst clock     ,
-    dst_rst_n: input  'dst reset     ,
-    dst_valid: output 'dst logic     ,
-    dst_ready: input  'dst logic     ,
-    dst_data : output 'dst logic<273>,
+    src_clk     : input  'src clock     ,
+    src_rst_n   : input  'src reset     ,
+    src_valid   : input  'src logic     ,
+    src_ready   : output 'src logic     ,
+    src_buffered: output 'src logic     , // At least half the FIFO, conservative UI estimate.
+    src_data    : input  'src logic<273>,
+    dst_clk     : input  'dst clock     ,
+    dst_rst_n   : input  'dst reset     ,
+    dst_valid   : output 'dst logic     ,
+    dst_ready   : input  'dst logic     ,
+    dst_data    : output 'dst logic<273>,
 ) {
     var full : 'src logic;
     var empty: 'dst logic;
     assign src_ready = !full;
     assign dst_valid = !empty;
     inst fifo: $std::async_fifo::<$std::synchronizer_basic> #(
-        WIDTH: 273,
-        DEPTH     ,
+        WIDTH    : 273      ,
+        DEPTH               ,
         THRESHOLD: DEPTH / 2,
     ) (
         is_clk        : src_clk               ,
         is_rst        : src_rst_n             ,
-        os_almost_full: src_buffered                     ,
+        os_almost_full: src_buffered          ,
         os_full       : full                  ,
         is_push       : src_valid && src_ready,
         is_data       : src_data              ,

@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// One-outstanding render command mailbox with completion/error return.
+/// Both domains must share reset assertion. Payloads remain stable while the
+/// corresponding toggle crosses a two-stage synchronizer.
+module render_command_cdc #(
+    param WIDTH: u32 = 128,
+) (
+    src_clk    : input  'src clock       ,
+    src_rst_n  : input  'src reset       ,
+    src_valid  : input  'src logic       ,
+    src_ready  : output 'src logic       ,
+    src_command: input  'src logic<WIDTH>,
+    src_busy   : output 'src logic       ,
+    src_done   : output 'src logic       ,
+    src_error  : output 'src logic       ,
+    dst_clk    : input  'dst clock       ,
+    dst_rst_n  : input  'dst reset       ,
+    dst_valid  : output 'dst logic       ,
+    dst_ready  : input  'dst logic       ,
+    dst_command: output 'dst logic<WIDTH>,
+    dst_done   : input  'dst logic       ,
+    dst_error  : input  'dst logic       ,
+) {
+    var held_command     : 'src logic<WIDTH>;
+    var request_toggle   : 'src logic       ;
+    var completion_toggle: 'dst logic       ;
+    var held_error       : 'dst logic       ;
+    var running          : 'dst logic       ;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var request_sync: 'dst logic<2>;
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    var completion_sync: 'src logic<2>;
+    assign src_ready = !src_busy;
+    unsafe (cdc) {
+        always_ff (src_clk, src_rst_n) {
+            if_reset {
+                held_command    = 0;
+                request_toggle  = 0;
+                completion_sync = 0;
+                src_busy        = 0;
+                src_done        = 0;
+                src_error       = 0;
+            } else {
+                completion_sync = {completion_sync[0], completion_toggle};
+                src_done        = 0;
+                if src_valid && src_ready {
+                    held_command   = src_command;
+                    request_toggle = !request_toggle;
+                    src_busy       = 1;
+                    src_error      = 0;
+                }
+                if src_busy && (completion_sync[1] == request_toggle) {
+                    src_busy  = 0;
+                    src_done  = 1;
+                    src_error = held_error;
+                }
+            }
+        }
+        always_ff (dst_clk, dst_rst_n) {
+            if_reset {
+                request_sync      = 0;
+                completion_toggle = 0;
+                held_error        = 0;
+                running           = 0;
+                dst_valid         = 0;
+                dst_command       = 0;
+            } else {
+                request_sync = {request_sync[0], request_toggle};
+                if !dst_valid && !running && (request_sync[1] != completion_toggle) {
+                    dst_command = held_command;
+                    dst_valid   = 1;
+                }
+                if dst_valid && dst_ready {
+                    dst_valid = 0;
+                    running   = 1;
+                }
+                if running && dst_done {
+                    held_error        = dst_error;
+                    completion_toggle = request_sync[1];
+                    running           = 0;
+                }
+            }
+        }
+    }
+}

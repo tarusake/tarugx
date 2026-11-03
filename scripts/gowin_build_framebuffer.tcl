@@ -10,6 +10,17 @@ proc tarugx_required_dir {name} {
     return [file normalize $::env($name)]
 }
 set repo [file normalize [file join [file dirname [info script]] ..]]
+# Generated SystemVerilog and tarugx.f are build inputs, not authoritative
+# sources.  Always refresh them here so a source edit or git revert cannot
+# silently reuse stale Veryl output.
+set saved_dir [pwd]
+cd $repo
+set veryl_failed [catch {exec veryl build 2>@1} veryl_output]
+cd $saved_dir
+if {$veryl_failed} {
+    error "Veryl generation failed:\n$veryl_output"
+}
+puts "Veryl generation completed"
 set output_dir [file join $repo build gowin_framebuffer]
 set recovery_experiment 0
 set generated_no_msi 0

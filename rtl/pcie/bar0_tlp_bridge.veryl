@@ -5,32 +5,69 @@
 /// accepts requests in order and will not accept another request while a read
 /// Completion is pending. Gowin lane packing is intentionally outside it.
 module bar0_tlp_bridge (
-    clk            : input  clock    ,
-    rst            : input  reset    ,
-    completer_id   : input  logic<16>,
-    rx_valid       : input  logic    ,
-    rx_ready       : output logic    ,
-    rx_bar_decode  : input  logic<6> ,
-    rx_header_dw0  : input  logic<32>,
-    rx_header_dw1  : input  logic<32>,
-    rx_header_dw2  : input  logic<32>,
-    rx_header_dw3  : input  logic<32>,
-    rx_payload_dw0 : input  logic<32>,
-    tx_valid       : output logic    ,
-    tx_ready       : input  logic    ,
-    tx_header_dw0  : output logic<32>,
-    tx_header_dw1  : output logic<32>,
-    tx_header_dw2  : output logic<32>,
-    tx_payload_dw0 : output logic<32>,
-    unsupported    : output logic    ,
-    malformed      : output logic    ,
-    display_ctrl   : output logic<32>,
-    display_color  : output logic<32>,
-    display_mode   : output logic<32>,
-    fb_base        : output logic<32>,
-    fb_stride      : output logic<32>,
-    fb_commit_pulse: output logic    ,
+    clk            : input  clock     ,
+    rst            : input  reset     ,
+    completer_id   : input  logic<16> ,
+    rx_valid       : input  logic     ,
+    rx_ready       : output logic     ,
+    rx_bar_decode  : input  logic<6>  ,
+    rx_header_dw0  : input  logic<32> ,
+    rx_header_dw1  : input  logic<32> ,
+    rx_header_dw2  : input  logic<32> ,
+    rx_header_dw3  : input  logic<32> ,
+    rx_payload_dw0 : input  logic<32> ,
+    tx_valid       : output logic     ,
+    tx_ready       : input  logic     ,
+    tx_header_dw0  : output logic<32> ,
+    tx_header_dw1  : output logic<32> ,
+    tx_header_dw2  : output logic<32> ,
+    tx_payload_dw0 : output logic<32> ,
+    unsupported    : output logic     ,
+    malformed      : output logic     ,
+    active_buffer  : input  logic     ,
+    vblank_toggle  : input  logic     ,
+    fill_busy      : input  logic     ,
+    fill_done      : input  logic     ,
+    fill_error     : input  logic     ,
+    blit_busy      : input  logic     ,
+    blit_done      : input  logic     ,
+    blit_error     : input  logic     ,
+    queue_ready    : input  logic     ,
+    queue_level    : input  logic<3>  ,
+    queue_active   : input  logic     ,
+    queue_completed: input  logic<32> ,
+    queue_error    : input  logic     ,
+    queue_error_fence: input logic<32>,
+    dma_cmd_ready  : input  logic     ,
+    dma_busy       : input  logic     ,
+    dma_done       : input  logic     ,
+    dma_error      : input  logic     ,
+    display_ctrl   : output logic<32> ,
+    display_color  : output logic<32> ,
+    display_mode   : output logic<32> ,
+    fb_base        : output logic<32> ,
+    fb_stride      : output logic<32> ,
+    fb_commit_pulse: output logic     ,
+    irq_enable     : output logic<2>  ,
+    fill_command   : output logic<128>,
+    fill_start     : output logic     ,
+    blit_command   : output logic<160>,
+    blit_start     : output logic     ,
+    queue_command  : output logic<194>,
+    queue_submit   : output logic     ,
+    queue_clear_error: output logic   ,
+    dma_host_address: output logic<64>,
+    dma_vram_address: output logic<32>,
+    dma_length_bytes: output logic<32>,
+    dma_cmd_valid   : output logic    ,
 ) {
+    var request_pending : logic    ;
+    var pending_bar     : logic<6> ;
+    var pending_header0 : logic<32>;
+    var pending_header1 : logic<32>;
+    var pending_header2 : logic<32>;
+    var pending_header3 : logic<32>;
+    var pending_payload0: logic<32>;
     var decoded_valid : logic    ;
     var decoded_write : logic    ;
     var decoded_addr  : logic<16>;
@@ -41,13 +78,13 @@ module bar0_tlp_bridge (
     var ur_required   : logic    ;
 
     inst decoder: tlp_request_decoder (
-        request_valid: rx_valid      ,
-        bar_decode   : rx_bar_decode ,
-        header_dw0   : rx_header_dw0 ,
-        header_dw1   : rx_header_dw1 ,
-        header_dw2   : rx_header_dw2 ,
-        header_dw3   : rx_header_dw3 ,
-        payload_dw0  : rx_payload_dw0,
+        request_valid: request_pending ,
+        bar_decode   : pending_bar     ,
+        header_dw0   : pending_header0 ,
+        header_dw1   : pending_header1 ,
+        header_dw2   : pending_header2 ,
+        header_dw3   : pending_header3 ,
+        payload_dw0  : pending_payload0,
         decoded_valid                ,
         decoded_write                ,
         decoded_addr                 ,
@@ -64,9 +101,9 @@ module bar0_tlp_bridge (
     var reg_rsp_valid : logic    ;
     var reg_rsp_data  : logic<32>;
     var reg_rsp_error : logic    ;
-    let request_accept: logic     = rx_valid && rx_ready;
-    let accept        : logic     = request_accept && decoded_valid;
-    let ur_accept     : logic     = request_accept && unsupported && ur_required;
+    let request_accept: logic = rx_valid && rx_ready;
+    let accept        : logic = request_pending && decoded_valid;
+    let ur_accept     : logic = request_pending && unsupported && ur_required;
 
     inst registers: gpu_registers (
         clk                           ,
@@ -80,12 +117,42 @@ module bar0_tlp_bridge (
         rsp_valid      : reg_rsp_valid,
         rsp_rdata      : reg_rsp_data ,
         rsp_error      : reg_rsp_error,
+        active_buffer                 ,
+        vblank_toggle                 ,
+        fill_busy                     ,
+        fill_done                     ,
+        fill_error                    ,
+        blit_busy                     ,
+        blit_done                     ,
+        blit_error                    ,
+        queue_ready                   ,
+        queue_level                   ,
+        queue_active                  ,
+        queue_completed               ,
+        queue_error                   ,
+        queue_error_fence             ,
+        dma_cmd_ready                 ,
+        dma_busy                      ,
+        dma_done                      ,
+        dma_error                     ,
         display_ctrl                  ,
         display_color                 ,
         display_mode                  ,
         fb_base                       ,
         fb_stride                     ,
         fb_commit_pulse               ,
+        irq_enable                    ,
+        fill_command                  ,
+        fill_start                    ,
+        blit_command                  ,
+        blit_start                    ,
+        queue_command                 ,
+        queue_submit                  ,
+        queue_clear_error             ,
+        dma_host_address             ,
+        dma_vram_address             ,
+        dma_length_bytes             ,
+        dma_cmd_valid                ,
     );
 
     var completion_pending: logic    ;
@@ -97,10 +164,17 @@ module bar0_tlp_bridge (
     var saved_status      : logic<3> ;
     var saved_with_data   : logic    ;
 
-    assign rx_ready = !completion_pending;
+    assign rx_ready = !request_pending && !completion_pending;
 
     always_ff {
         if_reset {
+            request_pending   = 1'b0;
+            pending_bar       = 6'b0;
+            pending_header0   = 32'b0;
+            pending_header1   = 32'b0;
+            pending_header2   = 32'b0;
+            pending_header3   = 32'b0;
+            pending_payload0  = 32'b0;
             completion_pending = 1'b0;
             saved_req_id       = 16'b0;
             saved_tag          = 8'b0;
@@ -110,6 +184,18 @@ module bar0_tlp_bridge (
             saved_status       = 3'b000;
             saved_with_data    = 1'b0;
         } else {
+            if request_accept {
+                request_pending  = 1'b1;
+                pending_bar      = rx_bar_decode;
+                pending_header0  = rx_header_dw0;
+                pending_header1  = rx_header_dw1;
+                pending_header2  = rx_header_dw2;
+                pending_header3  = rx_header_dw3;
+                pending_payload0 = rx_payload_dw0;
+            } else if request_pending {
+                request_pending = 1'b0;
+            }
+
             if accept && !decoded_write {
                 completion_pending = 1'b1;
                 saved_req_id       = decoded_req_id;

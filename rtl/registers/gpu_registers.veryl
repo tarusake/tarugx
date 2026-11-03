@@ -4,27 +4,79 @@
 /// The request interface accepts one 32-bit, naturally aligned transaction per
 /// cycle. `req_wstrb` is a byte write enable in little-endian lane order.
 module gpu_registers (
-    clk            : input  clock    ,
-    rst            : input  reset    ,
-    req_valid      : input  logic    ,
-    req_write      : input  logic    ,
-    req_addr       : input  logic<16>,
-    req_wdata      : input  logic<32>,
-    req_wstrb      : input  logic<4> ,
-    req_ready      : output logic    ,
-    rsp_valid      : output logic    ,
-    rsp_rdata      : output logic<32>,
-    rsp_error      : output logic    ,
-    display_ctrl   : output logic<32>,
-    display_color  : output logic<32>,
-    display_mode   : output logic<32>,
-    fb_base        : output logic<32>,
-    fb_stride      : output logic<32>,
-    fb_commit_pulse: output logic    ,
+    clk            : input  clock     ,
+    rst            : input  reset     ,
+    req_valid      : input  logic     ,
+    req_write      : input  logic     ,
+    req_addr       : input  logic<16> ,
+    req_wdata      : input  logic<32> ,
+    req_wstrb      : input  logic<4>  ,
+    active_buffer  : input  logic     ,
+    vblank_toggle  : input  logic     ,
+    fill_busy      : input  logic     ,
+    fill_done      : input  logic     ,
+    fill_error     : input  logic     ,
+    blit_busy      : input  logic     ,
+    blit_done      : input  logic     ,
+    blit_error     : input  logic     ,
+    queue_ready    : input  logic     ,
+    queue_level    : input  logic<3>  ,
+    queue_active   : input  logic     ,
+    queue_completed: input  logic<32> ,
+    queue_error    : input  logic     ,
+    queue_error_fence: input logic<32>,
+    dma_cmd_ready  : input  logic     ,
+    dma_busy       : input  logic     ,
+    dma_done       : input  logic     ,
+    dma_error      : input  logic     ,
+    req_ready      : output logic     ,
+    rsp_valid      : output logic     ,
+    rsp_rdata      : output logic<32> ,
+    rsp_error      : output logic     ,
+    display_ctrl   : output logic<32> ,
+    display_color  : output logic<32> ,
+    display_mode   : output logic<32> ,
+    fb_base        : output logic<32> ,
+    fb_stride      : output logic<32> ,
+    fb_commit_pulse: output logic     ,
+    irq_enable     : output logic<2>  ,
+    fill_command   : output logic<128>,
+    fill_start     : output logic     ,
+    blit_command   : output logic<160>,
+    blit_start     : output logic     ,
+    queue_command  : output logic<194>,
+    queue_submit   : output logic     ,
+    queue_clear_error: output logic   ,
+    dma_host_address: output logic<64>,
+    dma_vram_address: output logic<32>,
+    dma_length_bytes: output logic<32>,
+    dma_cmd_valid   : output logic    ,
 ) {
-    const GPU_ID     : logic<32> = 32'h5447_5055;
-    const GPU_VERSION: logic<32> = 32'h0001_0000;
-    const GPU_STATUS : logic<32> = 32'h0000_0001;
+    const GPU_ID           : logic<32> = 32'h5447_5055;
+    const GPU_VERSION      : logic<32> = 32'h0001_0000;
+    const GPU_STATUS       : logic<32> = 32'h0000_0001;
+    var   fill_addr        : logic<32>;
+    var   fill_stride      : logic<32>;
+    var   fill_size        : logic<32>;
+    var   fill_color       : logic<32>;
+    var   fill_done_sticky : logic    ;
+    var   fill_error_sticky: logic    ;
+    var   blit_src         : logic<32>;
+    var   blit_dst         : logic<32>;
+    var   blit_src_stride  : logic<32>;
+    var   blit_dst_stride  : logic<32>;
+    var   blit_size        : logic<32>;
+    var   blit_done_sticky : logic    ;
+    var   blit_error_sticky: logic    ;
+    var   queue_fence       : logic<32>;
+    var   queue_pending     : logic    ;
+    var   queue_overflow    : logic    ;
+    var   dma_done_sticky   : logic    ;
+    var   dma_error_sticky  : logic    ;
+    var   dma_rejected      : logic    ;
+
+    assign fill_command = {fill_color, fill_size, fill_stride, fill_addr};
+    assign blit_command = {blit_size, blit_dst_stride, blit_src_stride, blit_dst, blit_src};
 
     function merge_bytes (
         old_value: input logic<32>,
@@ -52,12 +104,42 @@ module gpu_registers (
                 14'h0000: rsp_rdata = GPU_ID;
                 14'h0001: rsp_rdata = GPU_VERSION;
                 14'h0002: rsp_rdata = GPU_STATUS;
+                14'h0003: rsp_rdata = 32'b0;
                 14'h0004: rsp_rdata = display_ctrl;
                 14'h0005: rsp_rdata = display_color;
                 14'h0006: rsp_rdata = display_mode;
                 14'h0007: rsp_rdata = fb_base;
                 14'h0008: rsp_rdata = fb_stride;
                 14'h0009: rsp_rdata = 32'b0;
+                14'h000a: rsp_rdata = {31'b0, active_buffer};
+                14'h000b: rsp_rdata = {31'b0, vblank_toggle};
+                14'h000c: rsp_rdata = {30'b0, irq_enable};
+                14'h0018: rsp_rdata = fill_addr;
+                14'h0019: rsp_rdata = fill_stride;
+                14'h001a: rsp_rdata = fill_size;
+                14'h001b: rsp_rdata = fill_color;
+                14'h001c: rsp_rdata = 32'b0;
+                14'h001d: rsp_rdata = {29'b0, fill_error_sticky, fill_done_sticky, fill_busy};
+                14'h0020: rsp_rdata = blit_src;
+                14'h0021: rsp_rdata = blit_dst;
+                14'h0022: rsp_rdata = blit_src_stride;
+                14'h0023: rsp_rdata = blit_dst_stride;
+                14'h0024: rsp_rdata = blit_size;
+                14'h0025: rsp_rdata = 32'b0;
+                14'h0026: rsp_rdata = {29'b0, blit_error_sticky, blit_done_sticky, blit_busy};
+                14'h0028: rsp_rdata = queue_fence;
+                14'h0029: rsp_rdata = 32'b0;
+                14'h002a: rsp_rdata = {25'b0, queue_overflow, (queue_error || queue_overflow),
+                    queue_active, !queue_pending, queue_level};
+                14'h002b: rsp_rdata = queue_completed;
+                14'h002c: rsp_rdata = queue_error_fence;
+                14'h0030: rsp_rdata = dma_host_address[31:0];
+                14'h0031: rsp_rdata = dma_host_address[63:32];
+                14'h0032: rsp_rdata = dma_vram_address;
+                14'h0033: rsp_rdata = dma_length_bytes;
+                14'h0034: rsp_rdata = 32'b0;
+                14'h0035: rsp_rdata = {26'b0, dma_cmd_valid, dma_cmd_ready, dma_rejected,
+                    dma_error_sticky, dma_done_sticky, dma_busy};
                 default : {
                     rsp_rdata = 32'b0;
                     rsp_error = 1'b1;
@@ -71,14 +153,63 @@ module gpu_registers (
 
     always_ff {
         if_reset {
-            display_ctrl    = 32'b0;
-            display_color   = 32'b0;
-            display_mode    = 32'b0;
-            fb_base         = 32'b0;
-            fb_stride       = 32'd2560;
-            fb_commit_pulse = 1'b0;
+            display_ctrl      = 32'b0;
+            display_color     = 32'b0;
+            display_mode      = 32'b0;
+            fb_base           = 32'b0;
+            fb_stride         = 32'd2560;
+            fb_commit_pulse   = 1'b0;
+            irq_enable        = 2'b0;
+            fill_addr         = 32'b0;
+            fill_stride       = 32'b0;
+            fill_size         = 32'b0;
+            fill_color        = 32'b0;
+            fill_start        = 1'b0;
+            fill_done_sticky  = 1'b0;
+            fill_error_sticky = 1'b0;
+            blit_src          = 32'b0;
+            blit_dst          = 32'b0;
+            blit_src_stride   = 32'b0;
+            blit_dst_stride   = 32'b0;
+            blit_size         = 32'b0;
+            blit_start        = 1'b0;
+            blit_done_sticky  = 1'b0;
+            blit_error_sticky = 1'b0;
+            queue_fence       = 32'b0;
+            queue_command     = 194'b0;
+            queue_pending     = 1'b0;
+            queue_overflow    = 1'b0;
+            queue_clear_error = 1'b0;
+            dma_host_address  = 64'b0;
+            dma_vram_address  = 32'b0;
+            dma_length_bytes  = 32'b0;
+            dma_cmd_valid     = 1'b0;
+            dma_done_sticky   = 1'b0;
+            dma_error_sticky  = 1'b0;
+            dma_rejected      = 1'b0;
         } else {
             fb_commit_pulse = 1'b0;
+            fill_start      = 1'b0;
+            blit_start      = 1'b0;
+            queue_clear_error = 1'b0;
+            if queue_pending && queue_ready {
+                queue_pending = 1'b0;
+            }
+            if dma_cmd_valid && dma_cmd_ready {
+                dma_cmd_valid = 1'b0;
+            }
+            if fill_done {
+                fill_done_sticky  = 1'b1;
+                fill_error_sticky = fill_error;
+            }
+            if blit_done {
+                blit_done_sticky  = 1'b1;
+                blit_error_sticky = blit_error;
+            }
+            if dma_done {
+                dma_done_sticky  = 1'b1;
+                dma_error_sticky = dma_error;
+            }
             if req_valid && req_ready && req_write && (req_addr[1:0] == 2'b00) {
                 case req_addr[15:2] {
                     14'h0004: display_ctrl    = merge_bytes(display_ctrl, req_wdata, req_wstrb);
@@ -87,9 +218,68 @@ module gpu_registers (
                     14'h0007: fb_base         = merge_bytes(fb_base, req_wdata, req_wstrb);
                     14'h0008: fb_stride       = merge_bytes(fb_stride, req_wdata, req_wstrb);
                     14'h0009: fb_commit_pulse = |req_wstrb;
+                    14'h000c: if req_wstrb[0] {
+                        irq_enable = req_wdata[1:0];
+                    }
+                    14'h0018: fill_addr   = merge_bytes(fill_addr, req_wdata, req_wstrb);
+                    14'h0019: fill_stride = merge_bytes(fill_stride, req_wdata, req_wstrb);
+                    14'h001a: fill_size   = merge_bytes(fill_size, req_wdata, req_wstrb);
+                    14'h001b: fill_color  = merge_bytes(fill_color, req_wdata, req_wstrb);
+                    14'h001c: if req_wstrb[0] && req_wdata[0] && !fill_busy {
+                        fill_start        = 1'b1;
+                        fill_done_sticky  = 1'b0;
+                        fill_error_sticky = 1'b0;
+                    }
+                    14'h0020: blit_src        = merge_bytes(blit_src, req_wdata, req_wstrb);
+                    14'h0021: blit_dst        = merge_bytes(blit_dst, req_wdata, req_wstrb);
+                    14'h0022: blit_src_stride = merge_bytes(blit_src_stride, req_wdata, req_wstrb);
+                    14'h0023: blit_dst_stride = merge_bytes(blit_dst_stride, req_wdata, req_wstrb);
+                    14'h0024: blit_size       = merge_bytes(blit_size, req_wdata, req_wstrb);
+                    14'h0025: if req_wstrb[0] && req_wdata[0] && !blit_busy {
+                        blit_start        = 1'b1;
+                        blit_done_sticky  = 1'b0;
+                        blit_error_sticky = 1'b0;
+                    }
+                    14'h0028: queue_fence = merge_bytes(queue_fence, req_wdata, req_wstrb);
+                    14'h0029: if req_wstrb[0] && (req_wdata[1:0] != 0) {
+                        if !queue_pending || queue_ready {
+                            queue_command = if req_wdata[1:0] == 2'd1
+                                ? {32'b0, fill_command, queue_fence, 2'd1}
+                                : {blit_command, queue_fence, req_wdata[1:0]};
+                            queue_pending = 1'b1;
+                        } else {
+                            queue_overflow = 1'b1;
+                        }
+                    }
+                    14'h002a: if req_wstrb[0] && req_wdata[5] {
+                        queue_overflow    = 1'b0;
+                        queue_clear_error = 1'b1;
+                    }
+                    14'h0030: dma_host_address[31:0] = merge_bytes(
+                        dma_host_address[31:0], req_wdata, req_wstrb);
+                    14'h0031: dma_host_address[63:32] = merge_bytes(
+                        dma_host_address[63:32], req_wdata, req_wstrb);
+                    14'h0032: dma_vram_address = merge_bytes(
+                        dma_vram_address, req_wdata, req_wstrb);
+                    14'h0033: dma_length_bytes = merge_bytes(
+                        dma_length_bytes, req_wdata, req_wstrb);
+                    14'h0034: if req_wstrb[0] && req_wdata[0] {
+                        if (!dma_cmd_valid || dma_cmd_ready) && !dma_busy {
+                            dma_cmd_valid    = 1'b1;
+                            dma_done_sticky  = 1'b0;
+                            dma_error_sticky = 1'b0;
+                            dma_rejected     = 1'b0;
+                        } else {
+                            dma_rejected = 1'b1;
+                        }
+                    }
+                    14'h0035: if req_wstrb[0] && req_wdata[3] {
+                        dma_rejected = 1'b0;
+                    }
                     default : {}
                 }
             }
         }
     }
+    assign queue_submit = queue_pending;
 }

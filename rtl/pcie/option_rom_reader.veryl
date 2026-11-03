@@ -3,52 +3,63 @@
 /// The storage captures rom_addr on rom_en and returns data one clock later.
 /// A TLP frontend must handle Byte Enable and Completion splitting separately.
 module option_rom_reader (
-    clk: input clock,
-    rst_n: input reset,
-    req_valid: input logic,
-    req_ready: output logic,
-    req_write: input logic,
-    req_addr: input logic<32>,
-    rsp_valid: output logic,
-    rsp_ready: input logic,
-    rsp_data: output logic<32>,
-    rsp_error: output logic,
-    rom_en: output logic,
-    rom_addr: output logic<14>,
-    rom_data: input logic<32>,
+    clk      : input  clock    ,
+    rst_n    : input  reset    ,
+    req_valid: input  logic    ,
+    req_ready: output logic    ,
+    req_write: input  logic    ,
+    req_addr : input  logic<32>,
+    rsp_valid: output logic    ,
+    rsp_ready: input  logic    ,
+    rsp_data : output logic<32>,
+    rsp_error: output logic    ,
+    rom_en   : output logic    ,
+    rom_addr : output logic<14>,
+    rom_data : input  logic<32>,
 ) {
-    enum State: logic<2> { Idle, Issue, Capture, Reply, }
+    enum State: logic<2> {
+        Idle,
+        Issue,
+        Capture,
+        Reply,
+    }
     var state: State;
     assign req_ready = state == State::Idle;
     assign rsp_valid = state == State::Reply;
-    assign rom_en = state == State::Issue;
+    assign rom_en    = state == State::Issue;
     always_ff {
         if_reset {
-            state = State::Idle;
-            rom_addr = 0;
-            rsp_data = 0;
+            state     = State::Idle;
+            rom_addr  = 0;
+            rsp_data  = 0;
             rsp_error = 0;
         } else {
             case state {
                 State::Idle: {
                     if req_valid {
-                        rsp_data = 0;
+                        rsp_data  = 0;
                         rsp_error = 0;
                         if req_write || (req_addr[31:16] != 0) || (req_addr[1:0] != 0) {
                             rsp_error = 1;
-                            state = State::Reply;
+                            state     = State::Reply;
                         } else {
                             rom_addr = req_addr[15:2];
-                            state = State::Issue;
+                            state    = State::Issue;
                         }
                     }
                 }
-                State::Issue: { state = State::Capture; }
+                State::Issue: {
+                    state = State::Capture;
+                }
                 State::Capture: {
                     rsp_data = rom_data;
-                    state = State::Reply;
+                    state    = State::Reply;
                 }
-                State::Reply: { if rsp_ready { state = State::Idle; } }
+                State::Reply: {
+                    if rsp_ready {
+                        state = State::Idle;
+                    }
+                }
             }
         }
     }

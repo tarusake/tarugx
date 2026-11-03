@@ -2,65 +2,102 @@
 /// Buffer a complete 3-DW Completion (up to 32 payload DW), then emit
 /// contiguous Gowin 256-bit beats. Header DWs are unchanged; data is swapped.
 module tlp_completion_packet_buffer (
-    clk: input clock, rst_n: input reset,
-    in_valid: input logic, in_ready: output logic,
-    in_sop: input logic, in_eop: input logic, in_data: input logic<32>,
-    tx_wait: input logic, tx_valid: output logic<8>,
-    tx_sop: output logic, tx_eop: output logic, tx_data: output logic<256>,
-    idle: output logic, framing_error: output logic,
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    in_valid     : input  logic     ,
+    in_ready     : output logic     ,
+    in_sop       : input  logic     ,
+    in_eop       : input  logic     ,
+    in_data      : input  logic<32> ,
+    tx_wait      : input  logic     ,
+    tx_valid     : output logic<8>  ,
+    tx_sop       : output logic     ,
+    tx_eop       : output logic     ,
+    tx_data      : output logic<256>,
+    idle         : output logic     ,
+    framing_error: output logic     ,
 ) {
-    var packet: logic<40,32>;
-    var fill: logic<6>; var expected: logic<6>; var total: logic<6>;
-    var send: logic; var draining: logic; var cursor: logic<6>;
-    let data_header: logic = in_data[31:24] == 8'h4a;
-    let header_ok: logic = !in_data[15] &&
-        ((data_header && (in_data[9:0] >= 1) && (in_data[9:0] <= 32))
-         || ((in_data[31:24] == 8'h0a) && (in_data[9:0] == 0)));
+    var packet     : logic<40, 32>;
+    var fill       : logic<6>     ;
+    var expected   : logic<6>     ;
+    var total      : logic<6>     ;
+    var send       : logic        ;
+    var draining   : logic        ;
+    var cursor     : logic<6>     ;
+    let data_header: logic         = in_data[31:24] == 8'h4a;
+    let header_ok  : logic         = !in_data[15]
+        && ((data_header && (in_data[9:0] >= 1) && (in_data[9:0] <= 32))
+            || ((in_data[31:24] == 8'h0a) && (in_data[9:0] == 0)));
     assign in_ready = !send;
-    assign idle = !send && !draining && (fill == 0);
-    assign tx_sop = send && (cursor == 0);
-    assign tx_eop = send && ((total - cursor) <= 8);
+    assign idle     = !send && !draining && (fill == 0);
+    assign tx_sop   = send && (cursor == 0);
+    assign tx_eop   = send && ((total - cursor) <= 8);
     always_comb {
-        tx_valid = 0; tx_data = 0;
+        tx_valid = 0;
+        tx_data  = 0;
         for i in 0..8 {
             if send && ((cursor as 32) + i <: (total as 32)) {
-                tx_valid[7-i] = 1;
-                tx_data[(7-i)*32+:32] = packet[(cursor as 32) + i];
+                tx_valid[7 - i]           = 1;
+                tx_data[(7 - i) * 32+:32] = packet[(cursor as 32) + i];
             }
         }
     }
     always_ff {
         if_reset {
-            packet = 0; fill = 0; expected = 0; total = 0;
-            send = 0; draining = 0; cursor = 0; framing_error = 0;
+            packet        = 0;
+            fill          = 0;
+            expected      = 0;
+            total         = 0;
+            send          = 0;
+            draining      = 0;
+            cursor        = 0;
+            framing_error = 0;
         } else {
             framing_error = 0;
             if send {
                 if !tx_wait {
-                    if tx_eop { send = 0; fill = 0; cursor = 0; }
-                    else { cursor = cursor + 6'd8; }
+                    if tx_eop {
+                        send   = 0;
+                        fill   = 0;
+                        cursor = 0;
+                    } else {
+                        cursor = cursor + 6'd8;
+                    }
                 }
             } else if in_valid {
                 if in_sop {
-                    if (fill != 0) || draining { framing_error = 1; }
-                    fill = 0; draining = 0;
+                    if (fill != 0) || draining {
+                        framing_error = 1;
+                    }
+                    fill     = 0;
+                    draining = 0;
                     if !header_ok || in_eop {
-                        framing_error = 1; draining = !in_eop;
+                        framing_error = 1;
+                        draining      = !in_eop;
                     } else {
                         packet[0] = in_data;
-                        expected = if data_header ? (in_data[5:0] + 6'd3) : 6'd3;
-                        fill = 1;
+                        expected  = if data_header ? (in_data[5:0] + 6'd3) : 6'd3;
+                        fill      = 1;
                     }
                 } else if draining || (fill == 0) {
                     framing_error = 1;
-                    draining = !in_eop;
+                    draining      = !in_eop;
                 } else if in_eop != (fill + 6'd1 == expected) {
-                    framing_error = 1; fill = 0; draining = !in_eop;
+                    framing_error = 1;
+                    fill          = 0;
+                    draining      = !in_eop;
                 } else {
-                    packet[fill] = if fill <: 3 ? in_data :
-                        {in_data[7:0], in_data[15:8], in_data[23:16], in_data[31:24]};
-                    fill = fill + 6'd1;
-                    if in_eop { total = expected; cursor = 0; send = 1; }
+                    packet[fill] = if fill <: 3 ?
+                        in_data
+                    :
+                        {in_data[7:0], in_data[15:8], in_data[23:16], in_data[31:24]}
+                    ;
+                    fill         = fill + 6'd1;
+                    if in_eop {
+                        total  = expected;
+                        cursor = 0;
+                        send   = 1;
+                    }
                 }
             }
         }

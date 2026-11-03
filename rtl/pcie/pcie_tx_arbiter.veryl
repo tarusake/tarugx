@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Arbitrates single-beat BAR Completions and DMA Memory Read requests.
+module pcie_tx_arbiter (
+    clk             : input  clock     ,
+    rst_n           : input  reset     ,
+    completion_valid: input  logic     ,
+    completion_ready: output logic     ,
+    completion_sop  : input  logic     ,
+    completion_eop  : input  logic     ,
+    completion_keep : input  logic<8>  ,
+    completion_data : input  logic<256>,
+    dma_valid       : input  logic     ,
+    dma_ready       : output logic     ,
+    dma_sop         : input  logic     ,
+    dma_eop         : input  logic     ,
+    dma_keep        : input  logic<8>  ,
+    dma_data        : input  logic<256>,
+    tx_wait         : input  logic     ,
+    tx_sop          : output logic     ,
+    tx_eop          : output logic     ,
+    tx_valid        : output logic<8>  ,
+    tx_data         : output logic<256>,
+) {
+    var locked            : logic;
+    var locked_completion : logic;
+    let choose_completion: logic = if locked ? locked_completion : completion_valid;
+    assign completion_ready = choose_completion && !tx_wait;
+    assign dma_ready        = dma_valid && !choose_completion && !tx_wait;
+    assign tx_sop           = if choose_completion ? completion_sop : dma_sop;
+    assign tx_eop           = if choose_completion ? completion_eop : dma_eop;
+    assign tx_valid         = if choose_completion ? completion_keep
+        : if dma_valid ? dma_keep : 0;
+    assign tx_data          = if choose_completion ? completion_data : dma_data;
+
+    always_ff {
+        if_reset {
+            locked            = 0;
+            locked_completion = 0;
+        } else if !locked && tx_wait && (completion_valid || dma_valid) {
+            locked            = 1;
+            locked_completion = completion_valid;
+        } else if locked && !tx_wait {
+            locked = 0;
+        }
+    }
+}

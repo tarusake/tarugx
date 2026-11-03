@@ -89,22 +89,26 @@ class Backend:
             self.config.update(dict(line.split('=', 1) for line in p.read_text().splitlines()
                                     if line and not line.startswith('#')))
 
-    def host(self, action):
+    def remote(self, code, action='remote action', timeout=15):
         c = self.config
-        code = 'ACTION = ' + repr(action) + '\n' + REMOTE
         try:
             result = subprocess.run(
                 ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
                  c['TARUGX_SSH_USER']+'@'+c['TARUGX_HOST_IP'],
                  "sudo -S -p '' python3 -c " + shlex.quote(code)],
                 input=c['TARUGX_SUDO_PASSWORD']+'\n', text=True,
-                capture_output=True, timeout=15)
+                capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise RuntimeError('Host SSH timed out; no further action') from None
         if result.returncode:
             # Do not echo commands, addresses, credentials or remote tracebacks.
             raise RuntimeError('Host check/action failed ('+action+'); no further action')
-        return json.loads(result.stdout)
+        return result.stdout
+
+    def host(self, action):
+        code = 'ACTION = ' + repr(action) + '\n' + REMOTE
+        result = self.remote(code, action)
+        return json.loads(result)
 
     def reconfigure(self):
         import serial

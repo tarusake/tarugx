@@ -18,6 +18,7 @@ module gowin_rx_single_beat_unpack {
     var header_dw2   : logic<32> ;
     var header_dw3   : logic<32> ;
     var payload_dw0  : logic<32> ;
+    var payload_dw1  : logic<32> ;
     var framing_error: logic     ;
 
     inst dut: tlp_rx_decoder (
@@ -36,6 +37,7 @@ module gowin_rx_single_beat_unpack {
         header_dw2     ,
         header_dw3     ,
         payload_dw0    ,
+        payload_dw1    ,
         framing_error  ,
     );
 
@@ -56,6 +58,7 @@ module gowin_rx_single_beat_unpack {
         $assert(header_dw1 == 32'h1234_5a0f);
         $assert(header_dw2 == 32'h0000_0014);
         $assert(payload_dw0 == 32'h1122_3344);
+        $assert(payload_dw1 == 32'h0000_0000);
 
         // Actual first RX beat captured from a host BAR0 DWORD read.
         // Invalid lower lanes contain arbitrary data and must be ignored.

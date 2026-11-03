@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Dispatch ordered queue entries to the legacy fill/blit command mailboxes.
+module render_queue_dispatcher (
+    clk                  : input  clock     ,
+    rst_n                : input  reset     ,
+    dispatch_valid       : input  logic     ,
+    dispatch_ready       : output logic     ,
+    dispatch_command     : input  logic<194>,
+    legacy_fill_start    : input  logic     ,
+    legacy_blit_start    : input  logic     ,
+    fill_ready           : input  logic     ,
+    fill_done            : input  logic     ,
+    fill_error           : input  logic     ,
+    blit_ready           : input  logic     ,
+    blit_done            : input  logic     ,
+    blit_error           : input  logic     ,
+    fill_start           : output logic     ,
+    fill_command         : output logic<128>,
+    blit_start           : output logic     ,
+    blit_command         : output logic<160>,
+    completion_valid     : output logic     ,
+    completion_error     : output logic     ,
+) {
+    const OPCODE_FILL: logic<2> = 2'd1;
+    const OPCODE_BLIT: logic<2> = 2'd2;
+    var running_opcode: logic<2>;
+    let opcode: logic<2> = dispatch_command[1:0];
+    let fill_admit: logic = dispatch_valid && (opcode == OPCODE_FILL) && fill_ready && !legacy_fill_start;
+    let blit_admit: logic = dispatch_valid && (opcode == OPCODE_BLIT) && blit_ready && !legacy_blit_start;
+    let invalid_admit: logic = dispatch_valid && (opcode != OPCODE_FILL) && (opcode != OPCODE_BLIT);
+
+    assign dispatch_ready   = (running_opcode == 0) && (fill_admit || blit_admit || invalid_admit);
+    assign fill_start       = (running_opcode == 0) && fill_admit;
+    assign blit_start       = (running_opcode == 0) && blit_admit;
+    assign fill_command     = dispatch_command[161:34];
+    assign blit_command     = dispatch_command[193:34];
+    assign completion_valid = ((running_opcode == OPCODE_FILL) && fill_done)
+        || ((running_opcode == OPCODE_BLIT) && blit_done) || (running_opcode == 2'd3);
+    assign completion_error = if running_opcode == OPCODE_FILL ? fill_error
+        : if running_opcode == OPCODE_BLIT ? blit_error : (running_opcode == 2'd3);
+
+    always_ff {
+        if_reset {
+            running_opcode = 0;
+        } else {
+            if dispatch_valid && dispatch_ready {
+                running_opcode = if opcode == OPCODE_FILL ? OPCODE_FILL
+                    : if opcode == OPCODE_BLIT ? OPCODE_BLIT : 2'd3;
+            }
+            if completion_valid {
+                running_opcode = 0;
+            }
+        }
+    }
+}

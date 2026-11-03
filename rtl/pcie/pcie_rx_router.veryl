@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Routes PCIe Completions to the DMA requester and all other TLPs to BAR logic.
+///
+/// A Completion for an unknown tag is deliberately not sent to the BAR decoder;
+/// the DMA decoder may leave it unclaimed and it is then consumed as a foreign
+/// Completion instead of being mistaken for a Memory request.
+module pcie_rx_router (
+    clk           : input  clock     ,
+    rst_n         : input  reset     ,
+    rx_sop        : input  logic     ,
+    rx_eop        : input  logic     ,
+    rx_valid      : input  logic<8>  ,
+    rx_data       : input  logic<256>,
+    bar_wait      : input  logic     ,
+    dma_wait      : input  logic     ,
+    rx_wait       : output logic     ,
+    bar_rx_sop    : output logic     ,
+    bar_rx_eop    : output logic     ,
+    bar_rx_valid  : output logic<8>  ,
+    dma_rx_sop    : output logic     ,
+    dma_rx_eop    : output logic     ,
+    dma_rx_valid  : output logic<8>  ,
+    is_completion : output logic     ,
+) {
+    let transfer_present: logic = |rx_valid;
+    let tlp_type: logic<8> = rx_data[255:248];
+    let first_completion: logic = rx_sop && ((tlp_type == 8'h0a) || (tlp_type == 8'h4a));
+    var packet_active: logic;
+    var packet_dma   : logic;
+    let route_dma: logic = if packet_active ? packet_dma : first_completion;
+
+    assign is_completion = transfer_present && route_dma;
+    assign bar_rx_sop     = rx_sop && !is_completion;
+    assign bar_rx_eop     = rx_eop && !is_completion;
+    assign bar_rx_valid   = if is_completion ? 0 : rx_valid;
+    assign dma_rx_sop     = rx_sop && is_completion;
+    assign dma_rx_eop     = rx_eop && is_completion;
+    assign dma_rx_valid   = if is_completion ? rx_valid : 0;
+    assign rx_wait        = transfer_present && (if is_completion ? dma_wait : bar_wait);
+
+    always_ff {
+        if_reset {
+            packet_active = 0;
+            packet_dma    = 0;
+        } else if transfer_present && !rx_wait {
+            if packet_active {
+                if rx_eop {
+                    packet_active = 0;
+                }
+            } else if rx_sop && !rx_eop {
+                packet_active = 1;
+                packet_dma    = first_completion;
+            }
+        }
+    }
+}

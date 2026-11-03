@@ -12,9 +12,15 @@ module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
  logic rom_en,diagnostic_error;logic [13:0] rom_addr;logic [31:0] rom_data;
  logic [31:0] mem[0:16383],expected[0:34];
  logic framing_error,unsupported,malformed,fb_commit_pulse;
+ logic active_buffer=0,vblank_toggle=0;logic [1:0] irq_enable;
+ logic fill_busy=0,fill_done=0,fill_error=0,fill_start;logic [127:0] fill_command;
+ logic blit_busy=0,blit_done=0,blit_error=0,blit_start;logic [159:0] blit_command;
+ logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;
+ logic [2:0] queue_level=0;logic [31:0] queue_completed=0,queue_error_fence=0;
+ logic [193:0] queue_command;
  logic [31:0] display_ctrl,display_color,display_mode,fb_base,fb_stride;
  logic fb_req_valid,fb_req_ready=0,fb_req_write,fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
- logic [31:0] fb_req_addr,fb_req_wdata,fb_rsp_rdata=0;logic [3:0] fb_req_wstrb;
+ logic [31:0] fb_req_addr,fb_rsp_rdata=0;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  int packets=0,rom_reads=0;
  logic staged_sop,staged_eop,staged_wait,staged_mask,busy;
  logic [19:0] rx_tag=0,staged_tag,force_tag=0;
@@ -36,6 +42,10 @@ module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
   .rx_bar_decode(staged_bar),.rx_data(staged_data),.rx_wait(core_rx_wait),.rx_masknp(core_rx_masknp),
   .tx_wait(core_tx_wait),.tx_valid(core_tx_valid),.tx_sop(core_tx_sop),.tx_eop(core_tx_eop),.tx_data(core_tx_data),
   .framing_error,.unsupported,.malformed,.fb_commit_pulse,.display_ctrl,.display_color,.display_mode,.fb_base,.fb_stride,
+  .active_buffer,.vblank_toggle,.irq_enable,.fill_busy,.fill_done,.fill_error,.fill_command,.fill_start,
+  .blit_busy,.blit_done,.blit_error,.blit_command,.blit_start,
+  .queue_ready,.queue_level,.queue_active,.queue_completed,.queue_error,.queue_error_fence,
+  .queue_command,.queue_submit,.queue_clear_error,
   .fb_req_valid,.fb_req_ready,.fb_req_write,.fb_req_addr,.fb_req_wdata,.fb_req_wstrb,
   .fb_rsp_valid,.fb_rsp_ready,.fb_rsp_error,.fb_rsp_rdata);
  tarugx_option_rom_storage #(.INIT_FILE("build/uefi/TaruGxGop.mem")) storage(.clk,.en(rom_en),.addr(rom_addr),.data(rom_data));

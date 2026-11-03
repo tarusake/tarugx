@@ -12,6 +12,7 @@ module bar2_tlp_bridge (
     rx_header_dw2 : input  logic<32>,
     rx_header_dw3 : input  logic<32>,
     rx_payload_dw0: input  logic<32>,
+    rx_payload_dw1: input  logic<32>,
     tx_valid      : output logic    ,
     tx_ready      : input  logic    ,
     tx_header_dw0 : output logic<32>,
@@ -24,47 +25,60 @@ module bar2_tlp_bridge (
     req_ready     : input  logic    ,
     req_write     : output logic    ,
     req_addr      : output logic<32>,
-    req_wdata     : output logic<32>,
-    req_wstrb     : output logic<4> ,
+    req_wdata     : output logic<64>,
+    req_wstrb     : output logic<8> ,
     rsp_valid     : input  logic    ,
     rsp_ready     : output logic    ,
     rsp_rdata     : input  logic<32>,
     rsp_error     : input  logic    ,
 ) {
-    enum State: logic<2> {
+    enum State: logic<3> {
         Idle,
+        Decode,
         Request,
         Response,
         Completion,
     }
-    var state         : State    ;
-    var decoded_valid : logic    ;
-    var decoded_write : logic    ;
-    var decoded_addr  : logic<16>;
-    var decoded_wdata : logic<32>;
-    var decoded_be    : logic<4> ;
-    var decoded_req_id: logic<16>;
-    var decoded_tag   : logic<8> ;
-    var ur_required   : logic    ;
+    var state              : State    ;
+    var decoded_valid      : logic    ;
+    var decoded_write      : logic    ;
+    var decoded_addr       : logic<16>;
+    var decoded_wdata      : logic<32>;
+    var decoded_be         : logic<4> ;
+    var decoded_req_id     : logic<16>;
+    var decoded_tag        : logic<8> ;
+    var ur_required        : logic    ;
+    var decoder_unsupported: logic    ;
+    var packet_header_dw0  : logic<32>;
+    var packet_header_dw1  : logic<32>;
+    var packet_header_dw2  : logic<32>;
+    var packet_header_dw3  : logic<32>;
+    var packet_payload_dw0 : logic<32>;
+    var packet_payload_dw1 : logic<32>;
     inst decoder: tlp_request_decoder (
-        request_valid: rx_valid      ,
-        bar_decode   : 6'b000001     ,
-        header_dw0   : rx_header_dw0 ,
-        header_dw1   : rx_header_dw1 ,
-        header_dw2   : rx_header_dw2 ,
-        header_dw3   : rx_header_dw3 ,
-        payload_dw0  : rx_payload_dw0,
-        decoded_valid                ,
-        decoded_write                ,
-        decoded_addr                 ,
-        decoded_wdata                ,
-        decoded_be                   ,
-        requester_id : decoded_req_id,
-        request_tag  : decoded_tag   ,
-        unsupported                  ,
-        ur_required                  ,
-        malformed                    ,
+        request_valid: state == State::Decode,
+        bar_decode   : 6'b000001             ,
+        header_dw0   : packet_header_dw0     ,
+        header_dw1   : packet_header_dw1     ,
+        header_dw2   : packet_header_dw2     ,
+        header_dw3   : packet_header_dw3     ,
+        payload_dw0  : packet_payload_dw0    ,
+        decoded_valid                        ,
+        decoded_write                        ,
+        decoded_addr                         ,
+        decoded_wdata                        ,
+        decoded_be                           ,
+        requester_id : decoded_req_id        ,
+        request_tag  : decoded_tag           ,
+        unsupported  : decoder_unsupported   ,
+        ur_required                          ,
+        malformed                            ,
     );
+    let two_dw_write: logic = (state == State::Decode) && (packet_header_dw0[31:29] == 3'b010)
+        && (packet_header_dw0[28:24] == 5'b00000) && (packet_header_dw0[9:0] == 10'd2)
+        && (packet_header_dw1[3:0] != 4'b0000) && (packet_header_dw1[7:4] != 4'b0000)
+        && (packet_header_dw2[1:0] == 2'b00);
+    assign unsupported = decoder_unsupported && !two_dw_write;
     var saved_req_id   : logic<16>;
     var saved_tag      : logic<8> ;
     var saved_addr     : logic<16>;
@@ -93,39 +107,61 @@ module bar2_tlp_bridge (
     );
     always_ff {
         if_reset {
-            state           = State::Idle;
-            req_write       = 0;
-            req_addr        = 0;
-            req_wdata       = 0;
-            req_wstrb       = 0;
-            saved_req_id    = 0;
-            saved_tag       = 0;
-            saved_addr      = 0;
-            saved_be        = 0;
-            saved_data      = 0;
-            saved_status    = 0;
-            saved_with_data = 0;
+            state              = State::Idle;
+            req_write          = 0;
+            req_addr           = 0;
+            req_wdata          = 0;
+            req_wstrb          = 0;
+            saved_req_id       = 0;
+            saved_tag          = 0;
+            saved_addr         = 0;
+            saved_be           = 0;
+            saved_data         = 0;
+            saved_status       = 0;
+            saved_with_data    = 0;
+            packet_header_dw0  = 0;
+            packet_header_dw1  = 0;
+            packet_header_dw2  = 0;
+            packet_header_dw3  = 0;
+            packet_payload_dw0 = 0;
+            packet_payload_dw1 = 0;
         } else {
             case state {
                 State::Idle: {
                     if rx_valid {
-                        saved_req_id    = decoded_req_id;
-                        saved_tag       = decoded_tag;
-                        saved_addr      = decoded_addr;
-                        saved_be        = decoded_be;
-                        saved_data      = 0;
-                        saved_status    = 0;
-                        saved_with_data = 0;
-                        if decoded_valid {
-                            req_write = decoded_write;
-                            req_addr  = {10'b0, rx_header_dw2[21:0]};
-                            req_wdata = decoded_wdata;
-                            req_wstrb = decoded_be;
-                            state     = State::Request;
-                        } else if unsupported && ur_required {
-                            saved_status = 3'b001;
-                            state        = State::Completion;
-                        }
+                        packet_header_dw0  = rx_header_dw0;
+                        packet_header_dw1  = rx_header_dw1;
+                        packet_header_dw2  = rx_header_dw2;
+                        packet_header_dw3  = rx_header_dw3;
+                        packet_payload_dw0 = rx_payload_dw0;
+                        packet_payload_dw1 = rx_payload_dw1;
+                        state              = State::Decode;
+                    }
+                }
+                State::Decode: {
+                    state           = State::Idle;
+                    saved_req_id    = decoded_req_id;
+                    saved_tag       = decoded_tag;
+                    saved_addr      = decoded_addr;
+                    saved_be        = decoded_be;
+                    saved_data      = 0;
+                    saved_status    = 0;
+                    saved_with_data = 0;
+                    if decoded_valid {
+                        req_write = decoded_write;
+                        req_addr  = {10'b0, packet_header_dw2[21:0]};
+                        req_wdata = {32'b0, decoded_wdata};
+                        req_wstrb = {4'b0, decoded_be};
+                        state     = State::Request;
+                    } else if two_dw_write {
+                        req_write = 1;
+                        req_addr  = {10'b0, packet_header_dw2[21:0]};
+                        req_wdata = {packet_payload_dw1, packet_payload_dw0};
+                        req_wstrb = packet_header_dw1[7:0];
+                        state     = State::Request;
+                    } else if unsupported && ur_required {
+                        saved_status = 3'b001;
+                        state        = State::Completion;
                     }
                 }
                 State::Request: {
@@ -138,6 +174,9 @@ module bar2_tlp_bridge (
                     if tx_ready {
                         state = State::Idle;
                     }
+                }
+                default: {
+                    state = State::Idle;
                 }
             }
             if rsp_valid && rsp_ready {

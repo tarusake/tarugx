@@ -8,6 +8,7 @@ module scanout_reader (
     fb_base      : input  logic<32> ,
     fb_stride    : input  logic<32> ,
     config_error : output logic     ,
+    active_buffer: output logic     ,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
     mem_addr     : output logic<22> ,
@@ -40,28 +41,30 @@ module scanout_reader (
     assign out_valid     = state == State::Push;
     always_ff {
         if_reset {
-            state        = State::Start;
-            row          = 0;
-            column       = 0;
-            row_base     = 0;
-            stride       = 0;
-            mem_addr     = 0;
-            out_index    = 0;
-            out_data     = 0;
-            out_error    = 0;
-            config_error = 0;
+            state         = State::Start;
+            row           = 0;
+            column        = 0;
+            row_base      = 0;
+            stride        = 0;
+            mem_addr      = 0;
+            out_index     = 0;
+            out_data      = 0;
+            out_error     = 0;
+            config_error  = 0;
+            active_buffer = 0;
         } else {
             case state {
                 State::Start: {
                     config_error = enable && !valid_config;
                     if enable && valid_config {
-                        row       = 0;
-                        column    = 0;
-                        row_base  = fb_base[21:0];
-                        mem_addr  = fb_base[21:0];
-                        stride    = fb_stride[21:0];
-                        out_index = 0;
-                        state     = State::Issue;
+                        row           = 0;
+                        active_buffer = fb_base != 0;
+                        column        = 0;
+                        row_base      = fb_base[21:0];
+                        mem_addr      = fb_base[21:0];
+                        stride        = fb_stride[21:0];
+                        out_index     = 0;
+                        state         = State::Issue;
                     }
                 }
                 State::Issue: {

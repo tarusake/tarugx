@@ -8,9 +8,15 @@ module pcie_memory_integration_tb;
  logic [255:0] rx_data=0;logic [5:0] rx_bar_decode=0;
  logic rx_wait,rx_masknp,tx_wait=1,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  logic framing_error,unsupported,malformed,fb_commit_pulse;
+ logic active_buffer=0,vblank_toggle=0;logic [1:0] irq_enable;
+ logic fill_busy=0,fill_done=0,fill_error=0,fill_start;logic [127:0] fill_command;
+ logic blit_busy=0,blit_done=0,blit_error=0,blit_start;logic [159:0] blit_command;
+ logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;
+ logic [2:0] queue_level=0;logic [31:0] queue_completed=0,queue_error_fence=0;
+ logic [193:0] queue_command;
  logic [31:0] display_ctrl,display_color,display_mode,fb_base,fb_stride;
  logic fb_req_valid,fb_req_ready,fb_req_write,fb_rsp_valid,fb_rsp_ready,fb_rsp_error;
- logic [31:0] fb_req_addr,fb_req_wdata,fb_rsp_rdata;logic [3:0] fb_req_wstrb;
+ logic [31:0] fb_req_addr,fb_rsp_rdata;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  tarugx_pcie_gpu_path pcie(.*);
  logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=1,scan_rsp_error;
  logic [21:0] scan_addr=4096;logic [255:0] scan_rsp_data;
@@ -58,6 +64,14 @@ module pcie_memory_integration_tb;
   #1;while(rx_wait) begin tick();@(negedge clk);#1;end
   tick();@(negedge clk);rx_valid=0;
  endtask
+ task send_two(input int address,input int low,input int high);
+  @(negedge clk);rx_valid=8'hf0;rx_bar_decode=4;
+  rx_data={32'h40000002,{16'h1234,8'h5a,8'hff},address,
+   low[7:0],low[15:8],low[23:16],low[31:24],
+   high[7:0],high[15:8],high[23:16],high[31:24],96'b0};
+  #1;while(rx_wait) begin tick();@(negedge clk);#1;end
+  tick();@(negedge clk);rx_valid=0;
+ endtask
  task completion(input int expected);
   while(tx_valid==0) tick();
   repeat(3) begin
@@ -82,8 +96,18 @@ module pcie_memory_integration_tb;
    assert(writes==i+1) else $fatal(1,"posted write fence");
    send(0,1,'h80400000+(i%64)*4,0,15);completion(expected[i%64]);
   end
+  for(int i=0;i<32;i++) begin
+   int low,high;
+   low='h60000000+i;high='h70000000+i;
+   expected[i*2]=low;expected[i*2+1]=high;
+   send_two('h80400000+i*8,low,high);
+   send(0,0,'h80200000,0,15);completion('h54475055);
+   assert(writes==129+i) else $fatal(1,"two-DWORD write was not combined");
+   send(0,1,'h80400000+i*8,0,15);completion(low);
+   send(0,1,'h80400004+i*8,0,15);completion(high);
+  end
   assert(scan_reads>128 && !framing_error && !malformed && !unsupported) else $fatal(1,"fairness/error");
-  $display("PCIe + CDC + lane bridge + arbiter: 128 masked writes/readbacks, BAR0 fences, concurrent scanout PASS");$finish;
+  $display("PCIe + CDC + lane bridge + arbiter: masked and combined writes, BAR0 fences, concurrent scanout PASS");$finish;
  end
  initial begin #2000000;$fatal(1,"timeout");end
 endmodule

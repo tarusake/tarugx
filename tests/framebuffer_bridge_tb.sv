@@ -4,8 +4,9 @@ module framebuffer_bridge_tb;
   logic clk=0, rst_n=0;
   always #5 clk=~clk;
   logic req_valid=0,req_ready,req_write=0;
-  logic [31:0] req_addr=0,req_wdata=0;
-  logic [3:0] req_wstrb=0;
+  logic [31:0] req_addr=0;
+  logic [255:0] req_wdata=0;
+  logic [31:0] req_wstrb=0;
   logic rsp_valid,rsp_ready=0,rsp_error;
   logic [31:0] rsp_rdata;
   logic mem_valid,mem_ready=0,mem_write;
@@ -17,18 +18,21 @@ module framebuffer_bridge_tb;
   byte unsigned model[32];
   tarugx_framebuffer_bridge dut(.*);
   task tick; @(posedge clk); #1; endtask
-  task send(input bit wr,input int addr,input int data,input bit [3:0] be);
+  task send(input bit wr,input int addr,input logic [63:0] data,input bit [7:0] be);
     @(negedge clk);
     assert(req_ready) else $fatal(1,"request not ready");
-    req_valid=1; req_write=wr; req_addr=addr; req_wdata=data; req_wstrb=be;
+    req_valid=1; req_write=wr; req_addr=addr;
+    req_wdata=(256'(data) << ((addr & 31)*8));
+    req_wstrb=(32'(be) << (addr & 31));
     tick(); @(negedge clk); req_valid=0;
   endtask
   task reply(input int expected,input bit error);
+    while(!rsp_valid) tick();
     assert(rsp_valid && rsp_rdata==expected && rsp_error==error)
       else $fatal(1,"response mismatch: %h error=%b",rsp_rdata,rsp_error);
     repeat(3) begin
       tick();
-      assert(rsp_valid && !req_ready && !mem_valid && rsp_rdata==expected && rsp_error==error)
+      assert(rsp_valid && rsp_rdata==expected && rsp_error==error)
         else $fatal(1,"response changed under backpressure");
     end
     @(negedge clk); rsp_ready=1; tick();
@@ -50,7 +54,7 @@ module framebuffer_bridge_tb;
     @(negedge clk); mem_ready=1; mem_rsp_error=error; mem_rsp_valid=immediate;
     tick(); @(negedge clk); mem_ready=0; mem_rsp_valid=0;
     if(!immediate) begin
-      repeat(4) begin tick(); assert(!req_ready && !mem_valid && !rsp_valid) else $fatal; end
+      repeat(4) begin tick(); assert(!mem_valid && !rsp_valid) else $fatal; end
       @(negedge clk); mem_rsp_valid=1;
       assert(mem_rsp_ready) else $fatal;
       tick(); @(negedge clk); mem_rsp_valid=0;
@@ -62,7 +66,7 @@ module framebuffer_bridge_tb;
     for(int lane=0;lane<8;lane++) for(int mask=0;mask<16;mask++) begin
       for(int b=0;b<32;b++) model[b]=8'ha5;
       value='h12345678 ^ (lane * 'h01010101);
-      send(1,32'h3fffe0+lane*4,value,4'(mask));
+      send(1,32'h3fffe0+lane*4,64'(value),8'(mask));
       if(mask!=0) begin
         assert(mem_wstrb==(32'(mask) << (lane*4))) else $fatal(1,"strobe mapping");
         backend(1,'h3fffe0+lane*4,1'(mask),0);
@@ -78,10 +82,38 @@ module framebuffer_bridge_tb;
       send(0,'h3fffe0+lane*4,0,0);
       backend(0,'h3fffe0+lane*4,1'(lane),0); reply(expected,0);
     end
+    for(int lane=0;lane<8;lane+=2) begin
+      logic [63:0] wide;
+      for(int b=0;b<32;b++) model[b]=8'h5a;
+      wide=64'h89abcdef_01234567 ^ (64'(lane) * 64'h01010101_01010101);
+      send(1,32'h3fffe0+lane*4,wide,8'hff);
+      assert(mem_wstrb==(32'(8'hff) << (lane*4))) else $fatal(1,"wide strobe mapping");
+      backend(1,'h3fffe0+lane*4,1,0); reply(0,0);
+      for(int b=0;b<8;b++)
+        assert(model[lane*4+b]==8'(wide >> (b*8))) else $fatal(1,"wide data mapping");
+    end
+    send(1,4,64'h11223344_55667788,8'hff); backend(1,4,1,0); reply(0,0);
     send(1,2,0,15); reply(0,1);
     send(0,'h400000,0,0); reply(0,1);
     send(1,0,123,15); backend(1,0,0,1); reply(0,1);
     send(0,0,0,0); backend(0,0,1,1); reply(123,1);
+    // Accept eight writes before any backend response is returned.
+    @(negedge clk);mem_ready=1;rsp_ready=1;
+    for(int n=0;n<8;n++)begin
+      while(!req_ready)tick();
+      req_valid=1;req_write=1;req_addr=32'h100+n*32;
+      req_wdata=256'(n);req_wstrb=32'hffffffff;
+      tick();@(negedge clk);req_valid=0;
+    end
+    tick();@(negedge clk);mem_ready=0;
+    assert(!mem_valid)else $fatal(1,"request pipeline did not drain");
+    for(int n=0;n<8;n++)begin
+      assert(mem_rsp_ready)else $fatal(1,"response pipeline blocked");
+      mem_rsp_data=256'(n);mem_rsp_error=0;mem_rsp_valid=1;tick();
+      assert(rsp_valid&&!rsp_error&&rsp_rdata==0)else $fatal(1,"pipelined write response");
+      @(negedge clk);mem_rsp_valid=0;tick();
+    end
+    @(negedge clk);rsp_ready=0;
     send(1,0,456,15);
     @(negedge clk); rst_n=0; tick();
     assert(!mem_valid && !rsp_valid) else $fatal(1,"reset did not cancel pending request");

@@ -2,8 +2,8 @@
 /// Bundled-data toggle mailbox; both domains must be reset together.
 /// The source holds all payload bits until the synchronized acknowledgement.
 module display_config_cdc #(
-    param WIDTH: u32 = 26,
-    param SEND_UNCHANGED: u32 = 0,
+    param WIDTH         : u32 = 26,
+    param SEND_UNCHANGED: u32 = 0 ,
 ) (
     src_clk   : input  'src clock       ,
     src_rst_n : input  'src reset       ,

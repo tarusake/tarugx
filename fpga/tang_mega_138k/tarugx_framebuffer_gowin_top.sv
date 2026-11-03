@@ -49,6 +49,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     logic [12:0] cfg_busdev;
     logic [4:0] ltssm;
     wire [31:0] display_ctrl, display_color;
+    wire active_buffer;
+    wire vblank_toggle;
+    wire msi_req, msi_status, msi_ack;
+    wire [1:0] msi_enable;
 
     SerDes_Top u_pcie (
 `ifdef TARUGX_PCIE_PHY_RECOVERY
@@ -84,10 +88,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .PCIE_Controller_Top_pcie_tl_drp_wr_i(1'b0),
         .PCIE_Controller_Top_pcie_tl_drp_rd_i(1'b0)
 `ifndef TARUGX_PCIE_NO_MSI
-        ,.PCIE_Controller_Top_pcie_tl_int_status_i(1'b0),
-        .PCIE_Controller_Top_pcie_tl_int_req_i(1'b0),
+        ,.PCIE_Controller_Top_pcie_tl_int_status_i(msi_status),
+        .PCIE_Controller_Top_pcie_tl_int_req_i(msi_req),
         .PCIE_Controller_Top_pcie_tl_int_msinum_i(5'b0),
-        .PCIE_Controller_Top_pcie_tl_int_ack_o()
+        .PCIE_Controller_Top_pcie_tl_int_ack_o(msi_ack)
 `endif
     );
 
@@ -117,8 +121,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         if (!common_reset_n) pixel_reset<=0; else pixel_reset<={pixel_reset[0],1'b1};
     wire [31:0] committed_base, committed_stride;
     wire fb_req_valid, fb_req_ready, fb_req_write, fb_rsp_valid, fb_rsp_ready;
-    wire [31:0] fb_req_addr, fb_req_wdata;
-    wire [3:0] fb_req_wstrb;
+    wire [31:0] fb_req_addr;
+    wire [255:0] fb_req_wdata;
+    wire [31:0] fb_req_wstrb;
     wire [32:0] cpu_response;
     wire app_rx_sop, app_rx_eop, app_rx_wait, app_rx_masknp;
     wire [7:0] app_rx_valid, app_rx_error;
@@ -151,6 +156,15 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [7:0] core_rx_valid, core_tx_valid;
     wire core_rx_wait, core_rx_masknp, core_tx_wait, core_tx_sop, core_tx_eop;
     wire [255:0] core_tx_data;
+    wire [127:0] fill_command;
+    wire fill_start, fill_busy, fill_done, fill_error;
+    wire [159:0] blit_command;
+    wire blit_start, blit_busy, blit_done, blit_error;
+    wire [193:0] queue_command;
+    wire queue_submit, queue_ready, queue_active, queue_error, queue_clear_error;
+    wire render_irq_event;
+    wire [2:0] queue_level;
+    wire [31:0] queue_completed, queue_error_fence;
 `ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
     wire rom_en, rom_diagnostic_error;
     wire [13:0] rom_addr;
@@ -188,9 +202,18 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .fb_req_valid(fb_req_valid), .fb_req_ready(fb_req_ready), .fb_req_write(fb_req_write),
         .fb_req_addr(fb_req_addr), .fb_req_wdata(fb_req_wdata), .fb_req_wstrb(fb_req_wstrb),
         .fb_rsp_valid(fb_rsp_valid), .fb_rsp_ready(fb_rsp_ready),
-        .fb_rsp_rdata(cpu_response[31:0]), .fb_rsp_error(cpu_response[32])
+        .fb_rsp_rdata(cpu_response[31:0]), .fb_rsp_error(cpu_response[32]),
+        .active_buffer(active_buffer), .vblank_toggle(vblank_toggle),
+        .irq_enable(msi_enable),
+        .fill_busy(fill_busy), .fill_done(fill_done), .fill_error(fill_error),
+        .fill_command(fill_command), .fill_start(fill_start),
+        .blit_busy(blit_busy), .blit_done(blit_done), .blit_error(blit_error),
+        .blit_command(blit_command), .blit_start(blit_start),
+        .queue_ready(queue_ready), .queue_level(queue_level), .queue_active(queue_active),
+        .queue_completed(queue_completed), .queue_error(queue_error),
+        .queue_error_fence(queue_error_fence), .queue_command(queue_command),
+        .queue_submit(queue_submit), .queue_clear_error(queue_clear_error)
     );
-
     Tarugx_Video_PLL u_video_pll (
         .clkin(sys_clk_p), .clkout0(pixel_clk), .clkout1(serial_clk), .lock(video_lock)
     );
@@ -204,6 +227,8 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire video_de, video_hsync, video_vsync;
     wire [23:0] video_rgb;
     wire underflow, config_error;
+    wire mem_active_buffer;
+    wire pixel_vblank_toggle;
     wire [63:0] fault_snapshot;
     wire [64:0] memory_settings;
     tarugx_display_config_cdc #(.WIDTH(65)) u_memory_config_cdc (
@@ -231,9 +256,95 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [255:0] scan_rsp_data;
     wire scan_rsp_error;
 `ifdef TARUGX_PIPELINED_MEMORY
+    wire queue_dispatch_valid, queue_dispatch_ready, queue_completion_valid, queue_completion_error;
+    wire [193:0] queue_dispatch_command;
+    wire queued_fill_start, queued_blit_start, fill_cdc_ready, blit_cdc_ready;
+    wire [127:0] queued_fill_command;
+    wire [159:0] queued_blit_command;
+    tarugx_render_command_queue u_render_queue (
+        .clk(tlp_clk), .rst_n(cpu_reset[1]),
+        .enqueue_valid(queue_submit), .enqueue_ready(queue_ready), .enqueue_command(queue_command),
+        .dispatch_valid(queue_dispatch_valid), .dispatch_ready(queue_dispatch_ready),
+        .dispatch_command(queue_dispatch_command),
+        .completion_valid(queue_completion_valid), .completion_error(queue_completion_error),
+        .clear_error(queue_clear_error), .level(queue_level), .active(queue_active),
+        .completed_fence(queue_completed), .error_sticky(queue_error), .error_fence(queue_error_fence)
+    );
+    assign render_irq_event=queue_completion_valid;
+    tarugx_render_queue_dispatcher u_render_dispatcher (
+        .clk(tlp_clk), .rst_n(cpu_reset[1]),
+        .dispatch_valid(queue_dispatch_valid), .dispatch_ready(queue_dispatch_ready),
+        .dispatch_command(queue_dispatch_command),
+        .legacy_fill_start(fill_start), .legacy_blit_start(blit_start),
+        .fill_ready(fill_cdc_ready), .fill_done(fill_done), .fill_error(fill_error),
+        .blit_ready(blit_cdc_ready), .blit_done(blit_done), .blit_error(blit_error),
+        .fill_start(queued_fill_start), .fill_command(queued_fill_command),
+        .blit_start(queued_blit_start), .blit_command(queued_blit_command),
+        .completion_valid(queue_completion_valid), .completion_error(queue_completion_error)
+    );
+    wire fill_cmd_valid, fill_cmd_ready, fill_engine_done, fill_engine_error;
+    wire [127:0] fill_mem_command;
+    wire fill_mem_valid, fill_mem_ready, fill_mem_rsp_valid, fill_mem_rsp_ready, fill_mem_rsp_error;
+    wire [21:0] fill_mem_addr;
+    wire [255:0] fill_mem_wdata;
+    wire [31:0] fill_mem_wstrb;
+    wire blit_cmd_valid, blit_cmd_ready, blit_engine_done, blit_engine_error;
+    wire [159:0] blit_mem_command;
+    wire blit_mem_valid, blit_mem_ready, blit_mem_write;
+    wire blit_mem_rsp_valid, blit_mem_rsp_ready, blit_mem_rsp_error;
+    wire [21:0] blit_mem_addr;
+    wire [255:0] blit_mem_wdata, blit_mem_rsp_data;
+    wire [31:0] blit_mem_wstrb;
+    tarugx_fill_command_cdc u_fill_cdc (
+        .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
+        .src_valid(fill_start || queued_fill_start), .src_ready(fill_cdc_ready),
+        .src_command(fill_start ? fill_command : queued_fill_command),
+        .src_busy(fill_busy), .src_done(fill_done), .src_error(fill_error),
+        .dst_clk(ui_clk), .dst_rst_n(mem_reset[1]),
+        .dst_valid(fill_cmd_valid), .dst_ready(fill_cmd_ready), .dst_command(fill_mem_command),
+        .dst_done(fill_engine_done), .dst_error(fill_engine_error)
+    );
+    tarugx_fill_engine u_fill_engine (
+        .clk(ui_clk), .rst_n(mem_reset[1]),
+        .cmd_valid(fill_cmd_valid), .cmd_ready(fill_cmd_ready),
+        .cmd_addr(fill_mem_command[31:0]), .cmd_stride(fill_mem_command[63:32]),
+        .cmd_width(fill_mem_command[79:64]), .cmd_height(fill_mem_command[95:80]),
+        .cmd_color(fill_mem_command[127:96]),
+        .busy(), .done(fill_engine_done), .error(fill_engine_error),
+        .mem_valid(fill_mem_valid), .mem_ready(fill_mem_ready), .mem_addr(fill_mem_addr),
+        .mem_wdata(fill_mem_wdata), .mem_wstrb(fill_mem_wstrb),
+        .mem_rsp_valid(fill_mem_rsp_valid), .mem_rsp_ready(fill_mem_rsp_ready),
+        .mem_rsp_error(fill_mem_rsp_error)
+    );
+    tarugx_render_command_cdc #(.WIDTH(160)) u_blit_cdc (
+        .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
+        .src_valid(blit_start || queued_blit_start), .src_ready(blit_cdc_ready),
+        .src_command(blit_start ? blit_command : queued_blit_command),
+        .src_busy(blit_busy), .src_done(blit_done), .src_error(blit_error),
+        .dst_clk(ui_clk), .dst_rst_n(mem_reset[1]),
+        .dst_valid(blit_cmd_valid), .dst_ready(blit_cmd_ready), .dst_command(blit_mem_command),
+        .dst_done(blit_engine_done), .dst_error(blit_engine_error)
+    );
+    tarugx_blit_engine u_blit_engine (
+        .clk(ui_clk), .rst_n(mem_reset[1]),
+        .cmd_valid(blit_cmd_valid), .cmd_ready(blit_cmd_ready),
+        .cmd_src_addr(blit_mem_command[31:0]), .cmd_dst_addr(blit_mem_command[63:32]),
+        .cmd_src_stride(blit_mem_command[95:64]), .cmd_dst_stride(blit_mem_command[127:96]),
+        .cmd_width(blit_mem_command[143:128]), .cmd_height(blit_mem_command[159:144]),
+        .busy(), .done(blit_engine_done), .error(blit_engine_error),
+        .mem_valid(blit_mem_valid), .mem_ready(blit_mem_ready), .mem_write(blit_mem_write),
+        .mem_addr(blit_mem_addr), .mem_wdata(blit_mem_wdata), .mem_wstrb(blit_mem_wstrb),
+        .mem_rsp_valid(blit_mem_rsp_valid), .mem_rsp_ready(blit_mem_rsp_ready),
+        .mem_rsp_data(blit_mem_rsp_data), .mem_rsp_error(blit_mem_rsp_error)
+    );
     localparam PIPELINED_MEMORY=1;
     tarugx_framebuffer_memory_pipeline u_memory_path (
 `else
+    assign fill_busy=1'b0, fill_done=fill_start, fill_error=fill_start;
+    assign blit_busy=1'b0, blit_done=blit_start, blit_error=blit_start;
+    assign queue_ready=1'b0, queue_level=3'b0, queue_active=1'b0;
+    assign queue_completed=32'b0, queue_error=1'b0, queue_error_fence=32'b0;
+    assign render_irq_event=1'b0;
     localparam PIPELINED_MEMORY=0;
     tarugx_framebuffer_memory_path u_memory_path (
 `endif
@@ -252,6 +363,16 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .scan_rsp_ready(scan_rsp_ready),
         .scan_rsp_data(scan_rsp_data),
         .scan_rsp_error(scan_rsp_error),
+`ifdef TARUGX_PIPELINED_MEMORY
+        .fill_valid(fill_mem_valid), .fill_ready(fill_mem_ready), .fill_addr(fill_mem_addr),
+        .fill_wdata(fill_mem_wdata), .fill_wstrb(fill_mem_wstrb),
+        .fill_rsp_valid(fill_mem_rsp_valid), .fill_rsp_ready(fill_mem_rsp_ready),
+        .fill_rsp_error(fill_mem_rsp_error),
+        .blit_valid(blit_mem_valid), .blit_ready(blit_mem_ready), .blit_write(blit_mem_write),
+        .blit_addr(blit_mem_addr), .blit_wdata(blit_mem_wdata), .blit_wstrb(blit_mem_wstrb),
+        .blit_rsp_valid(blit_mem_rsp_valid), .blit_rsp_ready(blit_mem_rsp_ready),
+        .blit_rsp_data(blit_mem_rsp_data), .blit_rsp_error(blit_mem_rsp_error),
+`endif
         .mem_valid(mem_valid),
         .mem_ready(mem_ready),
         .mem_write(mem_write),
@@ -270,9 +391,11 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
 `endif
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]), .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
-        .config_error(config_error), .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
+        .config_error(config_error), .active_buffer(mem_active_buffer),
+        .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
         .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
-        .rgb(video_rgb), .underflow(underflow), .fault_snapshot(fault_snapshot),
+        .rgb(video_rgb), .underflow(underflow), .vblank_toggle(pixel_vblank_toggle),
+        .fault_snapshot(fault_snapshot),
         .mem_valid(scan_valid),
         .mem_ready(scan_ready),
         .mem_addr(scan_addr),
@@ -281,6 +404,24 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(scan_rsp_data),
         .mem_rsp_error(scan_rsp_error)
     );
+    tarugx_display_config_cdc #(.WIDTH(1)) u_active_buffer_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
+        .src_config(mem_active_buffer), .dst_config(active_buffer)
+    );
+    tarugx_display_config_cdc #(.WIDTH(1)) u_vblank_toggle_cdc (
+        .src_clk(pixel_clk), .src_rst_n(pixel_reset[1]),
+        .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
+        .src_config(pixel_vblank_toggle), .dst_config(vblank_toggle)
+    );
+`ifndef TARUGX_PCIE_NO_MSI
+    tarugx_vblank_msi u_vblank_msi (
+        .clk(tlp_clk), .rst_n(cpu_reset[1]), .enable(msi_enable),
+        .vblank_toggle(vblank_toggle), .render_done(render_irq_event),
+        .interrupt_ack(msi_ack), .interrupt_req(msi_req),
+        .interrupt_status(msi_status)
+    );
+`endif
     tarugx_ddr3_wrapper #(.PIPELINED_MEMORY(PIPELINED_MEMORY)) u_ddr (
         .clk(sys_clk_p), .rst_n(rst_n), .ui_clk(ui_clk), .pll_lock(ddr_pll_lock),
         .calibrated(calibrated), .mem_reset_n(mem_reset[1]),

@@ -20,18 +20,40 @@ module pcie_gpu_path (
     framing_error  : output logic     ,
     unsupported    : output logic     ,
     malformed      : output logic     ,
+    active_buffer  : input  logic     ,
+    vblank_toggle  : input  logic     ,
+    fill_busy      : input  logic     ,
+    fill_done      : input  logic     ,
+    fill_error     : input  logic     ,
+    blit_busy      : input  logic     ,
+    blit_done      : input  logic     ,
+    blit_error     : input  logic     ,
+    queue_ready    : input  logic     ,
+    queue_level    : input  logic<3>  ,
+    queue_active   : input  logic     ,
+    queue_completed: input  logic<32> ,
+    queue_error    : input  logic     ,
+    queue_error_fence: input logic<32>,
     display_ctrl   : output logic<32> ,
     display_color  : output logic<32> ,
     display_mode   : output logic<32> ,
     fb_base        : output logic<32> ,
     fb_stride      : output logic<32> ,
     fb_commit_pulse: output logic     ,
+    irq_enable     : output logic<2>  ,
+    fill_command   : output logic<128>,
+    fill_start     : output logic     ,
+    blit_command   : output logic<160>,
+    blit_start     : output logic     ,
+    queue_command  : output logic<194>,
+    queue_submit   : output logic     ,
+    queue_clear_error: output logic   ,
     fb_req_valid   : output logic     ,
     fb_req_ready   : input  logic     ,
     fb_req_write   : output logic     ,
     fb_req_addr    : output logic<32> ,
-    fb_req_wdata   : output logic<32> ,
-    fb_req_wstrb   : output logic<4>  ,
+    fb_req_wdata   : output logic<256>,
+    fb_req_wstrb   : output logic<32> ,
     fb_rsp_valid   : input  logic     ,
     fb_rsp_ready   : output logic     ,
     fb_rsp_rdata   : input  logic<32> ,
@@ -45,16 +67,21 @@ module pcie_gpu_path (
     var header_dw2   : logic<32>;
     var header_dw3   : logic<32>;
     var payload_dw0  : logic<32>;
+    var payload_dw1  : logic<32>;
+    var bar_rx_sop   : logic    ;
+    var bar_rx_eop   : logic    ;
+    var bar_rx_valid : logic<8> ;
+    var bar_rx_wait  : logic    ;
 
     inst rx_adapter: tlp_rx_decoder (
-        rx_sop         ,
-        rx_eop         ,
-        rx_valid       ,
+        rx_sop       : bar_rx_sop  ,
+        rx_eop       : bar_rx_eop  ,
+        rx_valid     : bar_rx_valid,
         rx_data        ,
         rx_bar_decode  ,
         rx_error       ,
         request_ready  ,
-        rx_wait        ,
+        rx_wait      : bar_rx_wait,
         request_valid  ,
         request_bar    ,
         header_dw0     ,
@@ -62,6 +89,7 @@ module pcie_gpu_path (
         header_dw2     ,
         header_dw3     ,
         payload_dw0    ,
+        payload_dw1    ,
         framing_error  ,
     );
 
@@ -88,6 +116,16 @@ module pcie_gpu_path (
     var b2_h1         : logic<32>;
     var b2_h2         : logic<32>;
     var b2_data       : logic<32>;
+    var cpu_fb_req_valid: logic    ;
+    var cpu_fb_req_ready: logic    ;
+    var cpu_fb_req_write: logic    ;
+    var cpu_fb_req_addr : logic<32>;
+    var cpu_fb_req_wdata: logic<64>;
+    var cpu_fb_req_wstrb: logic<8> ;
+    var cpu_fb_rsp_valid: logic    ;
+    var cpu_fb_rsp_ready: logic    ;
+    var cpu_fb_rsp_rdata: logic<32>;
+    var cpu_fb_rsp_error: logic    ;
     assign request_ready      = b0_ready && b2_ready;
     assign unsupported        = b0_unsupported || b2_unsupported;
     assign malformed          = b0_malformed || b2_malformed;
@@ -107,6 +145,7 @@ module pcie_gpu_path (
         rx_header_dw2 : header_dw2                                 ,
         rx_header_dw3 : header_dw3                                 ,
         rx_payload_dw0: payload_dw0                                ,
+        rx_payload_dw1: payload_dw1                                ,
         tx_valid      : b2_valid                                   ,
         tx_ready      : completion_ready                           ,
         tx_header_dw0 : b2_h0                                      ,
@@ -115,17 +154,25 @@ module pcie_gpu_path (
         tx_payload_dw0: b2_data                                    ,
         unsupported   : b2_unsupported                             ,
         malformed     : b2_malformed                               ,
-        req_valid     : fb_req_valid                               ,
-        req_ready     : fb_req_ready                               ,
-        req_write     : fb_req_write                               ,
-        req_addr      : fb_req_addr                                ,
-        req_wdata     : fb_req_wdata                               ,
-        req_wstrb     : fb_req_wstrb                               ,
-        rsp_valid     : fb_rsp_valid                               ,
-        rsp_ready     : fb_rsp_ready                               ,
-        rsp_rdata     : fb_rsp_rdata                               ,
-        rsp_error     : fb_rsp_error                               ,
+        req_valid     : cpu_fb_req_valid                           ,
+        req_ready     : cpu_fb_req_ready                           ,
+        req_write     : cpu_fb_req_write                           ,
+        req_addr      : cpu_fb_req_addr                            ,
+        req_wdata     : cpu_fb_req_wdata                           ,
+        req_wstrb     : cpu_fb_req_wstrb                           ,
+        rsp_valid     : cpu_fb_rsp_valid                           ,
+        rsp_ready     : cpu_fb_rsp_ready                           ,
+        rsp_rdata     : cpu_fb_rsp_rdata                           ,
+        rsp_error     : cpu_fb_rsp_error                           ,
     );
+    var dma_cmd_ready   : logic    ;
+    var dma_busy        : logic    ;
+    var dma_done        : logic    ;
+    var dma_error       : logic    ;
+    var dma_host_address: logic<64>;
+    var dma_vram_address: logic<32>;
+    var dma_length_bytes: logic<32>;
+    var dma_cmd_valid   : logic    ;
     inst bridge: bar0_tlp_bridge (
         clk                                                          ,
         rst                                                          ,
@@ -146,14 +193,49 @@ module pcie_gpu_path (
         tx_payload_dw0 : b0_data                                     ,
         unsupported    : b0_unsupported                              ,
         malformed      : b0_malformed                                ,
+        active_buffer                                                ,
+        vblank_toggle                                                ,
+        fill_busy                                                    ,
+        fill_done                                                    ,
+        fill_error                                                   ,
+        blit_busy                                                    ,
+        blit_done                                                    ,
+        blit_error                                                   ,
+        queue_ready                                                  ,
+        queue_level                                                  ,
+        queue_active                                                 ,
+        queue_completed                                              ,
+        queue_error                                                  ,
+        queue_error_fence                                            ,
+        dma_cmd_ready                                                ,
+        dma_busy                                                     ,
+        dma_done                                                     ,
+        dma_error                                                    ,
         display_ctrl                                                 ,
         display_color                                                ,
         display_mode                                                 ,
         fb_base                                                      ,
         fb_stride                                                    ,
         fb_commit_pulse                                              ,
+        irq_enable                                                   ,
+        fill_command                                                 ,
+        fill_start                                                   ,
+        blit_command                                                 ,
+        blit_start                                                   ,
+        queue_command                                                ,
+        queue_submit                                                 ,
+        queue_clear_error                                            ,
+        dma_host_address                                             ,
+        dma_vram_address                                             ,
+        dma_length_bytes                                             ,
+        dma_cmd_valid                                                ,
     );
 
+    var completion_packet_ready: logic     ;
+    var bar_tx_sop             : logic     ;
+    var bar_tx_eop             : logic     ;
+    var bar_tx_valid           : logic<8>  ;
+    var bar_tx_data            : logic<256>;
     inst tx_adapter: tlp_tx_completion (
         completion_valid                        ,
         completion_data : completion_header0[30],
@@ -161,12 +243,67 @@ module pcie_gpu_path (
         header_dw1      : completion_header1    ,
         header_dw2      : completion_header2    ,
         payload_dw0     : completion_payload    ,
-        tx_wait                                 ,
+        tx_wait         : !completion_packet_ready,
         completion_ready                        ,
-        tx_sop                                  ,
-        tx_eop                                  ,
-        tx_valid                                ,
-        tx_data                                 ,
+        tx_sop          : bar_tx_sop             ,
+        tx_eop          : bar_tx_eop             ,
+        tx_valid        : bar_tx_valid           ,
+        tx_data         : bar_tx_data            ,
+    );
+
+    inst dma_subsystem: pcie_dma_subsystem (
+        clk,
+        rst_n: rst,
+        requester_id: completer_id,
+        cmd_valid: dma_cmd_valid,
+        cmd_ready: dma_cmd_ready,
+        cmd_host_address: dma_host_address,
+        cmd_vram_address: dma_vram_address,
+        cmd_length_bytes: dma_length_bytes,
+        busy: dma_busy,
+        done: dma_done,
+        error: dma_error,
+        rx_sop,
+        rx_eop,
+        rx_valid,
+        rx_data,
+        rx_error,
+        bar_rx_wait,
+        rx_wait,
+        bar_rx_sop,
+        bar_rx_eop,
+        bar_rx_valid,
+        completion_valid: |bar_tx_valid,
+        completion_ready: completion_packet_ready,
+        completion_sop: bar_tx_sop,
+        completion_eop: bar_tx_eop,
+        completion_keep: bar_tx_valid,
+        completion_data: bar_tx_data,
+        tx_wait,
+        tx_sop,
+        tx_eop,
+        tx_valid,
+        tx_data,
+        cpu_req_valid: cpu_fb_req_valid,
+        cpu_req_ready: cpu_fb_req_ready,
+        cpu_req_write: cpu_fb_req_write,
+        cpu_req_addr: cpu_fb_req_addr,
+        cpu_req_wdata: cpu_fb_req_wdata,
+        cpu_req_wstrb: cpu_fb_req_wstrb,
+        cpu_rsp_valid: cpu_fb_rsp_valid,
+        cpu_rsp_ready: cpu_fb_rsp_ready,
+        cpu_rsp_rdata: cpu_fb_rsp_rdata,
+        cpu_rsp_error: cpu_fb_rsp_error,
+        fb_req_valid,
+        fb_req_ready,
+        fb_req_write,
+        fb_req_addr,
+        fb_req_wdata,
+        fb_req_wstrb,
+        fb_rsp_valid,
+        fb_rsp_ready,
+        fb_rsp_rdata,
+        fb_rsp_error,
     );
 
     // Block later Non-Posted requests from acceptance through Completion.

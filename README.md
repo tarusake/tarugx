@@ -27,6 +27,9 @@ PCIeはGen2 x1を設計目標としています。現在の検証構成にはx4�
 - BAR0のレジスタアクセス、Byte Enable、Memory ReadへのCompletion応答
 - HDMI単色表示と、DDR3からのFramebuffer Scanout
 - Linux DRM/KMS、CPU描画のFramebuffer転送、Xfceデスクトップ表示
+- ダブルバッファとVBlank同期ページフリップ、MSIによる完了待ち
+- FPGA側の矩形fill／VRAM内blit、コマンドキューとfence
+- ホストRAMからVRAMへのPCIe Memory Read DMA（診断用の初期実装）
 - PCIe Option ROMからのGOP自動読込みとUEFI描画
 - 検証したAMIホスト向けのPOST文字表示互換処理
 - 起動時のロゴ表示と1秒の保持
@@ -85,6 +88,36 @@ make -C drivers/tarugx KDIR=/path/to/kernel/build
 
 ドライバーのロードやMMIO試験は対象PCIeデバイスを確認して行ってください。
 描画中のデバイスへの生MMIO試験やFPGAの書換えは避け、先に描画とドライバーを停止します。
+ドライバーはVBlank通知にMSIを1本使用します。INTxフォールバックとMSI-Xには
+未対応なので、MSIを割り当てられない環境ではロードに失敗します。ロード後はPCI
+デバイスの`page_flips`、`flip_timeouts`、`flip_fallbacks`、`vblank_timeouts`、`bytes_uploaded`、
+`msi_interrupts`属性で、VBlank同期した更新の成功回数、timeout回数、VRAM転送量、
+MSI受信回数を確認できます。古いFlashイメージでページ切替がtimeoutした場合は、
+最初の完成済み非表示ページをCPUで表示中ページへコピーした後、表示中ページへ
+変更矩形だけを直接転送する単一バッファ互換モードへ移行します。
+`flip_fallbacks`は、この互換更新が行われた回数です。部分更新では、更新前にFPGAのblitで表示中ページを
+非表示ページへ同期します。`blit_syncs`と`blit_sync_failures`で成功・失敗回数を
+確認でき、blitが失敗した場合だけCPUによるVRAM内コピーへフォールバックします。
+DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe DMAで非表示
+ページへ転送します。`dma_upload=0`モジュールパラメーターで64-bit BAR2書込みへ
+切り替えられます。DMA非対応の旧FPGAはprobe時に検出し、自動的にBAR2を使用します。
+`dma_uploads`と`dma_upload_failures`で成功・失敗回数を確認でき、DMAが失敗した場合は
+従来の64-bit BAR2書込みへフォールバックします。部分更新は損傷矩形だけをBAR2へ
+転送するため、不要な全画面DMAは行いません。
+
+BAR2とDMAのDRM全面更新を同じ条件で比較する場合は、次を実行します。リポジトリの
+最新KMSテストをホスト上の一時ディレクトリでビルドするため、古いテストバイナリを
+誤って使いません。測定前の`dma_upload`値と表示サービスは終了時に復元します。
+
+```sh
+python3 tools/benchmark_drm_upload.py
+```
+
+DMA対応FPGAイメージでは、rootでPCIデバイスの`dma_test`属性へ4の倍数のバイト数を
+書き込むと、カーネルが割り当てたcoherentバッファをVRAMの画面外領域へ転送し、BAR2
+読戻しまで検査します。`1`は従来どおり64バイトを意味し、上限は1フレームです。
+この診断転送自体は通常表示から呼ばれません。DMA非対応の旧FPGAイメージでは
+ドライバーの全面更新DMAと`dma_test`を使用しないでください。
 
 ### UEFI GOPとROM
 
@@ -119,18 +152,51 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 
 設定後、
 生成IPのポート・品番・リセット・クロック・ピン制約を確認してください。
-実機ビルドの入口は`scripts/gowin_build_framebuffer.tcl`です。
+個別実験の入口は`scripts/gowin_build_framebuffer.tcl`です。SRAM実機回帰と同じ
+生成PCIe IP、PHY復旧、Auto ROM、パイプラインDDR構成を再現する場合は、
+`GOWIN_SH`を設定して`scripts/build_verified_framebuffer.sh`を実行します。
 実験構成の選択には`TARUGX_PCIE_GENERATED_DIR`や`TARUGX_PCIE_*`環境変数を使います。
 ロゴ入りROMを選ぶ場合は`TARUGX_PCIE_ROM_FILE`へ生成したROMのパスを指定します。
 環境変数を省略した既定構成が最新の実機検証構成と同じとは限りません。
 
+開発中のビットストリームは、外部Flashを書き換えずSRAMへ更新できます。
+`build/gowin_framebuffer_pipeline/tarugx/impl/pnr`以外の出力を使う場合は
+`TARUGX_SRAM_OUT`で指定します。次のコマンドはタイミングを検査し、ホストの表示と
+ドライバーを安全に停止してから更新し、PCIe再列挙と表示復帰まで行います。
+
+```sh
+scripts/program_framebuffer_sram.sh
+```
+
+接続先と認証情報は`.local/host.env`と`.local/credentials.env`に0600で配置します。
+SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホスト復旧を試みます。
+
 ## 現在の制約
 
-- CPU描画によるFramebuffer方式です。DMA、2D／3Dアクセラレーションは未実装です。
+- DRMの既定経路は、DMA対応FPGAでの全面更新にPCIe DMA、部分更新にCPUからBAR2への
+  64-bit書込みを使用します。`dma_upload=0`の場合は全面更新もBAR2を使用します。
+  部分更新前のページ同期にはFPGAの2D blitを使用しますが、fillとコマンドキューは
+  通常描画へ未統合です。
+  GEMバッファ、fence、ユーザー空間描画APIへの本格統合も未実装です。
+- PCIe DMAは最大2要求を異なるtagで並列発行し、Completionの到着順に関係なく
+  対応するVRAM位置へ書き込みます。各要求は64-byte RCB内で最大16 DWORDです。
+  32-byte境界では8 DWORDをまとめて256-bit DDR書込みし、非整列部と端数は
+  64/32-bit書込みへフォールバックします。Completionから生成したDDR書込みは
+  8要求までパイプライン化し、PCIe、DDR間のクロック境界も8段FIFOで接続しています。
+  2要求版を使った2026-11-03のSRAM実機回帰では、1,228,800 byteのDMA転送5回が13.964–14.126ms
+  （約87MB/s）で、直列経路の約53msから約3.8倍に改善しました。
+  staging copyとVRAM読戻しを含むKMS試験でも、各120フレームがBAR2の
+  8.443/8.438秒に対してDMAは6.443/6.438秒で、DMA全面更新241回の失敗は0でした。
+  4要求版はシミュレーションとタイミング解析には合格しましたが、SRAM適用後の
+  PCIe再接続でホストが2回連続して応答しなくなったため不採用としました。
+  現在の主なレイテンシ要因は転送そのものだけでなく、shadow framebufferからの
+  staging copy、VBlank待ち、DRM commitシーケンスです。
+- 3Dアクセラレーションは未実装です。
 - Legacy VGA I/O、VGA BIOS、他アーキテクチャ向けGOPは対象外です。
 - GOPは`PixelBltOnly`で、Framebufferを通常のキャッシュ可能RAMとして公開しません。
-- 単一Framebufferのためtearingの余地があります。長時間安定性・他ホストへの互換性は未検証です。
-- 検証ビルドの最小タイミング余裕は+0.008nsで、改善が必要です。
+- ダブルバッファを使用しますが、長時間安定性・他ホストへの互換性は未検証です。
+- 現在実機で動作確認済みの2要求ビルドはSetup +0.026ns、Hold +0.138nsです。
+  実機ではdirty更新、ページフリップ各120フレームと部分更新6種を確認しています。
 - PCI IDはサンプル由来の暫定値です。製品用の割当IDではありません。
 - ベンダーIPや公式サンプルの利用条件は、それぞれの配布元の条件に従います。
 

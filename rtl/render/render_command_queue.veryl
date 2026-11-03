@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Four-entry ordered render queue with fence completion tracking.
+///
+/// Command bits [1:0] hold the opcode and [33:2] hold the caller-provided
+/// fence value.  The remaining payload is opaque to the queue.  One command
+/// may be active while four more wait, allowing software to submit work
+/// without waiting for each render operation to finish.
+module render_command_queue #(
+    param WIDTH: u32 = 194,
+) (
+    clk             : input  clock       ,
+    rst_n           : input  reset       ,
+    enqueue_valid   : input  logic       ,
+    enqueue_ready   : output logic       ,
+    enqueue_command : input  logic<WIDTH>,
+    dispatch_valid  : output logic       ,
+    dispatch_ready  : input  logic       ,
+    dispatch_command: output logic<WIDTH>,
+    completion_valid: input  logic       ,
+    completion_error: input  logic       ,
+    clear_error     : input  logic       ,
+    level           : output logic<3>    ,
+    active          : output logic       ,
+    completed_fence : output logic<32>   ,
+    error_sticky    : output logic       ,
+    error_fence     : output logic<32>   ,
+) {
+    var entries       : logic<WIDTH> [4];
+    var read_pointer  : logic<2>        ;
+    var write_pointer : logic<2>        ;
+    var queued        : logic<3>        ;
+    var active_command: logic<WIDTH>    ;
+    let enqueue_fire  : logic = enqueue_valid && enqueue_ready;
+    let dispatch_fire : logic = dispatch_valid && dispatch_ready;
+
+    assign enqueue_ready    = queued != 3'd4;
+    assign dispatch_valid   = !active && (queued != 0);
+    assign dispatch_command = if active ? active_command : entries[read_pointer];
+    assign level            = queued;
+
+    always_ff {
+        if_reset {
+            entries        = '{default: 0};
+            read_pointer   = 0;
+            write_pointer  = 0;
+            queued         = 0;
+            active_command = 0;
+            active         = 0;
+            completed_fence = 0;
+            error_sticky   = 0;
+            error_fence    = 0;
+        } else {
+            if clear_error {
+                error_sticky = 0;
+                error_fence  = 0;
+            }
+            if enqueue_fire {
+                entries[write_pointer] = enqueue_command;
+                write_pointer          = write_pointer + 2'd1;
+            }
+            if dispatch_fire {
+                active_command = entries[read_pointer];
+                read_pointer   = read_pointer + 2'd1;
+                active         = 1;
+            }
+            if enqueue_fire && !dispatch_fire {
+                queued = queued + 3'd1;
+            } else if !enqueue_fire && dispatch_fire {
+                queued = queued - 3'd1;
+            }
+            if completion_valid && active {
+                completed_fence = active_command[33:2];
+                active          = 0;
+                if completion_error {
+                    error_sticky = 1;
+                    error_fence  = active_command[33:2];
+                }
+            }
+        }
+    }
+}

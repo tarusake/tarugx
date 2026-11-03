@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// One-command 32-bpp rectangle fill engine.
+///
+/// Commands use a byte address for the first pixel and a byte stride.  The
+/// engine emits aligned 256-bit masked writes, so a full group of eight pixels
+/// becomes one native DDR request.  One request is outstanding at a time; a
+/// later command queue can provide command-level overlap without changing this
+/// memory contract.
+module fill_engine (
+    clk          : input  clock     ,
+    rst_n        : input  reset     ,
+    cmd_valid    : input  logic     ,
+    cmd_ready    : output logic     ,
+    cmd_addr     : input  logic<32> ,
+    cmd_stride   : input  logic<32> ,
+    cmd_width    : input  logic<16> ,
+    cmd_height   : input  logic<16> ,
+    cmd_color    : input  logic<32> ,
+    busy         : output logic     ,
+    done         : output logic     ,
+    error        : output logic     ,
+    mem_valid    : output logic     ,
+    mem_ready    : input  logic     ,
+    mem_addr     : output logic<22> ,
+    mem_wdata    : output logic<256>,
+    mem_wstrb    : output logic<32> ,
+    mem_rsp_valid: input  logic     ,
+    mem_rsp_ready: output logic     ,
+    mem_rsp_error: input  logic     ,
+) {
+    enum State: logic<4> {
+        Idle,
+        Validate,
+        Multiply,
+        CaptureEnd,
+        Bounds,
+        Issue,
+        Wait,
+        RowCheck,
+        NextRow,
+        Finish,
+    }
+    #[sv("syn_preserve=1")]
+    var state      : State    ;
+    var row_addr   : logic<32>;
+    var word_addr  : logic<22>;
+    var stride     : logic<32>;
+    var width      : logic<16>;
+    var remaining  : logic<16>;
+    var rows_left  : logic<16>;
+    var lane       : logic<3> ;
+    var color      : logic<32>;
+    var tail       : logic<64>;
+    var multiplicand: logic<64>;
+    var multiplier : logic<16>;
+    var multiply_step: logic<5>;
+    var end_address: logic<64>;
+    let slots      : logic<5>  = 5'd8 - (lane as 5);
+    let pixels     : logic<5>  = if remaining <: (slots as 16) ? (remaining as 5) : slots;
+    let next_row   : logic<32> = row_addr + stride;
+    let row_bytes  : logic<64> = (width as 64) << 2;
+    let command_basic_ok: logic = (row_addr[1:0] == 0) && (stride[1:0] == 0) && (width != 0) && (rows_left != 0)
+        && ((stride as 64) >= row_bytes);
+    assign cmd_ready     = state == State::Idle;
+    assign busy          = state != State::Idle;
+    assign mem_valid     = state == State::Issue;
+    assign mem_rsp_ready = state == State::Wait;
+    assign mem_addr      = word_addr;
+
+    always_comb {
+        mem_wdata = 0;
+        mem_wstrb = 0;
+        for i in 0..8 {
+            mem_wdata[i * 32+:32] = color;
+            if ((i as 3) >= lane) && ((i as 5) <: ((lane as 5) + pixels)) {
+                mem_wstrb[i * 4+:4] = 4'hf;
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            state     = State::Idle;
+            row_addr  = 0;
+            word_addr = 0;
+            stride    = 0;
+            width     = 0;
+            remaining = 0;
+            rows_left = 0;
+            lane      = 0;
+            color     = 0;
+            tail      = 0;
+            multiplicand = 0;
+            multiplier = 0;
+            multiply_step = 0;
+            end_address = 0;
+            done      = 0;
+            error     = 0;
+        } else {
+            done = 0;
+            case state {
+                State::Idle: {
+                    if cmd_valid {
+                        row_addr  = cmd_addr;
+                        stride    = cmd_stride;
+                        width     = cmd_width;
+                        rows_left = cmd_height;
+                        color     = cmd_color;
+                        error     = 0;
+                        state     = State::Validate;
+                    }
+                }
+                State::Validate: {
+                    if command_basic_ok {
+                        tail          = 0;
+                        multiplicand  = stride as 64;
+                        multiplier    = rows_left - 16'd1;
+                        multiply_step = 0;
+                        state         = State::Multiply;
+                    } else {
+                        error = 1;
+                        done  = 1;
+                        state = State::Idle;
+                    }
+                }
+                State::Multiply: {
+                    if multiplier[0] {
+                        tail = tail + multiplicand;
+                    }
+                    multiplicand = multiplicand << 1;
+                    multiplier   = multiplier >> 1;
+                    if multiply_step == 5'd15 {
+                        state = State::CaptureEnd;
+                    } else {
+                        multiply_step = multiply_step + 5'd1;
+                    }
+                }
+                State::CaptureEnd: {
+                    end_address = (row_addr as 64) + tail + row_bytes;
+                    state       = State::Bounds;
+                }
+                State::Bounds: {
+                    if end_address <= 64'h400000 {
+                        word_addr = {row_addr[21:5], 5'b0};
+                        remaining = width;
+                        lane      = row_addr[4:2];
+                        state     = State::Issue;
+                    } else {
+                        error = 1;
+                        done  = 1;
+                        state = State::Idle;
+                    }
+                }
+                State::Issue: {
+                    if mem_ready {
+                        state = State::Wait;
+                    }
+                }
+                State::Wait: {
+                    if mem_rsp_valid {
+                        if mem_rsp_error {
+                            error = 1;
+                            done  = 1;
+                            state = State::Idle;
+                        } else if remaining >: (pixels as 16) {
+                            remaining = remaining - (pixels as 16);
+                            word_addr = word_addr + 22'd32;
+                            lane      = 0;
+                            state     = State::Issue;
+                        } else {
+                            state = State::RowCheck;
+                        }
+                    }
+                }
+                State::RowCheck: {
+                    state = if rows_left >: 1 ? State::NextRow : State::Finish;
+                }
+                State::NextRow: {
+                    row_addr  = next_row;
+                    word_addr = {next_row[21:5], 5'b0};
+                    remaining = width;
+                    rows_left = rows_left - 16'd1;
+                    lane      = next_row[4:2];
+                    state     = State::Issue;
+                }
+                State::Finish: {
+                    error = 0;
+                    done  = 1;
+                    state = State::Idle;
+                }
+                default: {
+                    error = 1;
+                    done  = 1;
+                    state = State::Idle;
+                }
+            }
+        }
+    }
+}

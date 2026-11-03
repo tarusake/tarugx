@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* CPU shadow framebuffer; no DMA, interrupts or hardware vblank. Linux 6.8. */
+/* CPU shadow framebuffer with MSI VBlank and host-to-VRAM DMA. Linux 6.8. */
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/dma-mapping.h>
 #include <linux/iosys-map.h>
+#include <linux/interrupt.h>
+#include <linux/iopoll.h>
+#include <linux/ktime.h>
+#include <linux/mutex.h>
+#include <linux/sizes.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
@@ -18,18 +24,330 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
+static bool dma_upload = true;
+module_param(dma_upload, bool, 0644);
+MODULE_PARM_DESC(dma_upload,
+		 "use full-frame DMA uploads when supported by the FPGA (default: true)");
+
 struct tarugx {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	struct drm_connector connector;
+	struct pci_dev *pdev;
 	void __iomem *regs, *vram;
+	struct mutex dma_lock;
+	void *dma_staging;
+	dma_addr_t dma_staging_addr;
+	atomic64_t page_flips;
+	atomic64_t flip_timeouts;
+	atomic64_t flip_fallbacks;
+	atomic64_t vblank_timeouts;
+	atomic64_t bytes_uploaded;
+	atomic64_t msi_interrupts;
+	atomic64_t blit_syncs;
+	atomic64_t blit_sync_failures;
+	atomic64_t dma_uploads;
+	atomic64_t dma_upload_failures;
+	bool dma_available;
+	bool legacy_single_buffer;
+	wait_queue_head_t vblank_wait;
 };
+
+#define TGX_WIDTH 640
+#define TGX_HEIGHT 480
+#define TGX_PITCH (TGX_WIDTH * 4)
+#define TGX_FRAME_BYTES (TGX_PITCH * TGX_HEIGHT)
+#define TGX_FB_BASE(n) ((n) * TGX_FRAME_BYTES)
+#define TGX_REG_DISPLAY_CTRL 0x10
+#define TGX_REG_FB_BASE 0x1c
+#define TGX_REG_FB_STRIDE 0x20
+#define TGX_REG_FB_COMMIT 0x24
+#define TGX_REG_ACTIVE_BUFFER 0x28
+#define TGX_REG_VBLANK_TOGGLE 0x2c
+#define TGX_REG_IRQ_ENABLE 0x30
+#define TGX_REG_BLIT_SRC 0x80
+#define TGX_REG_BLIT_DST 0x84
+#define TGX_REG_BLIT_SRC_STRIDE 0x88
+#define TGX_REG_BLIT_DST_STRIDE 0x8c
+#define TGX_REG_BLIT_SIZE 0x90
+#define TGX_REG_BLIT_COMMAND 0x94
+#define TGX_REG_BLIT_STATUS 0x98
+#define TGX_BLIT_STATUS_BUSY BIT(0)
+#define TGX_BLIT_STATUS_DONE BIT(1)
+#define TGX_BLIT_STATUS_ERROR BIT(2)
+#define TGX_REG_DMA_HOST_LO 0xc0
+#define TGX_REG_DMA_HOST_HI 0xc4
+#define TGX_REG_DMA_VRAM 0xc8
+#define TGX_REG_DMA_LENGTH 0xcc
+#define TGX_REG_DMA_COMMAND 0xd0
+#define TGX_REG_DMA_STATUS 0xd4
+#define TGX_DMA_STATUS_BUSY BIT(0)
+#define TGX_DMA_STATUS_DONE BIT(1)
+#define TGX_DMA_STATUS_ERROR BIT(2)
+#define TGX_DMA_STATUS_REJECTED BIT(3)
+#define TGX_DMA_STATUS_READY BIT(4)
+#define TGX_DMA_TEST_BYTES 64
+#define TGX_DMA_TEST_VRAM TGX_FB_BASE(2)
+
+static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
+			    u32 vram_address, u32 length_bytes,
+			    unsigned int timeout_us)
+{
+	u32 status;
+	int ret;
+
+	status = readl(tgx->regs + TGX_REG_DMA_STATUS);
+	if (!(status & TGX_DMA_STATUS_READY) ||
+	    status & (TGX_DMA_STATUS_BUSY | TGX_DMA_STATUS_REJECTED))
+		return -EBUSY;
+	writel(lower_32_bits(host_address), tgx->regs + TGX_REG_DMA_HOST_LO);
+	writel(upper_32_bits(host_address), tgx->regs + TGX_REG_DMA_HOST_HI);
+	writel(vram_address, tgx->regs + TGX_REG_DMA_VRAM);
+	writel(length_bytes, tgx->regs + TGX_REG_DMA_LENGTH);
+	writel(1, tgx->regs + TGX_REG_DMA_COMMAND);
+	readl(tgx->regs + TGX_REG_DMA_COMMAND);
+	ret = readl_poll_timeout(tgx->regs + TGX_REG_DMA_STATUS, status,
+				 status & (TGX_DMA_STATUS_DONE |
+					   TGX_DMA_STATUS_ERROR |
+					   TGX_DMA_STATUS_REJECTED),
+				 10, timeout_us);
+	if (ret)
+		return ret;
+	if (!(status & TGX_DMA_STATUS_DONE) ||
+	    status & (TGX_DMA_STATUS_ERROR | TGX_DMA_STATUS_REJECTED))
+		return -EIO;
+	return 0;
+}
+
+static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
+{
+	u32 status;
+	int ret;
+
+	status = readl(tgx->regs + TGX_REG_BLIT_STATUS);
+	if (status & TGX_BLIT_STATUS_BUSY)
+		return -EBUSY;
+	writel(source, tgx->regs + TGX_REG_BLIT_SRC);
+	writel(target, tgx->regs + TGX_REG_BLIT_DST);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
+	writel((TGX_HEIGHT << 16) | TGX_WIDTH, tgx->regs + TGX_REG_BLIT_SIZE);
+	writel(1, tgx->regs + TGX_REG_BLIT_COMMAND);
+	readl(tgx->regs + TGX_REG_BLIT_COMMAND);
+	ret = readl_poll_timeout(tgx->regs + TGX_REG_BLIT_STATUS, status,
+				 status & (TGX_BLIT_STATUS_DONE |
+					   TGX_BLIT_STATUS_ERROR),
+				 10, 100000);
+	if (ret)
+		return ret;
+	return status & TGX_BLIT_STATUS_ERROR ? -EIO : 0;
+}
+
+static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
+{
+	u32 offset;
+
+	for (offset = 0; offset < TGX_FRAME_BYTES; offset += 4)
+		writel(readl(tgx->vram + source + offset),
+		       tgx->vram + target + offset);
+	readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+}
+
+static ssize_t page_flips_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->page_flips));
+}
+static DEVICE_ATTR_RO(page_flips);
+
+static ssize_t flip_timeouts_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->flip_timeouts));
+}
+static DEVICE_ATTR_RO(flip_timeouts);
+
+static ssize_t flip_fallbacks_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->flip_fallbacks));
+}
+static DEVICE_ATTR_RO(flip_fallbacks);
+
+static ssize_t vblank_timeouts_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->vblank_timeouts));
+}
+static DEVICE_ATTR_RO(vblank_timeouts);
+
+static ssize_t bytes_uploaded_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->bytes_uploaded));
+}
+static DEVICE_ATTR_RO(bytes_uploaded);
+
+static ssize_t msi_interrupts_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->msi_interrupts));
+}
+static DEVICE_ATTR_RO(msi_interrupts);
+
+static ssize_t blit_syncs_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->blit_syncs));
+}
+static DEVICE_ATTR_RO(blit_syncs);
+
+static ssize_t blit_sync_failures_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+			  atomic64_read(&tgx->blit_sync_failures));
+}
+static DEVICE_ATTR_RO(blit_sync_failures);
+
+static ssize_t dma_uploads_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&tgx->dma_uploads));
+}
+static DEVICE_ATTR_RO(dma_uploads);
+
+static ssize_t dma_upload_failures_show(struct device *dev,
+					 struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%lld\n",
+			  atomic64_read(&tgx->dma_upload_failures));
+}
+static DEVICE_ATTR_RO(dma_upload_failures);
+
+static ssize_t dma_test_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+	dma_addr_t dma_addr;
+	u32 *source;
+	u32 length;
+	unsigned int i;
+	u64 started_ns, elapsed_ns;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &length);
+	if (ret)
+		return ret;
+	if (length == 1)
+		length = TGX_DMA_TEST_BYTES;
+	if (!length || length > TGX_FRAME_BYTES || (length & 3))
+		return -EINVAL;
+	if (!mutex_trylock(&tgx->dma_lock))
+		return -EBUSY;
+	source = dma_alloc_coherent(&tgx->pdev->dev, length,
+				    &dma_addr, GFP_KERNEL);
+	if (!source) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	for (i = 0; i < length / sizeof(*source); i++)
+		source[i] = 0x54470000 | i;
+	dma_wmb();
+	started_ns = ktime_get_ns();
+	ret = tgx_dma_transfer(tgx, dma_addr, TGX_DMA_TEST_VRAM, length,
+			       2000000);
+	elapsed_ns = ktime_get_ns() - started_ns;
+	if (ret)
+		goto out_free;
+	for (i = 0; i < length / sizeof(*source); i++) {
+		if (readl(tgx->vram + TGX_DMA_TEST_VRAM + i * sizeof(*source)) !=
+		    source[i]) {
+			ret = -EIO;
+			goto out_free;
+		}
+	}
+	dev_info(dev, "DMA self-test passed: %u bytes in %llu us at %pad\n",
+		 length, div_u64(elapsed_ns, 1000), &dma_addr);
+	ret = count;
+
+out_free:
+	dma_free_coherent(&tgx->pdev->dev, length, source, dma_addr);
+out_unlock:
+	mutex_unlock(&tgx->dma_lock);
+	return ret;
+}
+static DEVICE_ATTR_WO(dma_test);
+
+static struct attribute *tgx_attrs[] = {
+	&dev_attr_page_flips.attr,
+	&dev_attr_flip_timeouts.attr,
+	&dev_attr_flip_fallbacks.attr,
+	&dev_attr_vblank_timeouts.attr,
+	&dev_attr_bytes_uploaded.attr,
+	&dev_attr_msi_interrupts.attr,
+	&dev_attr_blit_syncs.attr,
+	&dev_attr_blit_sync_failures.attr,
+	&dev_attr_dma_uploads.attr,
+	&dev_attr_dma_upload_failures.attr,
+	&dev_attr_dma_test.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(tgx);
 
 static const struct drm_display_mode tgx_mode = {
 	DRM_MODE("640x480", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 		 25188, 640, 656, 752, 800, 0, 480, 490, 492, 525, 0,
 		 DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC)
 };
+
+static irqreturn_t tgx_irq(int irq, void *data)
+{
+	struct tarugx *tgx = data;
+
+	atomic64_inc(&tgx->msi_interrupts);
+	wake_up_all(&tgx->vblank_wait);
+	return IRQ_HANDLED;
+}
+
+static void tgx_free_irq_vectors(void *data)
+{
+	pci_free_irq_vectors(data);
+}
+
+static void tgx_clear_bus_master(void *data)
+{
+	pci_clear_master(data);
+}
+
+static void tgx_disable_msi(void *data)
+{
+	struct tarugx *tgx = data;
+
+	writel(0, tgx->regs + TGX_REG_IRQ_ENABLE);
+	readl(tgx->regs);
+}
 
 static int tgx_get_modes(struct drm_connector *connector)
 {
@@ -81,10 +399,16 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_plane_state *state = pipe->plane.state;
 	struct drm_shadow_plane_state *shadow = to_drm_shadow_plane_state(state);
 	struct drm_framebuffer *fb = state->fb;
-	struct drm_rect damage;
+	struct drm_rect damage, copy;
 	unsigned int x, y;
-	int idx;
+	u64 copied;
+	u32 active, target;
+	s64 vblank_before;
+	long wait_ret;
+	int idx, target_index, ret = 0, vblank_ret = 0;
+	u64 pixels;
 	u32 pixel;
+	bool full_damage, did_flip_fallback = false;
 	if (!fb || !pipe->crtc.state->active)
 		return;
 	/* A new FB must replace the single physical scanout buffer in full. */
@@ -94,27 +418,135 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		return;
 	if (!drm_dev_enter(&tgx->drm, &idx))
 		return;
-	/* Keep scanout running during CPU updates. Blanking every dirty clip
-	 * makes cursors and desktop animations visibly flash. This initial
-	 * single-buffer path permits tearing; it does not promise atomic flips. */
-	/* Normal uncached BAR mapping and explicit DWORD stores are required.
-	 * memcpy_toio/WC can emit unsupported multi-DWORD PCIe requests. */
-	for (y = damage.y1; y < damage.y2; y++) {
-		for (x = damage.x1; x < damage.x2; x++) {
+	/* A partial update starts from an exact copy of the active physical page.
+	 * Never repair the inactive page from unannounced CPU-shadow pixels: only
+	 * the damage rectangle is guaranteed to contain new valid contents. */
+	active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+	target_index = tgx->legacy_single_buffer && active <= 1 ?
+		active : (active == 0 ? 1 : 0);
+	target = TGX_FB_BASE(target_index);
+	copy = damage;
+	full_damage = copy.x1 == 0 && copy.y1 == 0 &&
+		copy.x2 == TGX_WIDTH && copy.y2 == TGX_HEIGHT;
+	if (!full_damage && !tgx->legacy_single_buffer) {
+		ret = tgx_blit_copy_frame(tgx, TGX_FB_BASE(active), target);
+		if (ret) {
+			atomic64_inc(&tgx->blit_sync_failures);
+			dev_warn_ratelimited(tgx->drm.dev,
+					     "frame sync blit failed: %d; using CPU copy\n",
+					     ret);
+			tgx_cpu_copy_frame(tgx, TGX_FB_BASE(active), target);
+		} else {
+			atomic64_inc(&tgx->blit_syncs);
+		}
+		ret = 0;
+	}
+	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * 4;
+	if (full_damage && dma_upload && tgx->dma_available) {
+		for (y = 0; y < TGX_HEIGHT; y++)
+			iosys_map_memcpy_from(tgx->dma_staging + y * TGX_PITCH,
+					      &shadow->data[0],
+					      y * fb->pitches[0], TGX_PITCH);
+		dma_wmb();
+		mutex_lock(&tgx->dma_lock);
+		ret = tgx_dma_transfer(tgx, tgx->dma_staging_addr, target,
+				       TGX_FRAME_BYTES, 2000000);
+		mutex_unlock(&tgx->dma_lock);
+		if (!ret) {
+			atomic64_inc(&tgx->dma_uploads);
+			goto upload_complete;
+		}
+		atomic64_inc(&tgx->dma_upload_failures);
+		dev_warn_ratelimited(tgx->drm.dev,
+				     "frame DMA upload failed: %d; using BAR writes\n",
+				     ret);
+		ret = 0;
+	}
+	/* The FPGA accepts one- and two-DWORD writes.  Pair adjacent pixels with
+	 * writeq(), while retaining a DWORD tail for odd-width damage rectangles. */
+	for (y = copy.y1; y < copy.y2; y++) {
+		x = copy.x1;
+		if (x & 1) {
 			iosys_map_memcpy_from(&pixel, &shadow->data[0],
 					     y * fb->pitches[0] + x * 4, 4);
 			writel(le32_to_cpu((__force __le32)pixel),
-			       tgx->vram + (y * 640 + x) * 4);
+			       tgx->vram + target + y * TGX_PITCH + x * 4);
+			x++;
+		}
+		for (; x + 1 < copy.x2; x += 2) {
+			iosys_map_memcpy_from(&pixels, &shadow->data[0],
+					     y * fb->pitches[0] + x * 4, 8);
+			writeq(le64_to_cpu((__force __le64)pixels),
+			       tgx->vram + target + y * TGX_PITCH + x * 4);
+		}
+		if (x < copy.x2) {
+			iosys_map_memcpy_from(&pixel, &shadow->data[0],
+					     y * fb->pitches[0] + x * 4, 4);
+			writel(le32_to_cpu((__force __le32)pixel),
+			       tgx->vram + target + y * TGX_PITCH + x * 4);
 		}
 	}
 	/* BAR2 read orders the preceding posted writes through the DDR path. */
-	readl(tgx->vram + (640 * 480 - 1) * 4);
-	writel(0, tgx->regs + 0x1c);
-	writel(2560, tgx->regs + 0x20);
-	writel(1, tgx->regs + 0x24);
+	readl(tgx->vram + target + TGX_FRAME_BYTES - 4);
+upload_complete:
+	if (tgx->legacy_single_buffer) {
+		/* Legacy hardware scans a fixed page.  Updating only the damage
+		 * rectangle in place is slower than a flip but avoids repeatedly
+		 * copying an entire frame while scanout is active. */
+		atomic64_inc(&tgx->flip_fallbacks);
+		atomic64_add(copied, &tgx->bytes_uploaded);
+		drm_dev_exit(idx);
+		return;
+	}
+	vblank_before = atomic64_read(&tgx->msi_interrupts);
+	writel(target, tgx->regs + TGX_REG_FB_BASE);
+	writel(TGX_PITCH, tgx->regs + TGX_REG_FB_STRIDE);
+	writel(1, tgx->regs + TGX_REG_FB_COMMIT);
 	readl(tgx->regs);
-	writel(1, tgx->regs + 0x10);
+	writel(1, tgx->regs + TGX_REG_DISPLAY_CTRL);
 	readl(tgx->regs);
+	/* The same VBlank both raises MSI and applies FB_COMMIT.  Wait for those
+	 * two facts together instead of polling the flip and then waiting for an
+	 * extra frame.  A pre-commit interrupt cannot satisfy both conditions. */
+	wait_ret = wait_event_timeout(tgx->vblank_wait,
+			atomic64_read(&tgx->msi_interrupts) != vblank_before &&
+			readl(tgx->regs + TGX_REG_ACTIVE_BUFFER) == target_index,
+			msecs_to_jiffies(100));
+	if (!wait_ret) {
+		active = readl(tgx->regs + TGX_REG_ACTIVE_BUFFER);
+		if (active == target_index)
+			vblank_ret = 1;
+		else {
+			ret = -ETIMEDOUT;
+			/* Older Flash images do not implement the current commit
+			 * handshake.  Preserve a usable display after a power cycle by
+			 * copying the completed inactive page onto the page that legacy
+			 * hardware keeps scanning out. */
+			if (active <= 1) {
+				tgx_cpu_copy_frame(tgx, target,
+						   TGX_FB_BASE(active));
+				atomic64_inc(&tgx->flip_fallbacks);
+				tgx->legacy_single_buffer = true;
+				did_flip_fallback = true;
+			}
+		}
+	}
+	if (ret)
+		atomic64_inc(&tgx->flip_timeouts);
+	else if (vblank_ret)
+		atomic64_inc(&tgx->vblank_timeouts);
+	else
+		atomic64_inc(&tgx->page_flips);
+	atomic64_add(copied, &tgx->bytes_uploaded);
+	if (ret)
+		dev_warn_ratelimited(tgx->drm.dev,
+				     "page flip to buffer %d timed out (active %u)%s\n",
+				     target_index, active,
+				     did_flip_fallback ? "; copied to active page" : "");
+	else if (vblank_ret)
+		dev_warn_ratelimited(tgx->drm.dev,
+				     "VBlank wait timed out after flip to buffer %d\n",
+				     target_index);
 	drm_dev_exit(idx);
 }
 
@@ -124,7 +556,7 @@ static void tgx_disable(struct drm_simple_display_pipe *pipe)
 	int idx;
 	if (!drm_dev_enter(&tgx->drm, &idx))
 		return;
-	writel(0, tgx->regs + 0x10);
+	writel(0, tgx->regs + TGX_REG_DISPLAY_CTRL);
 	readl(tgx->regs);
 	drm_dev_exit(idx);
 }
@@ -164,8 +596,21 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	static const u32 formats[] = { DRM_FORMAT_XRGB8888 };
 	struct tarugx *tgx;
 	struct drm_device *drm;
+	u32 dma_status;
 	int ret;
 	ret = pcim_enable_device(pdev);
+	if (ret)
+		return ret;
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (ret) {
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "no usable DMA address mask\n");
+		dev_info(&pdev->dev, "using 32-bit DMA addresses\n");
+	}
+	pci_set_master(pdev);
+	ret = devm_add_action_or_reset(&pdev->dev, tgx_clear_bus_master, pdev);
 	if (ret)
 		return ret;
 	if (pci_resource_len(pdev, 0) != 65536 ||
@@ -178,11 +623,27 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (IS_ERR(tgx))
 		return PTR_ERR(tgx);
 	drm = &tgx->drm;
+	tgx->pdev = pdev;
+	mutex_init(&tgx->dma_lock);
 	tgx->regs = pcim_iomap_table(pdev)[0];
 	tgx->vram = pcim_iomap_table(pdev)[2];
+	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, TGX_FRAME_BYTES,
+					       &tgx->dma_staging_addr, GFP_KERNEL);
+	if (!tgx->dma_staging)
+		return -ENOMEM;
+	init_waitqueue_head(&tgx->vblank_wait);
 	if (readl(tgx->regs) != 0x54475055)
 		return -ENODEV;
+	dma_status = readl(tgx->regs + TGX_REG_DMA_STATUS);
+	tgx->dma_available = (dma_status & TGX_DMA_STATUS_READY) &&
+		!(dma_status & (TGX_DMA_STATUS_BUSY | TGX_DMA_STATUS_ERROR |
+			 TGX_DMA_STATUS_REJECTED));
+	dev_info(&pdev->dev, "full-frame DMA uploads %s\n",
+		 tgx->dma_available ? "available" : "unavailable; using BAR2");
 	pci_set_drvdata(pdev, tgx);
+	ret = devm_device_add_groups(&pdev->dev, tgx_groups);
+	if (ret)
+		return ret;
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;
@@ -198,6 +659,21 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			formats, ARRAY_SIZE(formats), NULL, &tgx->connector);
 	if (ret)
 		return ret;
+	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
+	if (ret < 0)
+		return ret;
+	ret = devm_add_action_or_reset(&pdev->dev, tgx_free_irq_vectors, pdev);
+	if (ret)
+		return ret;
+	ret = devm_request_irq(&pdev->dev, pci_irq_vector(pdev, 0), tgx_irq, 0,
+			       "tarugx-vblank", tgx);
+	if (ret)
+		return ret;
+	writel(1, tgx->regs + TGX_REG_IRQ_ENABLE);
+	readl(tgx->regs);
+	ret = devm_add_action_or_reset(&pdev->dev, tgx_disable_msi, tgx);
+	if (ret)
+		return ret;
 	drm_plane_enable_fb_damage_clips(&tgx->pipe.plane);
 	drm_mode_config_reset(drm);
 	return drm_dev_register(drm, 0);
@@ -206,12 +682,17 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 static void tgx_remove(struct pci_dev *pdev)
 {
 	struct tarugx *tgx = pci_get_drvdata(pdev);
+	writel(0, tgx->regs + TGX_REG_IRQ_ENABLE);
+	readl(tgx->regs);
+	synchronize_irq(pci_irq_vector(pdev, 0));
 	drm_atomic_helper_shutdown(&tgx->drm);
 	drm_dev_unplug(&tgx->drm);
 }
 static void tgx_shutdown(struct pci_dev *pdev)
 {
 	struct tarugx *tgx = pci_get_drvdata(pdev);
+	writel(0, tgx->regs + TGX_REG_IRQ_ENABLE);
+	readl(tgx->regs);
 	drm_atomic_helper_shutdown(&tgx->drm);
 }
 static const struct pci_device_id tgx_ids[] = {

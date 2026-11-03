@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// One outstanding DWORD access to a 4 MiB byte-addressed aperture.
-/// Backend: atomic 32-byte request, one completion for reads AND writes.
-/// Backend write completion must provide ordering before subsequent requests.
-/// This is a vendor-neutral interface, not the Gowin DDR command interface.
+/// Ordered 4 MiB byte aperture with eight backend requests in flight.
+/// Every request receives one response; invalid/no-op requests retire locally.
 module framebuffer_bridge (
     clk          : input  clock     ,
     rst_n        : input  reset     ,
@@ -10,8 +8,8 @@ module framebuffer_bridge (
     req_ready    : output logic     ,
     req_write    : input  logic     ,
     req_addr     : input  logic<32> ,
-    req_wdata    : input  logic<32> ,
-    req_wstrb    : input  logic<4>  ,
+    req_wdata    : input  logic<256>,
+    req_wstrb    : input  logic<32> ,
     rsp_valid    : output logic     ,
     rsp_ready    : input  logic     ,
     rsp_rdata    : output logic<32> ,
@@ -27,67 +25,87 @@ module framebuffer_bridge (
     mem_rsp_data : input  logic<256>,
     mem_rsp_error: input  logic     ,
 ) {
-    enum State: logic<2> {
-        Idle,
-        Issue,
-        Wait,
-        Reply,
-    }
-    var state: State   ;
-    var lane : logic<3>;
-    assign req_ready     = state == State::Idle;
-    assign mem_valid     = state == State::Issue;
-    assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);
-    assign rsp_valid     = state == State::Reply;
+    var issuing       : logic        ;
+    var lanes         : logic<3>  [8];
+    var writes        : logic     [8];
+    var local_replies : logic     [8];
+    var local_errors  : logic     [8];
+    var head          : logic<3>     ;
+    var tail          : logic<3>     ;
+    var count         : logic<4>     ;
+    var response_valid: logic        ;
+    var response_data : logic<32>    ;
+    var response_error: logic        ;
+
+    let address_error: logic = (req_addr[31:22] != 0) || (req_addr[1:0] != 0);
+    let empty_write: logic = req_write && (req_wstrb == 0);
+    let local_request: logic = address_error || empty_write;
+    let issue_accept: logic = issuing && mem_ready;
+    let capacity: logic = count <: 8;
+    assign req_ready = capacity && (local_request || !issuing || mem_ready);
+    let push: logic = req_valid && req_ready;
+    let backend_push: logic = push && !local_request;
+
+    assign mem_valid = issuing;
+    assign rsp_valid = response_valid;
+    assign rsp_rdata = response_data;
+    assign rsp_error = response_error;
+    let response_accept: logic = response_valid && rsp_ready;
+    let response_space: logic = !response_valid || response_accept;
+    let head_local: logic = (count != 0) && local_replies[head];
+    let local_pop: logic = head_local && response_space;
+    assign mem_rsp_ready = (count != 0) && !head_local && response_space;
+    let backend_pop: logic = mem_rsp_valid && mem_rsp_ready;
+    let pop: logic = local_pop || backend_pop;
+
     always_ff {
         if_reset {
-            state     = State::Idle;
-            lane      = 0;
-            mem_write = 0;
-            mem_addr  = 0;
-            mem_wdata = 0;
-            mem_wstrb = 0;
-            rsp_rdata = 0;
-            rsp_error = 0;
+            issuing        = 0;
+            lanes          = '{default: '0};
+            writes         = '{default: '0};
+            local_replies  = '{default: '0};
+            local_errors   = '{default: '0};
+            head           = 0;
+            tail           = 0;
+            count          = 0;
+            response_valid = 0;
+            response_data  = 0;
+            response_error = 0;
+            mem_write      = 0;
+            mem_addr       = 0;
+            mem_wdata      = 0;
+            mem_wstrb      = 0;
         } else {
-            case state {
-                State::Idle: {
-                    if req_valid {
-                        rsp_rdata = 0;
-                        rsp_error = 0;
-                        if (req_addr[31:22] != 0) || (req_addr[1:0] != 0) {
-                            rsp_error = 1;
-                            state     = State::Reply;
-                        } else if req_write && (req_wstrb == 0) {
-                            state = State::Reply;
-                        } else {
-                            lane      = req_addr[4:2];
-                            mem_addr  = {req_addr[21:5], 5'b0};
-                            mem_write = req_write;
-                            for i in 0..8 {
-                                mem_wdata[i * 32+:32] = if req_addr[4:2] == (i as 3) ? req_wdata : 32'b0;
-                                mem_wstrb[i * 4+:4]   = if req_write && (req_addr[4:2] == (i as 3)) ? req_wstrb : 4'b0;
-                            }
-                            state = State::Issue;
-                        }
-                    }
-                }
-                State::Issue: {
-                    if mem_ready {
-                        state = State::Wait;
-                    }
-                }
-                State::Wait: {}
-                State::Reply: {
-                    if rsp_ready {
-                        state = State::Idle;
-                    }
-                }
+            if issue_accept {
+                issuing = 0;
             }
-            if mem_rsp_valid && mem_rsp_ready {
-                rsp_rdata = if mem_write ? 32'b0 : mem_rsp_data[lane * 32+:32];
-                rsp_error = mem_rsp_error;
-                state     = State::Reply;
+            if push {
+                lanes[tail]         = req_addr[4:2];
+                writes[tail]        = req_write;
+                local_replies[tail] = local_request;
+                local_errors[tail]  = address_error;
+                tail                = tail + 3'd1;
+            }
+            if backend_push {
+                issuing   = 1;
+                mem_write = req_write;
+                mem_addr  = {req_addr[21:5], 5'b0};
+                mem_wdata = req_wdata;
+                mem_wstrb = if req_write ? req_wstrb : 0;
+            }
+            if pop {
+                response_valid = 1;
+                response_data  = if local_pop || writes[head] ? 0
+                    : mem_rsp_data[lanes[head] * 32+:32];
+                response_error = if local_pop ? local_errors[head] : mem_rsp_error;
+                head           = head + 3'd1;
+            } else if response_accept {
+                response_valid = 0;
+            }
+            if push && !pop {
+                count = count + 4'd1;
+            } else if pop && !push {
+                count = count - 4'd1;
             }
         }
     }

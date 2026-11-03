@@ -6,14 +6,14 @@ module framebuffer_memory_path (
     cpu_rst_n     : input  'cpu reset     ,
     cpu_valid     : input  'cpu logic     ,
     cpu_ready     : output 'cpu logic     ,
-    cpu_request   : input  'cpu logic<69> ,
+    cpu_request   : input  'cpu logic<321>,
     cpu_rsp_valid : output 'cpu logic     ,
     cpu_rsp_ready : input  'cpu logic     ,
     cpu_response  : output 'cpu logic<33> ,
     mem_clk       : input  'mem clock     ,
     mem_rst_n     : input  'mem reset     ,
     scan_valid    : input  'mem logic     ,
-    scan_urgent   : input  'mem logic,
+    scan_urgent   : input  'mem logic     ,
     scan_ready    : output 'mem logic     ,
     scan_addr     : input  'mem logic<22> ,
     scan_rsp_valid: output 'mem logic     ,
@@ -33,7 +33,7 @@ module framebuffer_memory_path (
 ) {
     var d_valid       : 'mem logic     ;
     var d_ready       : 'mem logic     ;
-    var d_request     : 'mem logic<69> ;
+    var d_request     : 'mem logic<321>;
     var d_rsp_valid   : 'mem logic     ;
     var d_rsp_ready   : 'mem logic     ;
     var d_response    : 'mem logic<33> ;
@@ -66,28 +66,28 @@ module framebuffer_memory_path (
         dst_response : d_response   ,
     );
     inst lanes: framebuffer_bridge (
-        clk          : mem_clk         ,
-        rst_n        : mem_rst_n       ,
-        req_valid    : d_valid         ,
-        req_ready    : d_ready         ,
-        req_write    : d_request[68]   ,
-        req_addr     : d_request[67:36],
-        req_wdata    : d_request[35:4] ,
-        req_wstrb    : d_request[3:0]  ,
-        rsp_valid    : d_rsp_valid     ,
-        rsp_ready    : d_rsp_ready     ,
-        rsp_rdata    : d_response[31:0],
-        rsp_error    : d_response[32]  ,
-        mem_valid    : lane_valid      ,
-        mem_ready    : lane_ready      ,
-        mem_write    : lane_write      ,
-        mem_addr     : lane_addr       ,
-        mem_wdata    : lane_wdata      ,
-        mem_wstrb    : lane_wstrb      ,
-        mem_rsp_valid: lane_rsp_valid  ,
-        mem_rsp_ready: lane_rsp_ready  ,
-        mem_rsp_data : lane_rsp_data   ,
-        mem_rsp_error: lane_rsp_error  ,
+        clk          : mem_clk          ,
+        rst_n        : mem_rst_n        ,
+        req_valid    : d_valid          ,
+        req_ready    : d_ready          ,
+        req_write    : d_request[320]    ,
+        req_addr     : d_request[319:288],
+        req_wdata    : d_request[287:32] ,
+        req_wstrb    : d_request[31:0]   ,
+        rsp_valid    : d_rsp_valid      ,
+        rsp_ready    : d_rsp_ready      ,
+        rsp_rdata    : d_response[31:0] ,
+        rsp_error    : d_response[32]   ,
+        mem_valid    : lane_valid       ,
+        mem_ready    : lane_ready       ,
+        mem_write    : lane_write       ,
+        mem_addr     : lane_addr        ,
+        mem_wdata    : lane_wdata       ,
+        mem_wstrb    : lane_wstrb       ,
+        mem_rsp_valid: lane_rsp_valid   ,
+        mem_rsp_ready: lane_rsp_ready   ,
+        mem_rsp_data : lane_rsp_data    ,
+        mem_rsp_error: lane_rsp_error   ,
     );
     inst arbiter: memory_arbiter (
         clk           : mem_clk       ,

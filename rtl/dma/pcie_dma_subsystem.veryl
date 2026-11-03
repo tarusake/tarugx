@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Integrates the one-outstanding DMA requester with the shared PCIe and VRAM paths.
+module pcie_dma_subsystem #(
+    param TIMEOUT_CYCLES: u32 = 1000000,
+) (
+    clk             : input  clock     ,
+    rst_n           : input  reset     ,
+    requester_id    : input  logic<16> ,
+    cmd_valid       : input  logic     ,
+    cmd_ready       : output logic     ,
+    cmd_host_address: input  logic<64> ,
+    cmd_vram_address: input  logic<32> ,
+    cmd_length_bytes: input  logic<32> ,
+    busy            : output logic     ,
+    done            : output logic     ,
+    error           : output logic     ,
+    rx_sop          : input  logic     ,
+    rx_eop          : input  logic     ,
+    rx_valid        : input  logic<8>  ,
+    rx_data         : input  logic<256>,
+    rx_error        : input  logic<8>  ,
+    bar_rx_wait     : input  logic     ,
+    rx_wait         : output logic     ,
+    bar_rx_sop      : output logic     ,
+    bar_rx_eop      : output logic     ,
+    bar_rx_valid    : output logic<8>  ,
+    completion_valid: input  logic     ,
+    completion_ready: output logic     ,
+    completion_sop  : input  logic     ,
+    completion_eop  : input  logic     ,
+    completion_keep : input  logic<8>  ,
+    completion_data : input  logic<256>,
+    tx_wait         : input  logic     ,
+    tx_sop          : output logic     ,
+    tx_eop          : output logic     ,
+    tx_valid        : output logic<8>  ,
+    tx_data         : output logic<256>,
+    cpu_req_valid   : input  logic     ,
+    cpu_req_ready   : output logic     ,
+    cpu_req_write   : input  logic     ,
+    cpu_req_addr    : input  logic<32> ,
+    cpu_req_wdata   : input  logic<64> ,
+    cpu_req_wstrb   : input  logic<8>  ,
+    cpu_rsp_valid   : output logic     ,
+    cpu_rsp_ready   : input  logic     ,
+    cpu_rsp_rdata   : output logic<32> ,
+    cpu_rsp_error   : output logic     ,
+    fb_req_valid    : output logic     ,
+    fb_req_ready    : input  logic     ,
+    fb_req_write    : output logic     ,
+    fb_req_addr     : output logic<32> ,
+    fb_req_wdata    : output logic<256>,
+    fb_req_wstrb    : output logic<32> ,
+    fb_rsp_valid    : input  logic     ,
+    fb_rsp_ready    : output logic     ,
+    fb_rsp_rdata    : input  logic<32> ,
+    fb_rsp_error    : input  logic     ,
+) {
+    var dma_rx_sop      : logic     ;
+    var dma_rx_eop      : logic     ;
+    var dma_rx_valid    : logic<8>  ;
+    var dma_rx_wait     : logic     ;
+    var is_completion   : logic     ;
+    var dma_rx_claim    : logic     ;
+    var dma_tx_ready    : logic     ;
+    var dma_tx_valid    : logic<8>  ;
+    var dma_tx_sop      : logic     ;
+    var dma_tx_eop      : logic     ;
+    var dma_tx_data     : logic<256>;
+    var dma_fb_req_valid: logic     ;
+    var dma_fb_req_ready: logic     ;
+    var dma_fb_req_addr : logic<32> ;
+    var dma_fb_req_wdata: logic<256>;
+    var dma_fb_req_wstrb: logic<32> ;
+    var dma_fb_rsp_valid: logic     ;
+    var dma_fb_rsp_ready: logic     ;
+    var dma_fb_rsp_error: logic     ;
+    // Isolate the PCIe hard-IP configuration bus from the DMA datapath.  The
+    // BDF is stable after enumeration, so one cycle of latency is harmless.
+    var requester_id_q  : logic<16> ;
+
+    always_ff {
+        if_reset {
+            requester_id_q = 0;
+        } else {
+            requester_id_q = requester_id;
+        }
+    }
+
+    inst rx_router: pcie_rx_router (
+        clk, rst_n,
+        rx_sop, rx_eop, rx_valid, rx_data,
+        bar_wait: bar_rx_wait,
+        dma_wait: dma_rx_wait,
+        rx_wait,
+        bar_rx_sop, bar_rx_eop, bar_rx_valid,
+        dma_rx_sop, dma_rx_eop, dma_rx_valid,
+        is_completion,
+    );
+
+    inst dma: pcie_dma_channel #(
+        TIMEOUT_CYCLES,
+    ) (
+        clk, rst_n, requester_id: requester_id_q,
+        cmd_valid, cmd_ready, cmd_host_address, cmd_vram_address, cmd_length_bytes,
+        busy, done, error,
+        tx_ready: dma_tx_ready,
+        tx_valid: dma_tx_valid,
+        tx_sop: dma_tx_sop,
+        tx_eop: dma_tx_eop,
+        tx_data: dma_tx_data,
+        rx_sop: dma_rx_sop,
+        rx_eop: dma_rx_eop,
+        rx_valid: dma_rx_valid,
+        rx_data,
+        rx_error,
+        rx_claim: dma_rx_claim,
+        rx_wait: dma_rx_wait,
+        fb_req_valid: dma_fb_req_valid,
+        fb_req_ready: dma_fb_req_ready,
+        fb_req_addr: dma_fb_req_addr,
+        fb_req_wdata: dma_fb_req_wdata,
+        fb_req_wstrb: dma_fb_req_wstrb,
+        fb_rsp_valid: dma_fb_rsp_valid,
+        fb_rsp_ready: dma_fb_rsp_ready,
+        fb_rsp_error: dma_fb_rsp_error,
+    );
+
+    inst tx_arbiter: pcie_tx_arbiter (
+        clk, rst_n,
+        completion_valid, completion_ready, completion_sop, completion_eop,
+        completion_keep, completion_data,
+        dma_valid: |dma_tx_valid,
+        dma_ready: dma_tx_ready,
+        dma_sop: dma_tx_sop,
+        dma_eop: dma_tx_eop,
+        dma_keep: dma_tx_valid,
+        dma_data: dma_tx_data,
+        tx_wait, tx_sop, tx_eop, tx_valid, tx_data,
+    );
+
+    inst fb_arbiter: framebuffer_request_arbiter (
+        clk, rst_n,
+        cpu_req_valid, cpu_req_ready, cpu_req_write, cpu_req_addr, cpu_req_wdata, cpu_req_wstrb,
+        cpu_rsp_valid, cpu_rsp_ready, cpu_rsp_rdata, cpu_rsp_error,
+        dma_req_valid: dma_fb_req_valid,
+        dma_req_ready: dma_fb_req_ready,
+        dma_req_addr: dma_fb_req_addr,
+        dma_req_wdata: dma_fb_req_wdata,
+        dma_req_wstrb: dma_fb_req_wstrb,
+        dma_rsp_valid: dma_fb_rsp_valid,
+        dma_rsp_ready: dma_fb_rsp_ready,
+        dma_rsp_error: dma_fb_rsp_error,
+        out_req_valid: fb_req_valid,
+        out_req_ready: fb_req_ready,
+        out_req_write: fb_req_write,
+        out_req_addr: fb_req_addr,
+        out_req_wdata: fb_req_wdata,
+        out_req_wstrb: fb_req_wstrb,
+        out_rsp_valid: fb_rsp_valid,
+        out_rsp_ready: fb_rsp_ready,
+        out_rsp_rdata: fb_rsp_rdata,
+        out_rsp_error: fb_rsp_error,
+    );
+}

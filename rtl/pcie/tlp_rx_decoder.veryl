@@ -19,6 +19,7 @@ module tlp_rx_decoder (
     header_dw2   : output logic<32> ,
     header_dw3   : output logic<32> ,
     payload_dw0  : output logic<32> ,
+    payload_dw1  : output logic<32> ,
     framing_error: output logic     ,
 ) {
     let transfer_present: logic = |rx_valid;
@@ -31,5 +32,6 @@ module tlp_rx_decoder (
     assign header_dw2    = rx_data[191:160];
     assign header_dw3    = rx_data[159:128];
     assign payload_dw0   = {rx_data[135:128], rx_data[143:136], rx_data[151:144], rx_data[159:152]};
+    assign payload_dw1   = {rx_data[103:96], rx_data[111:104], rx_data[119:112], rx_data[127:120]};
     assign framing_error = transfer_present && (!rx_sop || !rx_eop || (rx_valid[7:5] != 3'b111) || (|rx_error));
 }

@@ -4,21 +4,51 @@ module gpu_registers_reset_and_read {
     inst clk: $tb::clock_gen;
     inst rst: $tb::reset_gen ( clk );
 
-    var req_valid      : logic    ;
-    var req_write      : logic    ;
-    var req_addr       : logic<16>;
-    var req_wdata      : logic<32>;
-    var req_wstrb      : logic<4> ;
-    var req_ready      : logic    ;
-    var rsp_valid      : logic    ;
-    var rsp_rdata      : logic<32>;
-    var rsp_error      : logic    ;
-    var display_ctrl   : logic<32>;
-    var display_color  : logic<32>;
-    var display_mode   : logic<32>;
-    var fb_base        : logic<32>;
-    var fb_stride      : logic<32>;
-    var fb_commit_pulse: logic    ;
+    var req_valid      : logic     ;
+    var req_write      : logic     ;
+    var req_addr       : logic<16> ;
+    var req_wdata      : logic<32> ;
+    var req_wstrb      : logic<4>  ;
+    var active_buffer  : logic     ;
+    var vblank_toggle  : logic     ;
+    var fill_busy      : logic     ;
+    var fill_done      : logic     ;
+    var fill_error     : logic     ;
+    var blit_busy      : logic     ;
+    var blit_done      : logic     ;
+    var blit_error     : logic     ;
+    var queue_ready    : logic     ;
+    var queue_level    : logic<3>  ;
+    var queue_active   : logic     ;
+    var queue_completed: logic<32> ;
+    var queue_error    : logic     ;
+    var queue_error_fence: logic<32>;
+    var dma_cmd_ready  : logic     ;
+    var dma_busy       : logic     ;
+    var dma_done       : logic     ;
+    var dma_error      : logic     ;
+    var req_ready      : logic     ;
+    var rsp_valid      : logic     ;
+    var rsp_rdata      : logic<32> ;
+    var rsp_error      : logic     ;
+    var display_ctrl   : logic<32> ;
+    var display_color  : logic<32> ;
+    var display_mode   : logic<32> ;
+    var fb_base        : logic<32> ;
+    var fb_stride      : logic<32> ;
+    var fb_commit_pulse: logic     ;
+    var irq_enable     : logic<2>  ;
+    var fill_command   : logic<128>;
+    var fill_start     : logic     ;
+    var blit_command   : logic<160>;
+    var blit_start     : logic     ;
+    var queue_command  : logic<194>;
+    var queue_submit   : logic     ;
+    var queue_clear_error: logic   ;
+    var dma_host_address: logic<64>;
+    var dma_vram_address: logic<32>;
+    var dma_length_bytes: logic<32>;
+    var dma_cmd_valid   : logic    ;
 
     inst dut: gpu_registers (
         clk              ,
@@ -28,6 +58,24 @@ module gpu_registers_reset_and_read {
         req_addr         ,
         req_wdata        ,
         req_wstrb        ,
+        active_buffer    ,
+        vblank_toggle    ,
+        fill_busy        ,
+        fill_done        ,
+        fill_error       ,
+        blit_busy        ,
+        blit_done        ,
+        blit_error       ,
+        queue_ready      ,
+        queue_level      ,
+        queue_active     ,
+        queue_completed  ,
+        queue_error      ,
+        queue_error_fence,
+        dma_cmd_ready    ,
+        dma_busy         ,
+        dma_done         ,
+        dma_error        ,
         req_ready        ,
         rsp_valid        ,
         rsp_rdata        ,
@@ -38,14 +86,44 @@ module gpu_registers_reset_and_read {
         fb_base          ,
         fb_stride        ,
         fb_commit_pulse  ,
+        irq_enable       ,
+        fill_command     ,
+        fill_start       ,
+        blit_command     ,
+        blit_start       ,
+        queue_command    ,
+        queue_submit     ,
+        queue_clear_error,
+        dma_host_address ,
+        dma_vram_address ,
+        dma_length_bytes ,
+        dma_cmd_valid    ,
     );
 
     initial {
-        req_valid = 0;
-        req_write = 0;
-        req_addr  = 0;
-        req_wdata = 0;
-        req_wstrb = 0;
+        req_valid     = 0;
+        req_write     = 0;
+        req_addr      = 0;
+        req_wdata     = 0;
+        req_wstrb     = 0;
+        active_buffer = 1;
+        vblank_toggle = 1;
+        fill_busy     = 0;
+        fill_done     = 0;
+        fill_error    = 0;
+        blit_busy     = 0;
+        blit_done     = 0;
+        blit_error    = 0;
+        queue_ready   = 1;
+        queue_level   = 0;
+        queue_active  = 0;
+        queue_completed = 0;
+        queue_error   = 0;
+        queue_error_fence = 0;
+        dma_cmd_ready = 0;
+        dma_busy      = 0;
+        dma_done      = 0;
+        dma_error     = 0;
         rst.assert();
         clk.next(1);
         $assert(display_ctrl == 0);
@@ -66,10 +144,19 @@ module gpu_registers_reset_and_read {
         req_addr = 16'h0008;
         clk.next(1);
         $assert(rsp_rdata == 32'h0000_0001);
+        req_addr = 16'h000c;
+        clk.next(1);
+        $assert(rsp_rdata == 0);
+        req_addr = 16'h0028;
+        clk.next(1);
+        $assert(rsp_rdata == 1);
+        req_addr = 16'h002c;
+        clk.next(1);
+        $assert(rsp_rdata == 1);
         req_addr = 16'h0001;
         clk.next(1);
         $assert(rsp_error);
-        req_addr = 16'h0040;
+        req_addr = 16'h0058;
         clk.next(1);
         $assert(rsp_error);
         $finish();
@@ -81,21 +168,51 @@ module gpu_registers_write_byte_enable_and_commit {
     inst clk: $tb::clock_gen;
     inst rst: $tb::reset_gen ( clk );
 
-    var req_valid      : logic    ;
-    var req_write      : logic    ;
-    var req_addr       : logic<16>;
-    var req_wdata      : logic<32>;
-    var req_wstrb      : logic<4> ;
-    var req_ready      : logic    ;
-    var rsp_valid      : logic    ;
-    var rsp_rdata      : logic<32>;
-    var rsp_error      : logic    ;
-    var display_ctrl   : logic<32>;
-    var display_color  : logic<32>;
-    var display_mode   : logic<32>;
-    var fb_base        : logic<32>;
-    var fb_stride      : logic<32>;
-    var fb_commit_pulse: logic    ;
+    var req_valid      : logic     ;
+    var req_write      : logic     ;
+    var req_addr       : logic<16> ;
+    var req_wdata      : logic<32> ;
+    var req_wstrb      : logic<4>  ;
+    var active_buffer  : logic     ;
+    var vblank_toggle  : logic     ;
+    var fill_busy      : logic     ;
+    var fill_done      : logic     ;
+    var fill_error     : logic     ;
+    var blit_busy      : logic     ;
+    var blit_done      : logic     ;
+    var blit_error     : logic     ;
+    var queue_ready    : logic     ;
+    var queue_level    : logic<3>  ;
+    var queue_active   : logic     ;
+    var queue_completed: logic<32> ;
+    var queue_error    : logic     ;
+    var queue_error_fence: logic<32>;
+    var dma_cmd_ready  : logic     ;
+    var dma_busy       : logic     ;
+    var dma_done       : logic     ;
+    var dma_error      : logic     ;
+    var req_ready      : logic     ;
+    var rsp_valid      : logic     ;
+    var rsp_rdata      : logic<32> ;
+    var rsp_error      : logic     ;
+    var display_ctrl   : logic<32> ;
+    var display_color  : logic<32> ;
+    var display_mode   : logic<32> ;
+    var fb_base        : logic<32> ;
+    var fb_stride      : logic<32> ;
+    var fb_commit_pulse: logic     ;
+    var irq_enable     : logic<2>  ;
+    var fill_command   : logic<128>;
+    var fill_start     : logic     ;
+    var blit_command   : logic<160>;
+    var blit_start     : logic     ;
+    var queue_command  : logic<194>;
+    var queue_submit   : logic     ;
+    var queue_clear_error: logic   ;
+    var dma_host_address: logic<64>;
+    var dma_vram_address: logic<32>;
+    var dma_length_bytes: logic<32>;
+    var dma_cmd_valid   : logic    ;
 
     inst dut: gpu_registers (
         clk              ,
@@ -105,6 +222,24 @@ module gpu_registers_write_byte_enable_and_commit {
         req_addr         ,
         req_wdata        ,
         req_wstrb        ,
+        active_buffer    ,
+        vblank_toggle    ,
+        fill_busy        ,
+        fill_done        ,
+        fill_error       ,
+        blit_busy        ,
+        blit_done        ,
+        blit_error       ,
+        queue_ready      ,
+        queue_level      ,
+        queue_active     ,
+        queue_completed  ,
+        queue_error      ,
+        queue_error_fence,
+        dma_cmd_ready    ,
+        dma_busy         ,
+        dma_done         ,
+        dma_error        ,
         req_ready        ,
         rsp_valid        ,
         rsp_rdata        ,
@@ -115,14 +250,44 @@ module gpu_registers_write_byte_enable_and_commit {
         fb_base          ,
         fb_stride        ,
         fb_commit_pulse  ,
+        irq_enable       ,
+        fill_command     ,
+        fill_start       ,
+        blit_command     ,
+        blit_start       ,
+        queue_command    ,
+        queue_submit     ,
+        queue_clear_error,
+        dma_host_address ,
+        dma_vram_address ,
+        dma_length_bytes ,
+        dma_cmd_valid    ,
     );
 
     initial {
-        req_valid = 0;
-        req_write = 0;
-        req_addr  = 0;
-        req_wdata = 0;
-        req_wstrb = 0;
+        req_valid     = 0;
+        req_write     = 0;
+        req_addr      = 0;
+        req_wdata     = 0;
+        req_wstrb     = 0;
+        active_buffer = 0;
+        vblank_toggle = 0;
+        fill_busy     = 0;
+        fill_done     = 0;
+        fill_error    = 0;
+        blit_busy     = 0;
+        blit_done     = 0;
+        blit_error    = 0;
+        queue_ready   = 1;
+        queue_level   = 0;
+        queue_active  = 0;
+        queue_completed = 0;
+        queue_error   = 0;
+        queue_error_fence = 0;
+        dma_cmd_ready = 0;
+        dma_busy      = 0;
+        dma_done      = 0;
+        dma_error     = 0;
         rst.assert();
         clk.next(1);
         clk.next(1);
@@ -149,6 +314,215 @@ module gpu_registers_write_byte_enable_and_commit {
         req_wstrb = 4'b0001;
         clk.next(1);
         $assert(fb_commit_pulse);
+
+        req_addr  = 16'h0030;
+        req_wdata = 32'h0000_0001;
+        req_wstrb = 4'b0010;
+        clk.next(1);
+        $assert(irq_enable == 0);
+        req_wstrb = 4'b0001;
+        clk.next(1);
+        $assert(irq_enable == 1);
+        req_write = 0;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0001);
+
+        // Program and launch a fill.  The packed command remains stable while
+        // the CDC mailbox is busy; completion status is sticky until restart.
+        req_write = 1;
+        req_wstrb = 4'b1111;
+        req_addr  = 16'h0060;
+        req_wdata = 32'h0010_0020;
+        clk.next(1);
+        req_addr  = 16'h0064;
+        req_wdata = 32'd2560;
+        clk.next(1);
+        req_addr  = 16'h0068;
+        req_wdata = 32'h0010_0020;
+        clk.next(1);
+        req_addr  = 16'h006c;
+        req_wdata = 32'haabb_ccdd;
+        clk.next(1);
+        $assert(fill_command == 128'haabbccdd_00100020_00000a00_00100020);
+        req_addr  = 16'h0070;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(fill_start);
+        fill_busy = 1;
+        clk.next(1);
+        $assert(!fill_start);
+        // A second start while busy is ignored.
+        clk.next(1);
+        $assert(!fill_start);
+        req_write = 0;
+        req_addr  = 16'h0074;
+        clk.next(1);
+        $assert(rsp_rdata == 1);
+        fill_busy  = 0;
+        fill_done  = 1;
+        fill_error = 1;
+        clk.next(1);
+        fill_done = 0;
+        $assert(rsp_rdata == 32'h0000_0006);
+        req_write = 1;
+        req_addr  = 16'h0070;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(fill_start);
+        req_write = 0;
+        req_addr  = 16'h0074;
+        clk.next(1);
+        $assert(rsp_rdata == 0);
+
+        // Program and launch a blit. Source/destination and both strides are
+        // captured as one stable 160-bit CDC payload.
+        req_write = 1;
+        req_addr  = 16'h0080;
+        req_wdata = 32'h0000_1000;
+        clk.next(1);
+        req_addr  = 16'h0084;
+        req_wdata = 32'h0000_2000;
+        clk.next(1);
+        req_addr  = 16'h0088;
+        req_wdata = 32'd2560;
+        clk.next(1);
+        req_addr  = 16'h008c;
+        req_wdata = 32'd2048;
+        clk.next(1);
+        req_addr  = 16'h0090;
+        req_wdata = 32'h0010_0020;
+        clk.next(1);
+        $assert(blit_command == 160'h00100020_00000800_00000a00_00002000_00001000);
+        req_addr  = 16'h0094;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(blit_start);
+        blit_busy = 1;
+        clk.next(1);
+        $assert(!blit_start);
+        req_write = 0;
+        req_addr  = 16'h0098;
+        clk.next(1);
+        $assert(rsp_rdata == 1);
+        blit_busy  = 0;
+        blit_done  = 1;
+        blit_error = 1;
+        clk.next(1);
+        blit_done = 0;
+        $assert(rsp_rdata == 32'h0000_0006);
+        req_write = 1;
+        req_addr  = 16'h0094;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(blit_start);
+        req_write = 0;
+        req_addr  = 16'h0098;
+        clk.next(1);
+        $assert(rsp_rdata == 0);
+
+        // Queue submission snapshots the selected legacy command plus fence.
+        queue_ready = 0;
+        req_write = 1;
+        req_addr  = 16'h00a0;
+        req_wdata = 32'd42;
+        clk.next(1);
+        req_addr  = 16'h00a4;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(queue_submit);
+        $assert(queue_command == {32'b0, fill_command, 32'd42, 2'd1});
+        // A posted submit while the staging slot is occupied is reported.
+        req_wdata = 2;
+        clk.next(1);
+        queue_level = 3;
+        queue_active = 1;
+        queue_error = 1;
+        queue_completed = 32'd41;
+        queue_error_fence = 32'd40;
+        req_write = 0;
+        req_addr = 16'h00a8;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0073);
+        req_addr = 16'h00ac;
+        clk.next(1);
+        $assert(rsp_rdata == 32'd41);
+        req_addr = 16'h00b0;
+        clk.next(1);
+        $assert(rsp_rdata == 32'd40);
+        req_write = 1;
+        req_addr = 16'h00a8;
+        req_wdata = 32'h20;
+        clk.next(1);
+        $assert(queue_clear_error);
+        queue_ready = 1;
+        req_write = 0;
+        clk.next(1);
+        $assert(!queue_submit && !queue_clear_error);
+
+        // DMA programming uses a held ready/valid command so a stalled
+        // requester cannot lose a posted BAR write.
+        req_write = 1;
+        req_wstrb = 4'b1111;
+        req_addr  = 16'h00c0;
+        req_wdata = 32'h5566_7788;
+        clk.next(1);
+        req_addr  = 16'h00c4;
+        req_wdata = 32'h1122_3344;
+        clk.next(1);
+        req_addr  = 16'h00c8;
+        req_wdata = 32'h0000_1000;
+        clk.next(1);
+        req_addr  = 16'h00cc;
+        req_wdata = 32'd16;
+        clk.next(1);
+        $assert(dma_host_address == 64'h11223344_55667788);
+        $assert(dma_vram_address == 32'h0000_1000);
+        $assert(dma_length_bytes == 32'd16);
+        req_addr  = 16'h00d0;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(dma_cmd_valid);
+        req_write = 0;
+        req_addr  = 16'h00d4;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0020);
+        dma_cmd_ready = 1;
+        clk.next(1);
+        $assert(!dma_cmd_valid);
+        $assert(rsp_rdata == 32'h0000_0010);
+
+        // Restart while busy is rejected and reported without disturbing the
+        // command parameters. Completion result remains sticky until restart.
+        dma_cmd_ready = 0;
+        dma_busy = 1;
+        req_write = 1;
+        req_addr  = 16'h00d0;
+        req_wdata = 1;
+        clk.next(1);
+        req_write = 0;
+        req_addr  = 16'h00d4;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0009);
+        req_write = 1;
+        req_wdata = 8;
+        clk.next(1);
+        dma_busy  = 0;
+        dma_done  = 1;
+        dma_error = 1;
+        req_write = 0;
+        clk.next(1);
+        dma_done = 0;
+        $assert(rsp_rdata == 32'h0000_0006);
+        req_write = 1;
+        req_addr  = 16'h00d0;
+        req_wdata = 1;
+        clk.next(1);
+        $assert(dma_cmd_valid);
+        req_write = 0;
+        req_addr  = 16'h00d4;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0000_0020);
+
         req_valid = 0;
         clk.next(1);
         $assert(!fb_commit_pulse);

@@ -55,10 +55,13 @@ static void paint(struct buffer *b, unsigned frame)
         for (unsigned x = 0; x < W; x++) row[x] = pixel(x, y, frame);
     }
 }
-static int verify(volatile uint32_t *vram, unsigned frame, int full)
+static int verify(volatile uint32_t *regs, volatile uint32_t *vram,
+                  unsigned frame, int full)
 {
+	unsigned base = (regs[0x28 / 4] & 1) * W * H;
+
     for (unsigned i = 0; i < W * H; i += full ? 1 : 997) {
-        uint32_t want = pixel(i % W, i / W, frame), got = vram[i];
+        uint32_t want = pixel(i % W, i / W, frame), got = vram[base + i];
         if (got != want) {
             fprintf(stderr, "frame %u BAR2[%u]: %08x != %08x\n", frame, i, got, want);
             return -1;
@@ -84,7 +87,8 @@ int main(int argc, char **argv)
         return 1;
     }
     int rc = 1, enabled = 0, fd = open(argv[1], O_RDWR | O_CLOEXEC);
-    int memfd = -1;
+    int regfd = -1, memfd = -1;
+    volatile uint32_t *regs = MAP_FAILED;
     volatile uint32_t *vram = MAP_FAILED;
     drmModeRes *res = NULL;
     drmModeConnector *connector = NULL;
@@ -98,8 +102,14 @@ int main(int argc, char **argv)
     if (drmSetMaster(fd)) { perror("DRM master (stop modetest first)"); goto out; }
     const char *card = strrchr(argv[1], '/');
     char path[256];
-    if (!card || snprintf(path, sizeof(path), "/sys/class/drm/%s/device/resource2", card+1)
+    if (!card || snprintf(path, sizeof(path), "/sys/class/drm/%s/device/resource0", card+1)
                   >= (int)sizeof(path)) goto out;
+    regfd = open(path, O_RDONLY | O_SYNC);
+    if (regfd < 0) { perror("BAR0 observer"); goto out; }
+    regs = mmap(NULL, 64*1024, PROT_READ, MAP_SHARED, regfd, 0);
+    if (regs == MAP_FAILED) { perror("BAR0 mmap"); goto out; }
+    if (snprintf(path, sizeof(path), "/sys/class/drm/%s/device/resource2", card+1)
+        >= (int)sizeof(path)) goto out;
     /* Read-only observer: do not change device registers behind the driver. */
     memfd = open(path, O_RDONLY | O_SYNC);
     if (memfd < 0) { perror("BAR2 observer"); goto out; }
@@ -144,7 +154,7 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            if (verify(vram, frame, n == FRAMES - 1)) goto out;
+            if (verify(regs, vram, frame, n == FRAMES - 1)) goto out;
         }
         printf("%s: %u frames PASS, %.3f s (includes readback); last frame all pixels matched\n",
                phase ? "flip+event" : "dirty", FRAMES, now()-start);
@@ -171,8 +181,9 @@ int main(int argc, char **argv)
         if (drmModeDirtyFB(fd, b[0].fb, &clip, 1)) {
             perror("partial dirty"); free(expected); goto out;
         }
+        unsigned base = (regs[0x28 / 4] & 1) * W * H;
         for (unsigned i = 0; i < W * H; i++) {
-            if (vram[i] != expected[i]) {
+            if (vram[base + i] != expected[i]) {
                 fprintf(stderr, "partial clip %u pixel %u mismatch\n", n, i);
                 free(expected); goto out;
             }
@@ -189,7 +200,9 @@ out:
     if (connector) drmModeFreeConnector(connector);
     if (res) drmModeFreeResources(res);
     if (vram != MAP_FAILED) munmap((void *)vram, 4*1024*1024);
+    if (regs != MAP_FAILED) munmap((void *)regs, 64*1024);
     if (memfd >= 0) close(memfd);
+    if (regfd >= 0) close(regfd);
     close(fd);
     return rc;
 }

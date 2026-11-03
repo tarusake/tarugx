@@ -3,7 +3,7 @@
 module framebuffer_display_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic [25:0] settings=26'h1000000;
- logic in_valid,in_ready,de,hsync,vsync,underflow,display_active;
+ logic in_valid,in_ready,de,hsync,vsync,underflow,vblank_toggle,display_active;
  logic [63:0] fault_snapshot;
  logic [272:0] in_data;logic [23:0] rgb;
  int beat=0,frame=0,checked=0;bit inject=0;

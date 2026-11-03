@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 enum { BAR0_SIZE = 65536, BAR2_SIZE = 4194304, WIDTH = 640, HEIGHT = 480 };
@@ -58,6 +59,40 @@ static uint32_t pixel(unsigned x, unsigned y)
            ((((x / 32) ^ (y / 32)) & 1) ? 255u : 32u);
 }
 
+static int test_page_flip(volatile uint32_t *regs, volatile uint32_t *fb)
+{
+    const unsigned frame_words = WIDTH * HEIGHT;
+    for (unsigned i = 0; i < frame_words; i++) {
+        uint32_t first = pixel(i % WIDTH, i / WIDTH);
+        fb[i] = first;
+        fb[frame_words + i] = first ^ UINT32_C(0x00ffffff);
+    }
+    __sync_synchronize();
+    (void)regs[0];
+    for (unsigned i = 0; i < frame_words; i++) {
+        uint32_t first = pixel(i % WIDTH, i / WIDTH);
+        if (fb[i] != first || fb[frame_words + i] != (first ^ UINT32_C(0x00ffffff))) {
+            fprintf(stderr, "double-buffer readback failed at DWORD %u\n", i);
+            return 1;
+        }
+    }
+    regs[0x20/4] = WIDTH * 4;
+    regs[0x10/4] = 1;
+    for (unsigned frame = 0; frame < 120; frame++) {
+        regs[0x1c/4] = (frame & 1) ? frame_words * 4 : 0;
+        regs[0x24/4] = 1;
+        __sync_synchronize();
+        (void)regs[0];
+        nanosleep(&(struct timespec){ .tv_nsec = 16667000 }, NULL);
+    }
+    regs[0x1c/4] = 0;
+    regs[0x24/4] = 1;
+    __sync_synchronize();
+    (void)regs[0];
+    printf("Page flip: two full buffers verified, 120 alternating commits completed\n");
+    return 0;
+}
+
 /* Keep scanout enabled while competing for DDR; restore the original frame.
  * UART sticky fault state must be captured separately, starting before this test. */
 static int stress_scanout(volatile uint32_t *regs, volatile uint32_t *fb)
@@ -88,15 +123,16 @@ static int stress_scanout(volatile uint32_t *regs, volatile uint32_t *fb)
 int main(int argc, char **argv)
 {
     if (argc != 3 || (strcmp(argv[2], "probe") && strcmp(argv[2], "pattern") &&
-                     strcmp(argv[2], "sweep") && strcmp(argv[2], "stress"))) {
-        fprintf(stderr, "usage: %s 0000:01:00.0 probe|pattern|sweep|stress\n"
+                     strcmp(argv[2], "sweep") && strcmp(argv[2], "stress") &&
+                     strcmp(argv[2], "flip"))) {
+        fprintf(stderr, "usage: %s 0000:01:00.0 probe|pattern|sweep|stress|flip\n"
                 "probe overwrites 256 bytes; pattern writes 640x480; sweep overwrites all 4 MiB.\n"
                 "stress requires an unbound driver and enabled display; temporarily inverts and restores the frame.\n",
                 argv[0]);
         return 1;
     }
     if (check_device(argv[1])) return 1;
-    if (!strcmp(argv[2], "stress")) {
+    if (!strcmp(argv[2], "stress") || !strcmp(argv[2], "flip")) {
         char path[256];
         struct stat st;
         if (snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/driver", argv[1]) >= (int)sizeof(path)) return 1;
@@ -116,6 +152,10 @@ int main(int argc, char **argv)
     int rc = 1;
     if (!strcmp(argv[2], "stress")) {
         rc = stress_scanout(regs, fb);
+        goto done;
+    }
+    if (!strcmp(argv[2], "flip")) {
+        rc = test_page_flip(regs, fb);
         goto done;
     }
     int pattern = !strcmp(argv[2], "pattern");
