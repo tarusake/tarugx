@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Complete one-outstanding DMA requester channel at the raw Gowin TLP edge.
+/// Complete eight-outstanding DMA requester channel at the raw Gowin TLP edge.
 module pcie_dma_channel #(
     param TIMEOUT_CYCLES: u32 = 1000000,
 ) (
@@ -41,8 +41,8 @@ module pcie_dma_channel #(
     var mrd_host_address: logic<64>;
     var mrd_length_dw   : logic<6> ;
     var mrd_tag         : logic<8> ;
-    var active_valid    : logic<4> ;
-    var active_tags     : logic<32>;
+    var active_valid    : logic<8> ;
+    var active_tags     : logic<64>;
     var cpl_valid       : logic    ;
     var cpl_ready       : logic    ;
     var cpl_has_data    : logic    ;
@@ -142,6 +142,10 @@ module pcie_dma_channel #(
         && ((active_valid[0] && (rx_header_dw2[15:8] == active_tags[7:0]))
             || (active_valid[1] && (rx_header_dw2[15:8] == active_tags[15:8]))
             || (active_valid[2] && (rx_header_dw2[15:8] == active_tags[23:16]))
-            || (active_valid[3] && (rx_header_dw2[15:8] == active_tags[31:24])));
+            || (active_valid[3] && (rx_header_dw2[15:8] == active_tags[31:24]))
+            || (active_valid[4] && (rx_header_dw2[15:8] == active_tags[39:32]))
+            || (active_valid[5] && (rx_header_dw2[15:8] == active_tags[47:40]))
+            || (active_valid[6] && (rx_header_dw2[15:8] == active_tags[55:48]))
+            || (active_valid[7] && (rx_header_dw2[15:8] == active_tags[63:56])));
     assign rx_claim = cpl_valid || rx_completion_match;
 }

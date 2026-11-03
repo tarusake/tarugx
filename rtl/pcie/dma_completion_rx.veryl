@@ -14,8 +14,8 @@ module dma_completion_rx (
     rx_data             : input  logic<256>,
     rx_error            : input  logic<8>  ,
     expected_requester  : input  logic<16> ,
-    active_valid        : input  logic<4>  ,
-    active_tags         : input  logic<32> ,
+    active_valid        : input  logic<8>  ,
+    active_tags         : input  logic<64> ,
     completion_ready    : input  logic     ,
     rx_wait             : output logic     ,
     completion_valid    : output logic     ,
@@ -215,7 +215,11 @@ module dma_completion_rx (
                 beat_tag_active = (active_valid[0] && (rx_data[175:168] == active_tags[7:0]))
                     || (active_valid[1] && (rx_data[175:168] == active_tags[15:8]))
                     || (active_valid[2] && (rx_data[175:168] == active_tags[23:16]))
-                    || (active_valid[3] && (rx_data[175:168] == active_tags[31:24]));
+                    || (active_valid[3] && (rx_data[175:168] == active_tags[31:24]))
+                    || (active_valid[4] && (rx_data[175:168] == active_tags[39:32]))
+                    || (active_valid[5] && (rx_data[175:168] == active_tags[47:40]))
+                    || (active_valid[6] && (rx_data[175:168] == active_tags[55:48]))
+                    || (active_valid[7] && (rx_data[175:168] == active_tags[63:56]));
             }
         }
     }

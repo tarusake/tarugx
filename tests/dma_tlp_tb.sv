@@ -9,7 +9,7 @@ module dma_tlp_tb;
  logic rx_sop=0,rx_eop=0;logic [7:0] rx_valid=0,rx_error=0;logic [255:0] rx_data=0;
  logic clear=0;
  logic [15:0] expected_requester=16'h0100;logic [7:0] expected_tag=8'h5a;
- logic [3:0] active_valid=4'b0001;logic [31:0] active_tags=32'h0000005a;logic completion_ready=0;
+ logic [7:0] active_valid=8'b00000001;logic [63:0] active_tags=64'h000000000000005a;logic completion_ready=0;
  logic rx_wait,completion_valid,completion_has_data,completion_error;logic [2:0] completion_status;
  logic [3:0] completion_length_dw;logic [11:0] completion_byte_count;logic [6:0] completion_lower_address;logic [7:0] completion_tag;
  logic [255:0] completion_data;

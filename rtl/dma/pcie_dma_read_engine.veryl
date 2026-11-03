@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Four-outstanding PCIe host-memory to VRAM DMA read engine.
+/// Eight-outstanding PCIe host-memory to VRAM DMA read engine.
 ///
 /// Requests are split at 4 KiB boundaries and may contain up to 32 DWORDs.
-/// Four tags may be active concurrently; Completion chunks
+/// Eight tags may be active concurrently; Completion chunks
 /// are associated with their request slot and written through the 256-bit VRAM
 /// path. Completion packets may arrive in either tag order.
 module pcie_dma_read_engine #(
@@ -24,8 +24,8 @@ module pcie_dma_read_engine #(
     mrd_host_address: output logic<64> ,
     mrd_length_dw   : output logic<6>  ,
     mrd_tag         : output logic<8>  ,
-    active_valid    : output logic<4>  ,
-    active_tags     : output logic<32> ,
+    active_valid    : output logic<8>  ,
+    active_tags     : output logic<64> ,
     cpl_valid       : input  logic     ,
     cpl_ready       : output logic     ,
     cpl_has_data    : input  logic     ,
@@ -61,15 +61,15 @@ module pcie_dma_read_engine #(
     var request_vram      : logic<32> ;
     var request_length    : logic<6>  ;
     var request_tag       : logic<8>  ;
-    var request_slot      : logic<2>  ;
-    var slot_valid        : logic<4>  ;
-    var slot_tag          : logic<8>  [4];
-    var slot_host         : logic<64> [4];
-    var slot_vram         : logic<32> [4];
-    var slot_length       : logic<6>  [4];
-    var slot_done         : logic<6>  [4];
+    var request_slot      : logic<3>  ;
+    var slot_valid        : logic<8>  ;
+    var slot_tag          : logic<8>  [8];
+    var slot_host         : logic<64> [8];
+    var slot_vram         : logic<32> [8];
+    var slot_length       : logic<6>  [8];
+    var slot_done         : logic<6>  [8];
     var chunk_pending     : logic     ;
-    var chunk_slot        : logic<2>  ;
+    var chunk_slot        : logic<3>  ;
     var chunk_words       : logic<256>;
     var chunk_left        : logic<4>  ;
     var chunk_total       : logic<4>  ;
@@ -79,7 +79,7 @@ module pcie_dma_read_engine #(
     var timeout_counter   : logic<32> ;
     var completion_pending: logic     ;
     var completion_matched: logic     ;
-    var completion_slot   : logic<2>  ;
+    var completion_slot   : logic<3>  ;
     var completion_has_data: logic    ;
     var completion_error  : logic     ;
     var completion_length : logic<4>  ;
@@ -99,27 +99,43 @@ module pcie_dma_read_engine #(
         && (length_bytes != 0) && (length_bytes[1:0] == 0)
         && (command_end <= 33'h00400000)
         && ((issue_host + (length_bytes as 64)) >= issue_host);
-    let issue_slot: logic<2> = if !slot_valid[0] ? 0
+    let issue_slot: logic<3> = if !slot_valid[0] ? 0
         : if !slot_valid[1] ? 1
         : if !slot_valid[2] ? 2
-        : 3;
+        : if !slot_valid[3] ? 3
+        : if !slot_valid[4] ? 4
+        : if !slot_valid[5] ? 5
+        : if !slot_valid[6] ? 6
+        : 7;
     let slot_available: logic = !(&slot_valid);
     let tag_available: logic = !(slot_valid[0] && (slot_tag[0] == next_tag))
         && !(slot_valid[1] && (slot_tag[1] == next_tag))
         && !(slot_valid[2] && (slot_tag[2] == next_tag))
-        && !(slot_valid[3] && (slot_tag[3] == next_tag));
+        && !(slot_valid[3] && (slot_tag[3] == next_tag))
+        && !(slot_valid[4] && (slot_tag[4] == next_tag))
+        && !(slot_valid[5] && (slot_tag[5] == next_tag))
+        && !(slot_valid[6] && (slot_tag[6] == next_tag))
+        && !(slot_valid[7] && (slot_tag[7] == next_tag));
     let issue_possible: logic = (state == State::Run) && !request_pending
         && (issue_remaining_dw != 0) && slot_available && tag_available;
-    let cpl_match: logic<4> = {
+    let cpl_match: logic<8> = {
+        slot_valid[7] && (slot_tag[7] == cpl_tag),
+        slot_valid[6] && (slot_tag[6] == cpl_tag),
+        slot_valid[5] && (slot_tag[5] == cpl_tag),
+        slot_valid[4] && (slot_tag[4] == cpl_tag),
         slot_valid[3] && (slot_tag[3] == cpl_tag),
         slot_valid[2] && (slot_tag[2] == cpl_tag),
         slot_valid[1] && (slot_tag[1] == cpl_tag),
         slot_valid[0] && (slot_tag[0] == cpl_tag),
     };
-    let cpl_slot: logic<2> = if cpl_match[0] ? 0
+    let cpl_slot: logic<3> = if cpl_match[0] ? 0
         : if cpl_match[1] ? 1
         : if cpl_match[2] ? 2
-        : 3;
+        : if cpl_match[3] ? 3
+        : if cpl_match[4] ? 4
+        : if cpl_match[5] ? 5
+        : if cpl_match[6] ? 6
+        : 7;
     let expected_address: logic<64> = slot_host[completion_slot]
         + ((slot_done[completion_slot] as 64) << 2);
     let cpl_expected_lower: logic<7> = expected_address[6:0];
@@ -143,6 +159,10 @@ module pcie_dma_read_engine #(
     assign active_tags[15:8] = slot_tag[1];
     assign active_tags[23:16] = slot_tag[2];
     assign active_tags[31:24] = slot_tag[3];
+    assign active_tags[39:32] = slot_tag[4];
+    assign active_tags[47:40] = slot_tag[5];
+    assign active_tags[55:48] = slot_tag[6];
+    assign active_tags[63:56] = slot_tag[7];
     assign cmd_ready        = state == State::Idle;
     assign busy             = state != State::Idle;
     assign mrd_valid        = request_pending;
