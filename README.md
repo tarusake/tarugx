@@ -114,18 +114,20 @@ python3 tools/benchmark_drm_upload.py
 ```
 
 モニター上で速度差を見る場合は、次の視覚デモを実行します。赤い`BAR`、青い`DMA`、
-緑のFPGA `FILL`画面で同じ移動バーを120フレームずつ描き、FPS、フレーム時間、
-プロセスCPU使用率を表示します。実行中だけ表示サービスを停止し、`dma_upload`の
-元の値と表示を終了時に自動復元します。
+緑のFPGA `FILL`、紫のFPGA `BLIT`画面で移動バーを120フレームずつ描き、FPS、
+フレーム時間、プロセスCPU使用率を表示します。実行中だけ表示サービスを停止し、
+`dma_upload`の元の値と表示を終了時に自動復元します。blitの最終フレームはBAR2から
+読み戻し、背景とコピー矩形の両端を検査します。
 
 ```sh
 python3 tools/run_performance_demo.py
 ```
 
-2要求DMA版の2026-11-03実測では、BAR2が14.99fps・66.70ms/frame・CPU 80.9%、
-DMAが19.99fps・50.03ms/frame・CPU 31.3%、FPGA fillが147.25fps・
-6.79ms/frame・CPU 13.5%でした。fillは全画面消去と80×160矩形描画の2命令を
-1フレームとして測定しています。
+2要求DMA版の2026-11-03実測では、BAR2が14.99fps・66.70ms/frame・CPU 81.0%、
+DMAが19.99fps・50.03ms/frame・CPU 34.5%、FPGA fillが147.56fps・
+6.78ms/frame・CPU 14.1%、FPGA blitが715.18fps・1.40ms/frame・CPU 15.0%
+でした。fillは全画面消去と80×160矩形描画、blitは80×160矩形の消去とVRAM内コピー
+の2命令を1フレームとして測定しており、処理面積が異なるためFPSの単純比較はできません。
 
 DMA対応FPGAイメージでは、rootでPCIデバイスの`dma_test`属性へ4の倍数のバイト数を
 書き込むと、カーネルが割り当てたcoherentバッファをVRAMの画面外領域へ転送し、BAR2

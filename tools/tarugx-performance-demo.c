@@ -25,7 +25,17 @@ enum {
     REG_FILL_COLOR = 0x6c,
     REG_FILL_COMMAND = 0x70,
     REG_FILL_STATUS = 0x74,
+    REG_BLIT_SRC = 0x80,
+    REG_BLIT_DST = 0x84,
+    REG_BLIT_SRC_STRIDE = 0x88,
+    REG_BLIT_DST_STRIDE = 0x8c,
+    REG_BLIT_SIZE = 0x90,
+    REG_BLIT_COMMAND = 0x94,
+    REG_BLIT_STATUS = 0x98,
     FRAME_BYTES = W * H * 4,
+    SPRITE_ADDRESS = 0x3f0000,
+    SPRITE_W = 80,
+    SPRITE_H = 160,
 };
 
 struct buffer {
@@ -187,8 +197,8 @@ static void write_reg(volatile uint32_t *regs, unsigned offset, uint32_t value)
     (void)regs[offset / 4];
 }
 
-static int fill(volatile uint32_t *regs, uint32_t address, unsigned width,
-                unsigned height, uint32_t color)
+static int fill(volatile uint32_t *regs, uint32_t address, unsigned stride,
+                unsigned width, unsigned height, uint32_t color)
 {
     double deadline = now() + 2.0;
     const struct timespec pause = { .tv_nsec = 50000 };
@@ -202,7 +212,7 @@ static int fill(volatile uint32_t *regs, uint32_t address, unsigned width,
     if (status & 1)
         return -1;
     write_reg(regs, REG_FILL_ADDR, address);
-    write_reg(regs, REG_FILL_STRIDE, W * 4);
+    write_reg(regs, REG_FILL_STRIDE, stride);
     write_reg(regs, REG_FILL_SIZE, height << 16 | width);
     write_reg(regs, REG_FILL_COLOR, color);
     write_reg(regs, REG_FILL_COMMAND, 1);
@@ -222,8 +232,9 @@ static int run_fill_phase(volatile uint32_t *regs)
     for (unsigned frame = 0; frame < FRAMES; frame++) {
         unsigned x = frame * 11 % (W - 80);
         uint32_t shade = 0x00001820 + ((frame & 15) << 8);
-        if (fill(regs, base, W, H, shade) ||
-            fill(regs, base + (160 * W + x) * 4, 80, 160, 0x00ffffff)) {
+        if (fill(regs, base, W * 4, W, H, shade) ||
+            fill(regs, base + (160 * W + x) * 4, W * 4,
+                 SPRITE_W, SPRITE_H, 0x00ffffff)) {
             fprintf(stderr, "FPGA fill failed on frame %u\n", frame);
             return -1;
         }
@@ -232,6 +243,92 @@ static int run_fill_phase(volatile uint32_t *regs)
     double cpu = cpu_now() - cpu_start;
     printf("FILL: %d frames, %.3f s, %.2f fps, %.2f ms/frame, "
            "process CPU %.1f%%\n", FRAMES, elapsed, FRAMES / elapsed,
+           elapsed * 1000 / FRAMES, elapsed ? cpu * 100 / elapsed : 0);
+    fflush(stdout);
+    sleep(1);
+    return 0;
+}
+
+static int blit(volatile uint32_t *regs, uint32_t source,
+                uint32_t destination, unsigned width, unsigned height)
+{
+    double deadline = now() + 2.0;
+    const struct timespec pause = { .tv_nsec = 50000 };
+    uint32_t status;
+
+    do {
+        status = regs[REG_BLIT_STATUS / 4];
+        if (status & 1)
+            nanosleep(&pause, NULL);
+    } while ((status & 1) && now() < deadline);
+    if (status & 1)
+        return -1;
+    write_reg(regs, REG_BLIT_SRC, source);
+    write_reg(regs, REG_BLIT_DST, destination);
+    write_reg(regs, REG_BLIT_SRC_STRIDE, SPRITE_W * 4);
+    write_reg(regs, REG_BLIT_DST_STRIDE, W * 4);
+    write_reg(regs, REG_BLIT_SIZE, height << 16 | width);
+    write_reg(regs, REG_BLIT_COMMAND, 1);
+    do {
+        status = regs[REG_BLIT_STATUS / 4];
+        if (!(status & 2))
+            nanosleep(&pause, NULL);
+    } while (!(status & 2) && now() < deadline);
+    return (status & 6) == 2 ? 0 : -1;
+}
+
+static int run_blit_phase(volatile uint32_t *regs)
+{
+    const uint32_t background = 0x00301050;
+    uint32_t base = (regs[REG_ACTIVE_BUFFER / 4] & 1) * FRAME_BYTES;
+    unsigned previous = 0;
+
+    if (fill(regs, base, W * 4, W, H, background) ||
+        fill(regs, SPRITE_ADDRESS, SPRITE_W * 4, SPRITE_W, SPRITE_H,
+             0x0000d8ff)) {
+        fputs("FPGA blit setup failed\n", stderr);
+        return -1;
+    }
+    double wall_start = now(), cpu_start = cpu_now();
+    for (unsigned frame = 0; frame < FRAMES; frame++) {
+        unsigned x = (frame * 8) % (W - SPRITE_W);
+        if (fill(regs, base + (160 * W + previous) * 4, W * 4,
+                 SPRITE_W, SPRITE_H, background) ||
+            blit(regs, SPRITE_ADDRESS, base + (160 * W + x) * 4,
+                 SPRITE_W, SPRITE_H)) {
+            fprintf(stderr, "FPGA blit failed on frame %u\n", frame);
+            return -1;
+        }
+        previous = x;
+    }
+    int memfd = open("/sys/bus/pci/devices/0000:01:00.0/resource2",
+                     O_RDONLY | O_SYNC | O_CLOEXEC);
+    if (memfd < 0) {
+        perror("BAR2 verify open");
+        return -1;
+    }
+    volatile uint32_t *vram = mmap(NULL, 4 * 1024 * 1024, PROT_READ,
+                                   MAP_SHARED, memfd, 0);
+    if (vram == MAP_FAILED) {
+        perror("BAR2 verify mmap");
+        close(memfd);
+        return -1;
+    }
+    unsigned last = ((FRAMES - 1) * 8) % (W - SPRITE_W);
+    int verified = vram[base / 4] == background &&
+        vram[(base + (160 * W + last) * 4) / 4] == 0x0000d8ff &&
+        vram[(base + ((160 + SPRITE_H - 1) * W +
+                      last + SPRITE_W - 1) * 4) / 4] == 0x0000d8ff;
+    munmap((void *)vram, 4 * 1024 * 1024);
+    close(memfd);
+    if (!verified) {
+        fputs("FPGA blit readback verification failed\n", stderr);
+        return -1;
+    }
+    double elapsed = now() - wall_start;
+    double cpu = cpu_now() - cpu_start;
+    printf("BLIT: %d frames + readback PASS, %.3f s, %.2f fps, "
+           "%.2f ms/frame, process CPU %.1f%%\n", FRAMES, elapsed, FRAMES / elapsed,
            elapsed * 1000 / FRAMES, elapsed ? cpu * 100 / elapsed : 0);
     fflush(stdout);
     sleep(1);
@@ -301,10 +398,10 @@ int main(int argc, char **argv)
         goto out;
     }
     enabled = 1;
-    puts("Watch the monitor: red BAR, blue DMA, then green FPGA FILL.");
+    puts("Watch the monitor: red BAR, blue DMA, green FILL, purple BLIT.");
     if (set_dma(parameter, 0) || run_phase(fd, &b, 0) ||
         set_dma(parameter, 1) || run_phase(fd, &b, 1) ||
-        run_fill_phase(regs))
+        run_fill_phase(regs) || run_blit_phase(regs))
         goto out;
     rc = EXIT_SUCCESS;
 
