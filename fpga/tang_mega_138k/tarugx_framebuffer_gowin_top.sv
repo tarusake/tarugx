@@ -220,12 +220,16 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .clkin(sys_clk_p), .clkout0(pixel_clk), .clkout1(serial_clk), .lock(video_lock)
     );
     wire [25:0] video_settings;
+`ifdef TARUGX_VIDEO_LINK_TEST
+    assign video_settings = 26'b0;
+`else
     tarugx_display_config_cdc u_display_cdc (
         .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
         .dst_clk(pixel_clk), .dst_rst_n(pixel_reset[1]),
         .src_config({display_ctrl[1:0], display_color[23:0]}),
         .dst_config(video_settings)
     );
+`endif
     wire video_de, video_hsync, video_vsync;
     wire [23:0] video_rgb;
     wire scan_video_de, scan_video_hsync, scan_video_vsync;
@@ -459,11 +463,15 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
         .src_config(mem_active_fb_base), .dst_config(active_fb_base)
     );
+`ifdef TARUGX_VIDEO_LINK_TEST
+    assign vblank_toggle = 1'b0;
+`else
     tarugx_display_config_cdc #(.WIDTH(1)) u_vblank_toggle_cdc (
         .src_clk(pixel_clk), .src_rst_n(pixel_reset[1]),
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
         .src_config(pixel_vblank_toggle), .dst_config(vblank_toggle)
     );
+`endif
 `ifndef TARUGX_PCIE_NO_MSI
     tarugx_vblank_msi u_vblank_msi (
         .clk(tlp_clk), .rst_n(cpu_reset[1]), .enable(msi_enable),

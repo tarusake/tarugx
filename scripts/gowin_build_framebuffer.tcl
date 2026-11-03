@@ -32,6 +32,7 @@ set raw_bar_probe 0
 set auto_rom 0
 set pipelined_memory 0
 set video_1080p 0
+set video_1080p_vendor 0
 set video_720p 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
@@ -69,6 +70,10 @@ if {[info exists ::env(TARUGX_PCIE_PIPELINED_MEMORY)] && $::env(TARUGX_PCIE_PIPE
 }
 if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60"} {
     set video_1080p 1
+}
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60_vendor"} {
+    set video_1080p 1
+    set video_1080p_vendor 1
 }
 if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "720p60"} {
     set video_720p 1
@@ -135,6 +140,7 @@ puts [exec python3 [file join $repo scripts check_gowin_csr.py] [file join $pcie
 
 if {$pipelined_memory} { set output_dir [file join $repo build gowin_framebuffer_pipeline] }
 if {$video_1080p} { set output_dir [file join $repo build gowin_framebuffer_1080p] }
+if {$video_1080p_vendor} { set output_dir [file join $repo build gowin_framebuffer_1080p_vendor] }
 if {$video_720p} { set output_dir [file join $repo build gowin_framebuffer_720p] }
 
 create_project -name tarugx -dir $output_dir \
