@@ -15,7 +15,7 @@ Linuxから外部DDR3のFramebufferへ描画し、HDMIへ出力します。
 | RTL | Veryl、ベンダーIP接続部はVerilog/SystemVerilog |
 | FPGAツール | Gowin EDA |
 | ホスト | Linux、独自DRM/KMSドライバー `tarugx` |
-| 映像 | 640×480、約60Hz、XRGB8888 |
+| 映像 | Flash版640×480、SRAM実験版1920×1080・約60Hz・RGB565 |
 | メモリ | 外部DDR3、BAR2に4MiBのアクセス窓 |
 | UEFI | X64 GOP、PCIe Option ROM |
 
@@ -29,7 +29,7 @@ PCIeはGen2 x1を設計目標としています。現在の検証構成にはx4�
 - Linux DRM/KMS、CPU描画のFramebuffer転送、Xfceデスクトップ表示
 - ダブルバッファとVBlank同期ページフリップ、MSIによる完了待ち
 - FPGA側の矩形fill／VRAM内blit、コマンドキューとfence
-- ホストRAMからVRAMへのPCIe Memory Read DMA（診断用の初期実装）
+- ホストRAMからVRAMへのPCIe Memory Read DMA
 - PCIe Option ROMからのGOP自動読込みとUEFI描画
 - 検証したAMIホスト向けのPOST文字表示互換処理
 - 起動時のロゴ表示と1秒の保持
@@ -106,7 +106,7 @@ DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe 
 転送するため、不要な全画面DMAは行いません。
 
 2D fill/blitは`drivers/tarugx/tarugx_drm.h`のprivate DRM ioctlから利用できます。
-ioctlはDRM masterだけに許可し、任意のVRAMアドレスではなく640×480画面内の座標だけを
+ioctlはDRM masterだけに許可し、任意のVRAMアドレスではなく現在の画面内の座標だけを
 受け付けます。ドライバーは表示中ページのアドレスへ変換してコマンドキューへ投入し、
 CPUをポーリングさせずfence完了のMSIを待ちます。現在は安全性を優先した同期APIで、
 各呼出しは完了または100msのtimeoutまで待ちます。成功・失敗数はPCIデバイスの
@@ -133,7 +133,7 @@ surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲�
 領域を再割当しません。実機でGEMへのfill→blit、早期close、MSI fence、BAR2読戻し、
 完了後の再利用まで確認しています。
 
-GPU version 1.1以降では、640×480・XRGB8888・pitch 2560のVRAM GEMを標準DRM
+GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
 atomic checkはVRAM GEMの実寸、pitch、offsetとFPGA機能版を検査し、旧FPGAでは
 `EOPNOTSUPP`として従来のDMA/BAR転送だけを使用します。成功回数はPCIデバイスの
@@ -144,7 +144,7 @@ GPU version 1.1以降は、BAR0の`ACTIVE_FB_BASE`（offset `0x34`）から、sc
 `ACTIVE_BUFFER`（offset `0x28`）は固定2ページとの互換用に残します。Linuxドライバーは
 version 1.1以降では完全なアドレスでページフリップ完了を確認し、version 1.0では従来の
 0/1ページ判定へ自動的に戻ります。これは任意のVRAM GEMを直接scanoutするための
-レジスタ境界で、RTLシミュレーション済み、実機SRAM更新は未実施です。
+レジスタ境界です。RTLシミュレーションと実機SRAM表示を確認済みです。
 
 実機カーネル向けのコンパイルだけを行う場合と、テストモジュールを一時ロードして
 master制限、境界検査、fill/blit、fence/MSI、VRAM読戻しを検証する場合は次を実行します。
@@ -253,18 +253,13 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
-  fillエンジンで8,294,400 byteのXRGB8888色帯をDDRへ生成し、stride 7680で
-  2回取得したHDMI画像が完全一致し、UART診断もDDR校正済み、PCIe link up、
-  underflowなし、faultなしでした。scanout専用Gray pointer FIFOと故障判定経路の
-  分割を反映した最終構成のタイミング余裕はSetup +0.016ns、Hold +0.138nsです。
-  この構成はGPU version 1.2として公開します。作業ツリーのDRMドライバーは
-  version 1.2を検出すると1920×1080を優先モードとして公開し、8,294,400 byteの
-  XRGB8888 dumb bufferをPCIe DMAで内部16MiB DDRへ転送します。専用実機試験で
-  `dma_uploads=1`、DMA失敗0、flip timeout 0、6色帯のHDMI画像を確認しました。
-  当初はCPU shadowからcoherent stagingへのコピーを含めて30.355ms（約273MB/s）
-  でしたが、version 1.2ではdumb buffer自体をcoherent GEMにしてFPGAへ直接渡し、
-  16.041ms（約517MB/s、約62fps相当）へ47%短縮しました。FPGA DMA busyは
-  1,538,936 cycle（100MHzで15.389ms）で、ホスト側の余分な全面コピーはありません。
+  現在のGPU version 1.3はDDR scanoutをRGB565（pitch 3840、4,147,200 byte）にし、
+  32bit版に対して表示読出し帯域を半減しています。合成結果はSetup +0.093ns、
+  Hold +0.136ns、Recovery +1.870ns、Removal +0.258nsでした。DRMはRGB565を直接
+  DMAできるほか、標準Xorgが作るXRGB8888 coherent GEMをCPUでRGB565 stagingへ
+  変換してからDMAします。これによりXfceを1920×1080で表示でき、RGB565直接更新は
+  `active_full=46.743ms`、XRGB8888変換経路は`active_full=47.616ms`でした。
+  いずれもDMA、flip、VBlank timeoutは0です。
   4MiB BAR2の範囲外へCPUフォールバックしないよう、1080pではDMAを必須とします。
   配布済み0.1.0ドライバーへ戻すとGPU 1.2の1080p SRAM版を扱えず黒画面になるため、
   1080p実験中は作業ツリーの0.5.0ドライバーを使用してください。
@@ -290,14 +285,12 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   1080p SRAM実験後も作業ツリードライバーで表示を続ける場合は
   `python3 tools/test_drm_mode.py --keep-driver`を使います。既定では従来どおり試験前の
   モジュールへ戻します。
-  1080p用VRAM GEM管理は今後の課題です。非表示ページ同期に
-  full-frame blitを使う案も実機測定しましたが、コピー内容は正常な一方で
-  201.528msかかり、直接DMAの16.041msより約12.6倍遅いため採用していません。
-  1080pでは2ページが16MiB DDRの大半を占め、CPU-mappableなBAR2内に安全な
-  VRAM GEM領域がないため、render ioctl統合試験はVRAM GEM部分だけを理由付きで
-  skipします。host coherent GEMからのDMA scanoutと、画面上のfill/blit、非同期
-  4-command batch、fence/MSI、120 batch（480 command）のstressは引き続き実行し、
-  実機でrender failure 0、DMA failure 0、flip timeout 0、CPU 0.7%を確認しました。
+  2ページの後ろに残るDDR領域は`drm_mm`でVRAM GEMとして管理します。1080pの
+  VRAM GEMは4MiB BAR外なのでCPU mmapを`EOPNOTSUPP`にし、FPGAのfill/blitだけで
+  内容を生成します。2026-11-04の統合試験では、1920×1080・RGB565 GEMを4本の
+  fill commandで生成し、fence/MSI完了後に標準DRM framebufferとしてコピーなしで
+  直接scanoutしました。2Dコマンド494件、render failure 0、DMA failure 0、
+  flip timeout 0、`direct_scanouts=1`を確認し、120 batchのCPU使用率は0.7%でした。
 - PCIe DMAは最大8要求を異なるtagで並列発行し、Completionの到着順に関係なく
   対応するVRAM位置へ書き込みます。各要求は4KiB境界を越えない最大64 DWORDです。
   Completion TLPの先頭5 DWORDと後続8 DWORDチャンクは、EOPまで512-bitバッファで
