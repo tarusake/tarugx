@@ -16,7 +16,8 @@ def encoded(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def remote_program(files: dict[str, str], expected: str, hold: int) -> str:
+def remote_program(files: dict[str, str], expected: str, hold: int,
+                   keep_driver: bool) -> str:
     return f"""
 import base64
 import json
@@ -30,6 +31,7 @@ import time
 files = {files!r}
 expected = {expected!r}
 hold = {hold!r}
+keep_driver = {keep_driver!r}
 services = ['tarugx-main-display', 'tarugx-xorg', 'tarugx-desktop']
 was_active = {{name: subprocess.run(
     ['systemctl', 'is-active', name], capture_output=True, text=True
@@ -56,7 +58,13 @@ try:
     ], check=True, timeout=45)
     subprocess.run(['systemctl', 'stop', *services], check=True, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
-    subprocess.run(['insmod', str(work/'tarugx.ko')], check=True, timeout=30)
+    module = work/'tarugx.ko'
+    if keep_driver:
+        persistent = Path('/run/tarugx-worktree')
+        persistent.mkdir(mode=0o755, exist_ok=True)
+        module = persistent/'tarugx.ko'
+        shutil.copy2(work/'tarugx.ko', module)
+    subprocess.run(['insmod', str(module)], check=True, timeout=30)
     loaded_test_module = True
     stage = 'locate DRM device'
     device = Path('/sys/bus/pci/devices/0000:01:00.0')
@@ -106,9 +114,9 @@ except Exception as error:
     ).stdout[-3000:]
     print('TARUGX_DRM_MODE_FAILED '+json.dumps(diagnostics))
 finally:
-    if loaded_test_module:
+    if loaded_test_module and not keep_driver:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
-    if not Path('/sys/module/tarugx').exists():
+    if not keep_driver and not Path('/sys/module/tarugx').exists():
         subprocess.run(['insmod', str(old_copy)], check=True, timeout=30)
     for name in services:
         if was_active[name]:
@@ -121,6 +129,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected", default="1920x1080")
     parser.add_argument("--hold", type=int, default=10)
+    parser.add_argument(
+        "--keep-driver", action="store_true",
+        help="leave the worktree module loaded after the test",
+    )
     args = parser.parse_args()
     driver = ROOT / "drivers" / "tarugx"
     files = {
@@ -132,7 +144,7 @@ def main() -> None:
         ),
     }
     output = Backend().remote(
-        remote_program(files, args.expected, args.hold),
+        remote_program(files, args.expected, args.hold, args.keep_driver),
         "test DRM preferred mode", timeout=args.hold + 240
     )
     print(output, end="")
