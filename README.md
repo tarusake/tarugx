@@ -170,15 +170,19 @@ syncobjなしの非0 pointも拒否し、全508 command、render failure 0でし
 ドライバー0.11ではこの待ちを標準DRM schedulerへ移し、ioctlを待たせず依存解決とFPGA投入を
 専用workerで行います。schedulerのfinished fenceをGEM reservationと出力syncobjへ公開し、
 4 entityでCPUからの投入を受けつつ、hardware credit 1でFPGAアクセスを安全に直列実行します。
-1920×1080全面blitのproducer 15本と、最後のpoint 34へ依存するbatchを同時に
-queueした実機回帰では、16本目のioctlが0.009msで復帰し、software queue peak 16、
-point 35まで順序どおり完了しました。全519 command、render failure 0です。
-4 entityの各queueに複数jobを積めるため、16 jobまでの即時投入を実機確認済みです。
+1920×1080全面blitのproducer 63本と、最後のpoint 82へ依存するbatchを同時に
+queueした実機回帰では、64本目のioctlが0.008～0.009msで復帰し、
+software queue peak 64、point 83まで順序どおり完了しました。各2回とも全567 command、
+render failure 0です。4 entityの各queueに複数jobを積めるため、64 jobまでの
+即時投入を実機確認済みです。
 FPGA側の実行は引き続き1 batchずつです。
 ドライバー0.12ではscheduler backendがFPGAコマンド投入後に専用の親fenceを返し、
 render MSIでこれをsignalする構成にしました。これによりworkerは全面blitの完了まで
 占有されません。4 batch依存テスト2回とremove→reprobe、通常表示回帰を実機で通し、
 render failure 0、DMA 12回、page flip 8回、全timeout 0を確認しました。
+ドライバー0.13では未完了software jobを64本へ上限化し、無制限なメモリ消費を防ぎます。
+実機で64本を受付けた直後の65本目が`EBUSY`で拒否され、完了後の通常表示も
+DMA 6回、page flip 4回、全timeout 0で通ることを確認しました。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -302,7 +306,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
   直接scanout、binary／timeline syncobj入出力、標準DRM schedulerによる非同期入力fence待ち、
-  16 jobの同時software queueを実機確認済みで、schedulerは4 entity／hardware credit 1です。
+  64 jobの同時software queueを実機確認済みで、schedulerは4 entity／hardware credit 1です。
+  未完了jobの上限も64とし、満杯時は`EBUSY`を返します。
   backendはFPGA完了のMSI fenceを返すため、workerを実行完了まで占有しません。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで

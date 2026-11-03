@@ -43,6 +43,7 @@ MODULE_PARM_DESC(dma_upload,
 		 "use full-frame DMA uploads when supported by the FPGA (default: true)");
 
 #define TGX_RENDER_ENTITIES 4
+#define TGX_RENDER_JOB_LIMIT 64
 
 struct tarugx {
 	struct drm_device drm;
@@ -1203,10 +1204,15 @@ static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
 		ret = -EBUSY;
 	} else {
 		i = atomic_inc_return(&tgx->render_sched_jobs);
-		if (i > atomic64_read(&tgx->render_sched_peak))
-			atomic64_set(&tgx->render_sched_peak, i);
-		gate_held = true;
-		ret = 0;
+		if (i > TGX_RENDER_JOB_LIMIT) {
+			atomic_dec(&tgx->render_sched_jobs);
+			ret = -EBUSY;
+		} else {
+			if (i > atomic64_read(&tgx->render_sched_peak))
+				atomic64_set(&tgx->render_sched_peak, i);
+			gate_held = true;
+			ret = 0;
+		}
 	}
 out_unlock_gate:
 	mutex_unlock(&tgx->render_submit_lock);
@@ -2292,7 +2298,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 12,
+	.major = 0, .minor = 13,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)

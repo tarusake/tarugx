@@ -18,7 +18,7 @@
 #include "tarugx_drm.h"
 
 #define STRESS_BATCHES 120
-#define DEPENDENCY_PRODUCERS 15
+#define DEPENDENCY_PRODUCERS 63
 
 _Static_assert(sizeof(struct drm_tarugx_submit_gem) == 224,
                "submit GEM ABI size changed");
@@ -152,6 +152,7 @@ int main(int argc, char **argv)
         },
     };
     struct drm_tarugx_submit_gem2 invalid_dependency;
+    struct drm_tarugx_submit_gem2 overflow_batch;
     volatile uint32_t *vram_map;
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
@@ -496,6 +497,15 @@ vram_gem_done:
         close_handle(render, render_vram.handle);
         goto out_render;
     }
+    overflow_batch = dependent_batch;
+    overflow_batch.in_point = dependent_batch.out_point;
+    overflow_batch.out_point = dependent_batch.out_point + 1;
+    if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                     &overflow_batch, EBUSY)) {
+        close_handle(render, dependency_vram.handle);
+        close_handle(render, render_vram.handle);
+        goto out_render;
+    }
     timeline_point = 20 + DEPENDENCY_PRODUCERS;
     if (drmSyncobjTimelineWait(render, &timeline_syncobj, &timeline_point, 1,
                                INT64_MAX, 0, NULL)) {
@@ -545,7 +555,7 @@ vram_gem_done:
          "screen fill denied");
     printf("DRM scheduler dependency PASS: GEM2 returned in %.3f ms with "
            "point %u queued; %u producer/dependent batches signaled through "
-           "point %u\n", dependency_submit_ms,
+           "point %u; overflow batch rejected with EBUSY\n", dependency_submit_ms,
            20 + DEPENDENCY_PRODUCERS - 1, DEPENDENCY_PRODUCERS + 1,
            20 + DEPENDENCY_PRODUCERS);
     if (ioctl(fd, DRM_IOCTL_TARUGX_FILL, &fill)) {
