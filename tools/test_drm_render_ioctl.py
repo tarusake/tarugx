@@ -132,6 +132,26 @@ try:
             'elapsed_ms': dma_test_elapsed_ms,
             'profile': (attrs/'dma_profile').read_text().strip(),
         }})
+    dma_samples_scanout_off = []
+    stage = 'DMA samples without scanout'
+    with (device/'resource0').open('r+b', buffering=0) as regs_file, \
+         mmap.mmap(regs_file.fileno(), 65536, flags=mmap.MAP_SHARED,
+                   prot=mmap.PROT_READ | mmap.PROT_WRITE) as regs:
+        display_ctrl = struct.unpack_from('<I', regs, 0x10)[0]
+        try:
+            struct.pack_into('<I', regs, 0x10, 0)
+            time.sleep(0.1)
+            for _ in range(5):
+                dma_test_started = time.monotonic_ns()
+                (attrs/'dma_test').write_text(str(640 * 480 * 4))
+                dma_test_elapsed_ms = \
+                    (time.monotonic_ns() - dma_test_started) / 1_000_000
+                dma_samples_scanout_off.append({{
+                    'elapsed_ms': dma_test_elapsed_ms,
+                    'profile': (attrs/'dma_profile').read_text().strip(),
+                }})
+        finally:
+            struct.pack_into('<I', regs, 0x10, display_ctrl)
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
@@ -148,6 +168,7 @@ try:
     print(direct_output, end='')
     print(json.dumps({{'readback': hex(source),
                       'dma_samples': dma_samples,
+                      'dma_samples_scanout_off': dma_samples_scanout_off,
                       'counters': counters}}))
 except Exception as error:
     diagnostics = {{}}
