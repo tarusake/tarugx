@@ -14,8 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def remote_program(source_b64: str) -> str:
     return f"""
 import base64
+import mmap
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 
@@ -25,6 +27,28 @@ assert device.exists(), 'TaruGX endpoint is absent'
 assert (device/'vendor').read_text().strip() == '0x22c2'
 assert (device/'device').read_text().strip() == '0x1100'
 assert (device/'driver').resolve().name == 'tarugx'
+with (device/'resource0').open('r+b', buffering=0) as reg_file:
+    regs = mmap.mmap(
+        reg_file.fileno(), 64 * 1024, flags=mmap.MAP_SHARED,
+        prot=mmap.PROT_READ | mmap.PROT_WRITE
+    )
+    gpu_id, gpu_version = struct.unpack_from('<II', regs, 0)
+    dma_status = struct.unpack_from('<I', regs, 0xd4)[0]
+    queue_status = struct.unpack_from('<I', regs, 0xa8)[0]
+    regs.close()
+assert gpu_id == 0x54475055, 'unexpected TaruGX register identity'
+dma_ready = bool(dma_status & (1 << 4)) and not bool(
+    dma_status & ((1 << 0) | (1 << 2) | (1 << 3))
+)
+queue_ready = bool(queue_status & (1 << 3))
+if not dma_ready or not queue_ready:
+    print(
+        'Performance demo skipped before stopping the display: '
+        f'FPGA image lacks required DMA/render support '
+        f'(version={{gpu_version >> 16}}.{{gpu_version & 0xffff}}, '
+        f'dma_status={{dma_status:#x}}, queue_status={{queue_status:#x}}).'
+    )
+    raise SystemExit(0)
 services = ['tarugx-main-display', 'tarugx-xorg', 'tarugx-desktop']
 was_active = {{name: subprocess.run(
     ['systemctl', 'is-active', name], capture_output=True, text=True
@@ -60,6 +84,19 @@ finally:
             ['systemctl', 'start', 'tarugx-main-display'],
             check=True, timeout=120
         )
+        # A standalone KMS test disables its CRTC while exiting.  If Xorg
+        # reconnects to the still-active DRM state without issuing a fresh
+        # modeset, the FPGA display enable can otherwise remain cleared.
+        with (device/'resource0').open('r+b', buffering=0) as reg_file:
+            regs = mmap.mmap(
+                reg_file.fileno(), 64 * 1024, flags=mmap.MAP_SHARED,
+                prot=mmap.PROT_READ | mmap.PROT_WRITE
+            )
+            if struct.unpack_from('<I', regs, 0x10)[0] == 0:
+                struct.pack_into('<I', regs, 0x10, 1)
+                assert struct.unpack_from('<I', regs, 0x10)[0] == 1
+                print('Restored FPGA display enable after the demo.')
+            regs.close()
 """
 
 
