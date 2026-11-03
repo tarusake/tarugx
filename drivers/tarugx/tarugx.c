@@ -9,6 +9,7 @@
 #include <linux/ktime.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
+#include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -26,6 +27,7 @@
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+#include <drm/drm_vma_manager.h>
 
 #include "tarugx_drm.h"
 
@@ -91,6 +93,12 @@ struct tarugx_vram_object {
 	u32 width;
 	u32 height;
 	u32 pitch;
+};
+
+struct tarugx_host_object {
+	struct drm_gem_object base;
+	void *vaddr;
+	dma_addr_t dma_addr;
 };
 
 #define TGX_BAR2_BYTES SZ_4M
@@ -1108,6 +1116,105 @@ static int tgx_check(struct drm_simple_display_pipe *pipe,
 	return 0;
 }
 
+static void tgx_host_object_free(struct drm_gem_object *gem)
+{
+	struct tarugx_host_object *object =
+		container_of(gem, struct tarugx_host_object, base);
+
+	if (object->vaddr)
+		dma_free_coherent(gem->dev->dev, gem->size, object->vaddr,
+				  object->dma_addr);
+	drm_gem_object_release(gem);
+	kfree(object);
+}
+
+static int tgx_host_object_vmap(struct drm_gem_object *gem,
+				struct iosys_map *map)
+{
+	struct tarugx_host_object *object =
+		container_of(gem, struct tarugx_host_object, base);
+
+	iosys_map_set_vaddr(map, object->vaddr);
+	return 0;
+}
+
+static void tgx_host_object_vunmap(struct drm_gem_object *gem,
+				   struct iosys_map *map)
+{
+	(void)gem;
+	iosys_map_clear(map);
+}
+
+static int tgx_host_object_mmap(struct drm_gem_object *gem,
+				struct vm_area_struct *vma)
+{
+	struct tarugx_host_object *object =
+		container_of(gem, struct tarugx_host_object, base);
+	int ret;
+
+	/* drm_gem_mmap() uses vm_pgoff as a fake GEM-object offset.  DMA mmap
+	 * expects an offset within this object, so translate it back first. */
+	vma->vm_pgoff -= drm_vma_node_start(&gem->vma_node);
+	vm_flags_mod(vma, VM_DONTDUMP | VM_DONTEXPAND, VM_PFNMAP);
+	ret = dma_mmap_coherent(gem->dev->dev, vma, object->vaddr,
+				object->dma_addr, vma->vm_end - vma->vm_start);
+	if (ret)
+		drm_gem_vm_close(vma);
+	return ret;
+}
+
+static const struct drm_gem_object_funcs tgx_host_object_funcs = {
+	.free = tgx_host_object_free,
+	.vmap = tgx_host_object_vmap,
+	.vunmap = tgx_host_object_vunmap,
+	.mmap = tgx_host_object_mmap,
+	.vm_ops = &tgx_vram_vm_ops,
+};
+
+static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
+			   struct drm_mode_create_dumb *args)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct tarugx_host_object *object;
+	u64 pitch, size;
+	int ret;
+
+	if (!tgx->dma_only_scanout)
+		return drm_gem_shmem_dumb_create(file, drm, args);
+	if (!args->width || args->width > tgx->width || !args->height ||
+	    args->height > tgx->height || args->bpp != 32)
+		return -EINVAL;
+	pitch = DIV_ROUND_UP((u64)args->width * args->bpp, 8);
+	if (check_mul_overflow(pitch, (u64)args->height, &size))
+		return -EOVERFLOW;
+	size = PAGE_ALIGN(size);
+	if (!pitch || pitch > U32_MAX || !size || size > tgx->frame_bytes)
+		return -EINVAL;
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return -ENOMEM;
+	object->base.funcs = &tgx_host_object_funcs;
+	ret = drm_gem_object_init(drm, &object->base, size);
+	if (ret) {
+		kfree(object);
+		return ret;
+	}
+	object->vaddr = dma_alloc_coherent(drm->dev, size,
+					   &object->dma_addr, GFP_KERNEL);
+	if (!object->vaddr) {
+		ret = -ENOMEM;
+		goto out_put;
+	}
+	ret = drm_gem_handle_create(file, &object->base, &args->handle);
+	if (ret)
+		goto out_put;
+	args->pitch = pitch;
+	args->size = size;
+out_put:
+	drm_gem_object_put(&object->base);
+	return ret;
+}
+
 static void tgx_update(struct drm_simple_display_pipe *pipe,
 		       struct drm_plane_state *old)
 {
@@ -1116,6 +1223,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_shadow_plane_state *shadow = to_drm_shadow_plane_state(state);
 	struct drm_framebuffer *fb = state->fb;
 	struct drm_gem_object *gem;
+	struct tarugx_host_object *host_object = NULL;
 	struct tarugx_vram_object *vram_object = NULL;
 	struct drm_rect damage, copy;
 	unsigned int x, y;
@@ -1132,6 +1240,8 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	gem = drm_gem_fb_get_obj(fb, 0);
 	if (gem && gem->funcs == &tgx_vram_object_funcs)
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
+	else if (gem && gem->funcs == &tgx_host_object_funcs)
+		host_object = container_of(gem, struct tarugx_host_object, base);
 	/* A new FB must replace the single physical scanout buffer in full. */
 	if (old->fb != fb || drm_atomic_crtc_needs_modeset(pipe->crtc.state) ||
 	    tgx->dma_only_scanout)
@@ -1201,13 +1311,17 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	copied = (u64)(copy.x2 - copy.x1) * (copy.y2 - copy.y1) * 4;
 	if (full_damage && (dma_upload || tgx->dma_only_scanout) &&
 	    tgx->dma_available) {
-		for (y = 0; y < tgx->height; y++)
-			iosys_map_memcpy_from(tgx->dma_staging + y * tgx->pitch,
-					      &shadow->data[0],
-					      y * fb->pitches[0], tgx->pitch);
+		if (!host_object)
+			for (y = 0; y < tgx->height; y++)
+				iosys_map_memcpy_from(
+					tgx->dma_staging + y * tgx->pitch,
+					&shadow->data[0], y * fb->pitches[0],
+					tgx->pitch);
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
-		ret = tgx_dma_transfer(tgx, tgx->dma_staging_addr, target,
+		ret = tgx_dma_transfer(tgx,
+				       host_object ? host_object->dma_addr :
+				       tgx->dma_staging_addr, target,
 				       tgx->frame_bytes,
 				       tgx->dma_only_scanout ?
 				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
@@ -1412,7 +1526,8 @@ static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &tgx_fops,
 	.postclose = tgx_postclose,
-	DRM_GEM_SHMEM_DRIVER_OPS,
+	.dumb_create = tgx_dumb_create,
+	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
 	.ioctls = tgx_ioctls,
 	.num_ioctls = ARRAY_SIZE(tgx_ioctls),
 	.gem_prime_import = tgx_prime_import,
@@ -1496,10 +1611,14 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = drmm_add_action_or_reset(drm, tgx_vram_mm_takedown, tgx);
 	if (ret)
 		return ret;
-	tgx->dma_staging = dmam_alloc_coherent(&pdev->dev, tgx->frame_bytes,
-					       &tgx->dma_staging_addr, GFP_KERNEL);
-	if (!tgx->dma_staging)
-		return -ENOMEM;
+	if (!tgx->dma_only_scanout) {
+		tgx->dma_staging = dmam_alloc_coherent(&pdev->dev,
+						       tgx->frame_bytes,
+						       &tgx->dma_staging_addr,
+						       GFP_KERNEL);
+		if (!tgx->dma_staging)
+			return -ENOMEM;
+	}
 	queue_status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 	tgx->render_available = queue_status & TGX_QUEUE_READY;
 	tgx->render_fence = readl(tgx->regs + TGX_REG_QUEUE_COMPLETED);
