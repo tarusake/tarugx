@@ -3,7 +3,9 @@
 ///
 /// The request interface accepts one 32-bit, naturally aligned transaction per
 /// cycle. `req_wstrb` is a byte write enable in little-endian lane order.
-module gpu_registers (
+module gpu_registers #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     req_valid      : input  logic     ,
@@ -56,7 +58,6 @@ module gpu_registers (
     dma_cmd_valid   : output logic    ,
 ) {
     const GPU_ID           : logic<32> = 32'h5447_5055;
-    const GPU_VERSION      : logic<32> = 32'h0001_0001;
     const GPU_STATUS       : logic<32> = 32'h0000_0001;
     var   fill_addr        : logic<32>;
     var   fill_stride      : logic<32>;

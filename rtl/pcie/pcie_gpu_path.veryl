@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// BAR0/BAR2 router. A pending BAR2 write stalls later BAR0 reads.
-module pcie_gpu_path (
+module pcie_gpu_path #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     completer_id   : input  logic<16> ,
@@ -176,7 +178,9 @@ module pcie_gpu_path (
     var dma_vram_address: logic<32>;
     var dma_length_bytes: logic<32>;
     var dma_cmd_valid   : logic    ;
-    inst bridge: bar0_tlp_bridge (
+    inst bridge: bar0_tlp_bridge #(
+        GPU_VERSION,
+    ) (
         clk                                                          ,
         rst                                                          ,
         completer_id                                                 ,

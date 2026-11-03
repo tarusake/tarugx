@@ -4,7 +4,9 @@
 /// This module supplies the ordering point between posted writes and reads: it
 /// accepts requests in order and will not accept another request while a read
 /// Completion is pending. Gowin lane packing is intentionally outside it.
-module bar0_tlp_bridge (
+module bar0_tlp_bridge #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     completer_id   : input  logic<16> ,
@@ -108,7 +110,9 @@ module bar0_tlp_bridge (
     let accept        : logic = request_pending && decoded_valid;
     let ur_accept     : logic = request_pending && unsupported && ur_required;
 
-    inst registers: gpu_registers (
+    inst registers: gpu_registers #(
+        GPU_VERSION,
+    ) (
         clk                           ,
         rst                           ,
         req_valid      : accept       ,

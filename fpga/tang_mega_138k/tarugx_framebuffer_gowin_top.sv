@@ -190,7 +190,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     assign core_tx_wait=tx_wait;
     assign tx_valid=core_tx_valid, tx_sop=core_tx_sop, tx_eop=core_tx_eop, tx_data=core_tx_data;
 `endif
-    tarugx_tarugx_framebuffer_top u_core (
+    tarugx_tarugx_framebuffer_top #(
+`ifdef TARUGX_VIDEO_1080P
+        .GPU_VERSION(32'h0001_0002)
+`else
+        .GPU_VERSION(32'h0001_0001)
+`endif
+    ) u_core (
         .tlp_clk(tlp_clk), .tlp_rst_n(cpu_reset[1]),
         .completer_id({cfg_busdev, 3'b000}), .link_up(link_up), .perst_n(pcie_rstn),
         .clock_ready(clock_ready), .lane_status(lane_status), .ltssm(ltssm),
