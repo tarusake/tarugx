@@ -68,6 +68,7 @@ try:
     for name in services:
         subprocess.run(['systemctl', 'stop', name], check=False, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
+    subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
     module = work/'tarugx.ko'
     if keep_driver:
         persistent = Path('/run/tarugx-worktree')
@@ -173,14 +174,16 @@ try:
     counters = {{name: (attrs/name).read_text().strip()
                 for name in ('render_commands', 'render_failures',
                              'render_queue_peak',
+                             'render_sched_peak',
                              'flip_timeouts', 'dma_upload_failures',
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (508 if gpu_version >= 0x00010003 else
-         504 if gpu_version >= 0x00010002 else 506), counters
+        (505 if gpu_version >= 0x00010003 else
+         501 if gpu_version >= 0x00010002 else 503), counters
     assert int(counters['render_failures']) == 0, counters
     assert int(counters['render_queue_peak']) >= 2, counters
+    assert int(counters['render_sched_peak']) >= 2, counters
     assert int(counters['direct_scanouts']) == \
         (1 if gpu_version != 0x00010002 else 0), counters
     assert int(counters['dma_error_code']) == 0, counters
@@ -218,6 +221,7 @@ finally:
     if loaded_test_module and not keep_driver:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
     if not keep_driver and not Path('/sys/module/tarugx').exists():
+        subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
         subprocess.run(['insmod', str(old_copy)], check=True, timeout=30)
     if keep_driver:
         subprocess.run(['systemctl', 'start', 'tarugx-main-display'],

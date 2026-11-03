@@ -64,6 +64,7 @@ try:
     for name in services:
         subprocess.run(['systemctl', 'stop', name], check=False, timeout=45)
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
+    subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
     module = work/'tarugx.ko'
     if keep_driver:
         persistent = Path('/run/tarugx-worktree')
@@ -147,6 +148,7 @@ finally:
     if loaded_test_module and not keep_driver:
         subprocess.run(['modprobe', '-r', 'tarugx'], check=False, timeout=30)
     if not keep_driver and not Path('/sys/module/tarugx').exists():
+        subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
         subprocess.run(['insmod', str(old_copy)], check=True, timeout=30)
     for name in services:
         if was_active[name]:

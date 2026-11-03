@@ -166,8 +166,15 @@ private fence、VRAM GEM直接scanoutを併用し、502 commandをfailure 0で�
 指定できます。未完了fenceはrender lockを保持せず割り込み可能なsleepで待ち、完了後だけ
 FPGAキューへ投入します。2026-11-04の実機では640×480全面fill 4件のpoint 20を入力にした
 別batchが5.509ms待ってから実行され、出力point 21をsignalしました。存在しない入力syncobjと
-syncobjなしの非0 pointも拒否し、全508 command、render failure 0でした。現段階ではioctlを
-待たせる安全な第一段階であり、DRM schedulerへの移行後は未完了依存があっても即時復帰させます。
+syncobjなしの非0 pointも拒否し、全508 command、render failure 0でした。
+ドライバー0.11ではこの待ちを標準DRM schedulerへ移し、ioctlを待たせず依存解決とFPGA投入を
+専用workerで行います。schedulerのfinished fenceをGEM reservationと出力syncobjへ公開し、
+4 entity／credit 4でCPUからの投入を受けつつ、FPGAアクセス自体は安全に直列実行します。
+1920×1080全面blitのproducerと、そのpoint 20へ依存するbatchを同時にqueueした実機回帰では、
+dependent ioctlが3回連続で0.009ms、0.009ms、0.020msで復帰し、software queue peak 2、
+point 21まで順序どおり完了しました。各回とも全505 command、render failure 0で、moduleの
+remove→再probe後もDMA 12回、page flip 8回、全timeout 0でした。現在は2 jobまで即時投入でき、
+4 job分のscheduler creditを用意しています。FPGA側の実行は引き続き1 batchずつです。
 
 GPU version 1.1以降では、モードと同じ寸法・pixel format・pitchのVRAM GEMを標準DRM
 framebufferとして登録し、CPU shadow framebufferへのコピーなしで直接scanoutできます。
@@ -290,8 +297,10 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   GEM対象fill/blitはrender node対応のprivate ioctlとしてコマンドキュー、fence、MSIまで
   統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
-  直接scanout、binary／timeline syncobj入出力まで実装済みです。標準DRM schedulerによる
-  非同期入力fence待ちと、複数同時バッチは未実装です。
+  直接scanout、binary／timeline syncobj入出力、標準DRM schedulerによる非同期入力fence待ち、
+  2 jobの同時software queueを実機確認済みで、schedulerは4 entity／4 creditです。より深い
+  queueの負荷検証と、scheduler backendが
+  FPGA完了fenceを直接返してworkerを占有しない構成は未実装です。
 - Flashリリースと配布済みLinux DRM/KMSは640×480固定です。一方、実験用
   `TARUGX_VIDEO_MODE=1080p60_scanout`構成では、148.4375MHz画素クロックで
   1920×1080・約60HzのDDR scanoutを2026-11-04にSRAM実機確認しました。
