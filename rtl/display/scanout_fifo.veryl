@@ -26,22 +26,21 @@ module scanout_fifo #(
     // ready/valid semantics while separating RAM access from the pixel path.
     let load_output: 'dst logic = !dst_valid || dst_ready;
     assign src_ready = !full;
-    inst fifo: $std::async_fifo::<$std::synchronizer_basic> #(
-        WIDTH    : 257 + INDEX_WIDTH,
-        DEPTH               ,
-        THRESHOLD: DEPTH / 2,
+    inst fifo: scanout_async_fifo #(
+        WIDTH: 257 + INDEX_WIDTH,
+        DEPTH                  ,
     ) (
-        is_clk        : src_clk               ,
-        is_rst        : src_rst_n             ,
-        os_almost_full: src_buffered          ,
-        os_full       : full                  ,
-        is_push       : src_valid && src_ready,
-        is_data       : src_data              ,
-        id_clk        : dst_clk               ,
-        id_rst        : dst_rst_n             ,
-        od_empty      : empty                 ,
-        id_pop        : raw_valid && load_output,
-        od_data       : raw_data                 ,
+        src_clk                                ,
+        src_rst_n                              ,
+        src_push    : src_valid && src_ready   ,
+        src_data                                ,
+        src_full    : full                     ,
+        src_buffered                            ,
+        dst_clk                                ,
+        dst_rst_n                              ,
+        dst_pop     : raw_valid && load_output ,
+        dst_empty   : empty                    ,
+        dst_data    : raw_data                 ,
     );
     always_ff (dst_clk, dst_rst_n) {
         if_reset {

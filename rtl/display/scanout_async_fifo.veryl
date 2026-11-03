@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Scanout-specific dual-clock FWFT FIFO.
+///
+/// Unlike the generic library FIFO, the pixel-side empty test compares Gray
+/// pointers directly. It never decodes the synchronized write pointer to
+/// binary, keeping that CDC path short enough for the 148.125 MHz pixel clock.
+module scanout_async_fifo #(
+    param WIDTH        : u32 = 273,
+    param DEPTH        : u32 = 512,
+    param POINTER_WIDTH: u32 = $clog2(DEPTH) + 1,
+    param ADDRESS_WIDTH: u32 = $clog2(DEPTH),
+) (
+    src_clk     : input  'src clock       ,
+    src_rst_n   : input  'src reset       ,
+    src_push    : input  'src logic       ,
+    src_data    : input  'src logic<WIDTH>,
+    src_full    : output 'src logic       ,
+    src_buffered: output 'src logic       ,
+    dst_clk     : input  'dst clock       ,
+    dst_rst_n   : input  'dst reset       ,
+    dst_pop     : input  'dst logic       ,
+    dst_empty   : output 'dst logic       ,
+    dst_data    : output 'dst logic<WIDTH>,
+) {
+    var ram: logic<WIDTH> [DEPTH];
+
+    var write_pointer     : 'src logic<POINTER_WIDTH>;
+    var write_gray        : 'src logic<POINTER_WIDTH>;
+    var read_gray_src_sync: 'src logic<POINTER_WIDTH>;
+    var read_gray_src_meta: 'src logic<POINTER_WIDTH>;
+
+    var read_pointer       : 'dst logic<POINTER_WIDTH>;
+    var read_pointer_next  : 'dst logic<POINTER_WIDTH>;
+    var read_gray          : 'dst logic<POINTER_WIDTH>;
+    var write_gray_dst_sync: 'dst logic<POINTER_WIDTH>;
+    var write_gray_dst_meta: 'dst logic<POINTER_WIDTH>;
+
+    let push: 'src logic = src_push && !src_full;
+    let write_pointer_next: 'src logic<POINTER_WIDTH> = write_pointer + (push as POINTER_WIDTH);
+    let write_gray_next: 'src logic<POINTER_WIDTH> = write_pointer_next
+        ^ (write_pointer_next >> 1);
+    let read_pointer_src: 'src logic<POINTER_WIDTH> = gray_to_binary(read_gray_src_sync);
+    let word_count: 'src logic<POINTER_WIDTH> = write_pointer_next - read_pointer_src;
+
+    let pop: 'dst logic = dst_pop && !dst_empty;
+    let read_after_pop: 'dst logic<POINTER_WIDTH> = read_pointer + (pop as POINTER_WIDTH);
+    let read_gray_next: 'dst logic<POINTER_WIDTH> = read_after_pop ^ (read_after_pop >> 1);
+    let empty_next: 'dst logic = read_gray_next == write_gray_dst_sync;
+
+    function gray_to_binary (
+        gray: input logic<POINTER_WIDTH>,
+    ) -> logic<POINTER_WIDTH> {
+        var binary: logic<POINTER_WIDTH>;
+        binary[POINTER_WIDTH - 1] = gray[POINTER_WIDTH - 1];
+        for i in 1..POINTER_WIDTH {
+            binary[POINTER_WIDTH - 1 - i] = binary[POINTER_WIDTH - i]
+                ^ gray[POINTER_WIDTH - 1 - i];
+        }
+        return binary;
+    }
+
+    #[sv("async_reg = \"true\", syn_preserve = 1")]
+    unsafe (cdc) {
+        always_ff (src_clk, src_rst_n) {
+            if_reset {
+                read_gray_src_meta = 0;
+                read_gray_src_sync = 0;
+            } else {
+                read_gray_src_meta = read_gray;
+                read_gray_src_sync = read_gray_src_meta;
+            }
+        }
+        always_ff (dst_clk, dst_rst_n) {
+            if_reset {
+                write_gray_dst_meta = 0;
+                write_gray_dst_sync = 0;
+            } else {
+                write_gray_dst_meta = write_gray;
+                write_gray_dst_sync = write_gray_dst_meta;
+            }
+        }
+    }
+
+    // The two ports intentionally access the same inferred dual-clock RAM.
+    unsafe (cdc) {
+        always_ff (src_clk, src_rst_n) {
+            if_reset {
+                write_pointer = 0;
+                write_gray    = 0;
+                src_full      = 0;
+                src_buffered  = 0;
+            } else {
+                write_pointer = write_pointer_next;
+                write_gray    = write_gray_next;
+                src_full      = word_count[POINTER_WIDTH - 1];
+                src_buffered  = word_count >= (DEPTH / 2) as POINTER_WIDTH;
+                if push {
+                    ram[write_pointer[ADDRESS_WIDTH - 1:0]] = src_data;
+                }
+            }
+        }
+
+        always_ff (dst_clk, dst_rst_n) {
+            if_reset {
+                read_pointer      = 0;
+                read_pointer_next = 1;
+                read_gray         = 0;
+                dst_empty         = 1;
+                dst_data          = 0;
+            } else {
+                dst_empty = empty_next;
+                if pop {
+                    read_pointer      = read_pointer_next;
+                    read_pointer_next = read_pointer_next + 1;
+                    read_gray         = read_gray_next;
+                }
+                // Prefetch the first word when the FIFO becomes non-empty, then
+                // the following word on each successful pop.
+                if dst_empty && !empty_next {
+                    dst_data = ram[read_pointer[ADDRESS_WIDTH - 1:0]];
+                } else if pop && !empty_next {
+                    dst_data = ram[read_after_pop[ADDRESS_WIDTH - 1:0]];
+                }
+            }
+        }
+    }
+}
