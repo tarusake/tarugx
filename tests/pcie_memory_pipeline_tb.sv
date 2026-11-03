@@ -8,7 +8,7 @@ module pcie_memory_pipeline_tb;
  logic [255:0] rx_data=0;logic [5:0] rx_bar_decode=0;
  logic rx_wait,rx_masknp,tx_wait=1,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  logic framing_error,unsupported,malformed,fb_commit_pulse;
- logic active_buffer=0,vblank_toggle=0;logic [1:0] irq_enable;
+ logic active_buffer=0,vblank_toggle=0;logic [31:0] active_fb_base=0;logic [1:0] irq_enable;
  logic fill_busy,fill_done,fill_error,fill_start;logic [127:0] fill_command;
  logic blit_busy,blit_done,blit_error,blit_start;logic [159:0] blit_command;
  logic queue_ready,queue_active,queue_error,queue_submit,queue_clear_error;
