@@ -220,7 +220,10 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_QUEUE_READY BIT(3)
 #define TGX_QUEUE_ACTIVE BIT(4)
 #define TGX_QUEUE_ERROR BIT(5)
-#define TGX_RENDER_TIMEOUT_MS 100
+/* A large GUI rectangle can be delayed by 1080p scanout arbitration. Keep the
+ * kernel bounded, but do not classify a legitimate operation as failed at the
+ * old 100 ms synthetic-test timeout. */
+#define TGX_RENDER_TIMEOUT_MS 1000
 #define TGX_REG_DMA_HOST_LO 0xc0
 #define TGX_REG_DMA_HOST_HI 0xc4
 #define TGX_REG_DMA_VRAM 0xc8
@@ -623,8 +626,21 @@ static int tgx_execute_commands(struct tarugx *tgx,
 	if (status & TGX_QUEUE_ERROR)
 		return -EIO;
 	if (!(status & TGX_QUEUE_READY) ||
-	    status & (TGX_QUEUE_ACTIVE | TGX_QUEUE_LEVEL))
-		return -EBUSY;
+	    status & (TGX_QUEUE_ACTIVE | TGX_QUEUE_LEVEL)) {
+		/* Fence completion can precede ACTIVE/LEVEL deassertion by a few
+		 * device clocks. GUI clients submit the next small rectangle quickly
+		 * enough to hit that interval, so a synchronous submit must wait for
+		 * the idle transition instead of spuriously dropping the operation. */
+		ret = readl_poll_timeout(tgx->regs + TGX_REG_QUEUE_STATUS,
+					 status,
+					 (status & TGX_QUEUE_READY) &&
+					 !(status & (TGX_QUEUE_ACTIVE |
+						     TGX_QUEUE_LEVEL |
+						     TGX_QUEUE_ERROR)),
+					 1, TGX_RENDER_TIMEOUT_MS * 1000);
+		if (ret)
+			return ret;
+	}
 
 	for (submitted = 0; submitted < count; submitted++) {
 		status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
