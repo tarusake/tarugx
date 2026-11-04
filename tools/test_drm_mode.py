@@ -99,6 +99,7 @@ try:
         assert 'DRM atomic flip stress PASS' in run.stdout, run.stdout
         assert 'DRM PRIME implicit sync PASS' in run.stdout, run.stdout
         assert 'DRM PRIME external scanout PASS' in run.stdout, run.stdout
+        assert 'DRM PRIME partial scanout PASS' in run.stdout, run.stdout
         runs.append(run.stdout)
         run_profiles.append((device/'update_profile').read_text().strip())
     counters = {{name: int((device/name).read_text()) for name in (
@@ -115,11 +116,11 @@ try:
         field.split('=', 1) for field in update_profile.split()
     )
     pages_synced = int((device/'physical_pages_synced').read_text())
-    assert counters['dma_uploads'] >= 127 * iterations, counters
+    assert counters['dma_uploads'] >= 131 * iterations, counters
     assert counters['dma_upload_failures'] == 0, counters
     assert counters['flip_timeouts'] == 0, counters
     assert counters['vblank_timeouts'] == 0, counters
-    assert counters['page_flips'] >= 125 * iterations, counters
+    assert counters['page_flips'] >= 127 * iterations, counters
     assert int(prime_timings['imports']) >= 1, prime_timings
     assert int(prime_timings['segments']) >= 1, prime_timings
     assert int(update_timings['update_ns']) > 0, update_timings

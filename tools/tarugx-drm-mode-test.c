@@ -496,6 +496,35 @@ int main(int argc, char **argv)
 		puts("DRM atomic explicit sync PASS: IN_FENCE_FD waited and OUT_FENCE_PTR signaled");
 		puts("DRM PRIME implicit sync PASS: modeset waited for imported write fence");
 		puts("DRM PRIME external scanout PASS: scatter/gather dma-buf uploaded by PCIe DMA");
+		for (unsigned update = 0; update < 2; update++) {
+			drmModeClip prime_clip = {
+				.x1 = 0,
+				.y1 = update ? 731 : 503,
+				.x2 = create.width,
+				.y2 = update ? 735 : 507,
+			};
+			struct dma_buf_sync sync = {
+				.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+			};
+
+			if (ioctl(heap_buffer_fd, DMA_BUF_IOCTL_SYNC, &sync)) {
+				perror("begin fragmented PRIME partial update");
+				goto out;
+			}
+			fill_rect(external_pixels, create.pitch, &prime_clip,
+				  color(update + 2), create.bpp);
+			sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+			if (ioctl(heap_buffer_fd, DMA_BUF_IOCTL_SYNC, &sync)) {
+				perror("end fragmented PRIME partial update");
+				goto out;
+			}
+			if (drmModeDirtyFB(fd, external_framebuffer,
+					   &prime_clip, 1)) {
+				perror("fragmented PRIME partial dirty");
+				goto out;
+			}
+		}
+		puts("DRM PRIME partial scanout PASS: nonzero SG offsets mirrored across physical pages");
 	}
 	handles[0] = create.handle;
 	pitches[0] = create.pitch;

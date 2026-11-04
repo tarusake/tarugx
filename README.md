@@ -144,6 +144,9 @@ dma-buf FDへexportできます。同じTaruGXの別DRM fileへself-importして
 `prime_profile`属性はimport回数、直近と最大のsegment数を表示します。2つのmemfdを束ねた
 udmabufによる実機試験ではRGB565が64 segment、XRGB8888が129 segmentとなり、両方とも
 59.85fps、各DMA 127回、page flip 125回、全failure／timeout 0で1080p表示できました。
+さらに表示中の断片化PRIMEへ2回の部分dirtyを行い、非0のSG offsetから非表示ページへ
+転送して旧表示ページへmirrorする経路を検証しています。RGB565とXRGB8888の両方で
+DMA 131回、page flip 127回、全failure／timeout 0、59.85fps以上を確認しました。
 さらに未完了の全面blit fenceを`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`で外部framebufferの
 WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は完了となることを
 確認しました。KMSがPRIME reservation fenceを待ってからPCIe DMAを始めるため、
