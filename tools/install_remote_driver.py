@@ -57,6 +57,11 @@ try:
             if module_lines and module_lines[-1]:
                 stream.write('\\n')
             stream.write('tarugx\\n')
+    plymouth_hook = Path('/usr/share/initramfs-tools/hooks/plymouth')
+    plymouth_config = Path('/etc/initramfs-tools/conf.d/tarugx-plymouth')
+    if plymouth_hook.exists():
+        plymouth_config.parent.mkdir(parents=True, exist_ok=True)
+        plymouth_config.write_text('FRAMEBUFFER=y\\n')
     subprocess.run(['update-initramfs', '-u', '-k', kernel], check=True,
                    timeout=120, stdout=subprocess.DEVNULL)
     source_hash = hashlib.sha256(module.read_bytes()).hexdigest()
@@ -67,6 +72,7 @@ try:
                       'sha256': installed_hash,
                       'destination': str(destination),
                       'initramfs': '/boot/initrd.img-'+kernel,
+                      'plymouth': plymouth_hook.exists(),
                       'backup': str(backup) if backup.exists() else None}}))
 finally:
     shutil.rmtree(work, ignore_errors=True)
