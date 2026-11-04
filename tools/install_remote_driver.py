@@ -49,6 +49,16 @@ try:
     temporary.chmod(0o644)
     os.replace(temporary, destination)
     subprocess.run(['depmod', '-a', kernel], check=True, timeout=60)
+    initramfs_modules = Path('/etc/initramfs-tools/modules')
+    module_lines = initramfs_modules.read_text().splitlines()
+    if not any(line.split('#', 1)[0].strip().split()[:1] == ['tarugx']
+               for line in module_lines):
+        with initramfs_modules.open('a') as stream:
+            if module_lines and module_lines[-1]:
+                stream.write('\\n')
+            stream.write('tarugx\\n')
+    subprocess.run(['update-initramfs', '-u', '-k', kernel], check=True,
+                   timeout=120, stdout=subprocess.DEVNULL)
     source_hash = hashlib.sha256(module.read_bytes()).hexdigest()
     installed_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
     if source_hash != installed_hash:
@@ -56,6 +66,7 @@ try:
     print(json.dumps({{'result': 'driver_installed', 'kernel': kernel,
                       'sha256': installed_hash,
                       'destination': str(destination),
+                      'initramfs': '/boot/initrd.img-'+kernel,
                       'backup': str(backup) if backup.exists() else None}}))
 finally:
     shutil.rmtree(work, ignore_errors=True)
