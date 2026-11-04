@@ -311,6 +311,10 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 1920×1080・RGB565を公開します。RGB565ではUEFIの32-bit BLT色を変換し、隣接2画素を
 1回のBAR2 DWORD書込みへまとめます。検証FPGAビルドはGOP ROMも毎回再生成するため、
 古い解像度のROMを誤って再利用しません。
+2026-11-04のAMI実機では、通常版GOPを組み込んだFlashから中央のPOSTロゴと、`Del`で
+開くBIOS設定画面を確認しました。AMIの設定画面は固定サイズのUIを1080p中央へ等倍で
+描くため小さく見えます。GOPは解像度を偽らず1920×1080のまま公開し、640×480の拡大は
+将来FPGA側スケーラーを追加する場合の独立機能として扱います。
 画像データの再生成に限りImageMagickが必要です（`make -C uefi logo`）。
 
 ### FPGA実機ビルド
