@@ -128,6 +128,7 @@ struct tarugx {
 	u32 vram_gem_base;
 	u32 vram_gem_bytes;
 	bool dma_only_scanout;
+	bool front_allocated;
 };
 
 struct tarugx_vram_object {
@@ -136,6 +137,7 @@ struct tarugx_vram_object {
 	u32 width;
 	u32 height;
 	u32 pitch;
+	bool front;
 };
 
 struct tarugx_sched_job {
@@ -965,7 +967,9 @@ static void tgx_vram_object_free(struct drm_gem_object *gem)
 	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
 
 	mutex_lock(&tgx->vram_lock);
-	if (drm_mm_node_allocated(&object->node))
+	if (object->front)
+		tgx->front_allocated = false;
+	else if (drm_mm_node_allocated(&object->node))
 		drm_mm_remove_node(&object->node);
 	mutex_unlock(&tgx->vram_lock);
 	drm_gem_object_release(gem);
@@ -1010,8 +1014,16 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	int ret;
 
 	if (!args->width || args->width > tgx->width || !args->height ||
-	    args->height > tgx->height || args->flags || args->pad)
+	    args->height > tgx->height ||
+	    args->flags & ~DRM_TARUGX_VRAM_FRONT || args->pad)
 		return -EINVAL;
+	if (args->flags & DRM_TARUGX_VRAM_FRONT) {
+		if (!drm_is_current_master(file))
+			return -EACCES;
+		if (args->width != tgx->width || args->height != tgx->height ||
+		    tgx->format != DRM_FORMAT_RGB565)
+			return -EINVAL;
+	}
 	args->pitch = args->width * tgx->cpp;
 	size = PAGE_ALIGN((u64)args->pitch * args->height);
 	if (size > tgx->vram_gem_bytes)
@@ -1022,6 +1034,7 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	object->width = args->width;
 	object->height = args->height;
 	object->pitch = args->pitch;
+	object->front = args->flags & DRM_TARUGX_VRAM_FRONT;
 	object->base.funcs = &tgx_vram_object_funcs;
 	ret = drm_gem_object_init(drm, &object->base, size);
 	if (ret) {
@@ -1029,8 +1042,18 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 		return ret;
 	}
 	mutex_lock(&tgx->vram_lock);
-	ret = drm_mm_insert_node_generic(&tgx->vram_mm, &object->node, size,
-					 PAGE_SIZE, 0, DRM_MM_INSERT_BEST);
+	if (object->front) {
+		if (tgx->front_allocated) {
+			ret = -EBUSY;
+		} else {
+			tgx->front_allocated = true;
+			object->node.start = 0;
+			ret = 0;
+		}
+	} else {
+		ret = drm_mm_insert_node_generic(&tgx->vram_mm, &object->node,
+					 size, PAGE_SIZE, 0, DRM_MM_INSERT_BEST);
+	}
 	mutex_unlock(&tgx->vram_lock);
 	if (ret)
 		goto out_put;

@@ -74,6 +74,11 @@ struct drm_tarugx_vram_create {
 	__u64 mmap_offset;
 };
 
+/* Allocate the physical scanout page at BAR2 offset zero.  This is reserved
+ * for the DRM master so a display server can combine CPU fallback through the
+ * mmap offset with FPGA fill/blit on the same RGB565 front buffer. */
+#define DRM_TARUGX_VRAM_FRONT (1U << 0)
+
 struct drm_tarugx_submit_gem {
 	__u32 handle;
 	__u32 count;

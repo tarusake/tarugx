@@ -181,6 +181,11 @@ surface作成時に幅、高さ、pitchを固定し、全矩形をその範囲�
 nodeから明示的に拒否し、別fdのGEM handleによるsubmitとfence回収もそれぞれ`ENOENT`、
 `EPERM`で拒否します。2026-11-04の実機回帰ではrender nodeを含む498命令、120バッチを
 render failure 0、プロセスCPU 0.6%で処理し、RGB565 GEMの直接scanoutにも復帰しました。
+`DRM_TARUGX_VRAM_FRONT`を指定したVRAM GEMは、DRM masterだけが1920×1080の
+RGB565全面バッファとして確保できます。このオブジェクトはBAR2 offset 0へ固定され、
+CPUのwrite-combined mmap、FPGA fill/blit、コピーなしscanoutが同じ画素を共有します。
+Xorg EXAで未対応演算をCPUへフォールバックしつつ、対応する矩形描画をFPGAへ投入する
+ためのfront bufferです。render nodeや非masterからの確保は`EACCES`で拒否します。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。

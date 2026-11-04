@@ -88,6 +88,12 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_wait wait;
     struct drm_tarugx_vram_create vram = { .width = 640, .height = 480 };
+    struct drm_tarugx_vram_create front_vram = {
+        .width = 1920, .height = 1080, .flags = DRM_TARUGX_VRAM_FRONT,
+    };
+    struct drm_tarugx_vram_create foreign_front = {
+        .width = 1920, .height = 1080, .flags = DRM_TARUGX_VRAM_FRONT,
+    };
     struct drm_tarugx_vram_create other_vram = { .width = 32, .height = 32 };
     struct drm_tarugx_vram_create too_large = {
         .width = 640, .height = 480,
@@ -192,6 +198,9 @@ int main(int argc, char **argv)
         goto out_other;
     if (expect_errno(other, DRM_IOCTL_TARUGX_SUBMIT, &batch, EACCES))
         goto out_other;
+    if (expect_errno(other, DRM_IOCTL_TARUGX_VRAM_CREATE,
+                     &foreign_front, EACCES))
+        goto out_other;
     if (ioctl(other, DRM_IOCTL_TARUGX_VRAM_CREATE, &other_vram)) {
         perror("authenticated non-master VRAM create");
         goto out_other;
@@ -202,6 +211,31 @@ int main(int argc, char **argv)
     }
     if (expect_errno(fd, DRM_IOCTL_TARUGX_FILL, &invalid, EINVAL))
         goto out_other;
+    if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &front_vram)) {
+        perror("DRM_IOCTL_TARUGX_VRAM_CREATE front buffer");
+        goto out_other;
+    }
+    vram_map = mmap(NULL, front_vram.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    fd, (off_t)front_vram.mmap_offset);
+    if (vram_map == MAP_FAILED) {
+        perror("mmap front-buffer VRAM GEM");
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    vram_map[0] = 0x12345678;
+    if (vram_map[0] != 0x12345678) {
+        fputs("front-buffer VRAM GEM mmap readback mismatch\n", stderr);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    munmap((void *)vram_map, front_vram.size);
+    if (close_handle(fd, front_vram.handle)) {
+        perror("close front-buffer VRAM GEM");
+        goto out_other;
+    }
+    front_vram.handle = 0;
+    puts("VRAM front-buffer GEM PASS: master-only BAR2 mmap and reuse");
     if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &vram)) {
         if (errno != ENOSPC) {
             perror("DRM_IOCTL_TARUGX_VRAM_CREATE");
