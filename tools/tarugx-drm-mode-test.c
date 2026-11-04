@@ -558,7 +558,7 @@ int main(int argc, char **argv)
 	flip_cpu_seconds = process_seconds() - flip_cpu_started;
 	flip_elapsed = monotonic_seconds() - flip_started;
 	if (flip_elapsed <= 0 ||
-	    120.0 / flip_elapsed < (create.bpp == 16 ? 50.0 : 25.0) ||
+	    120.0 / flip_elapsed < 50.0 ||
 	    flip_max_submit >= 0.005 ||
 	    flip_cpu_seconds / flip_elapsed >= 0.20) {
 		fprintf(stderr,
