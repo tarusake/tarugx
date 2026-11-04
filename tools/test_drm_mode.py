@@ -106,6 +106,7 @@ try:
         'vblank_timeouts', 'page_flips')}}
     dma_profile = (device/'dma_profile').read_text().strip()
     update_profile = (device/'update_profile').read_text().strip()
+    conversion_profile = (device/'conversion_profile').read_text().strip()
     update_timings = dict(
         field.split('=', 1) for field in update_profile.split()
     )
@@ -130,6 +131,7 @@ try:
                       'counters': counters,
                       'run_profiles': run_profiles,
                       'dma_profile': dma_profile,
+                      'conversion_profile': conversion_profile,
                       'update_profile': update_profile,
                       'physical_pages_synced': pages_synced}}))
 except Exception as error:

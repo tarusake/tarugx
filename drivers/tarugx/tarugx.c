@@ -78,6 +78,10 @@ struct tarugx {
 	atomic64_t last_conversion_ns;
 	atomic64_t last_dma_ns;
 	atomic64_t last_vblank_wait_ns;
+	atomic64_t host_conversion_ns;
+	atomic64_t host_conversion_count;
+	atomic64_t prime_conversion_ns;
+	atomic64_t prime_conversion_count;
 	bool dma_available;
 	bool render_available;
 	bool active_fb_base_available;
@@ -1488,6 +1492,23 @@ static ssize_t update_profile_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(update_profile);
 
+static ssize_t conversion_profile_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+	s64 host_count = atomic64_read(&tgx->host_conversion_count);
+	s64 prime_count = atomic64_read(&tgx->prime_conversion_count);
+	s64 host_ns = atomic64_read(&tgx->host_conversion_ns);
+	s64 prime_ns = atomic64_read(&tgx->prime_conversion_ns);
+
+	return sysfs_emit(buf,
+		"host_count=%lld host_total_ns=%lld host_average_ns=%lld prime_count=%lld prime_total_ns=%lld prime_average_ns=%lld\n",
+		host_count, host_ns, host_count ? div64_s64(host_ns, host_count) : 0,
+		prime_count, prime_ns,
+		prime_count ? div64_s64(prime_ns, prime_count) : 0);
+}
+static DEVICE_ATTR_RO(conversion_profile);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -1570,6 +1591,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_direct_scanouts.attr,
 	&dev_attr_physical_pages_synced.attr,
 	&dev_attr_update_profile.attr,
+	&dev_attr_conversion_profile.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -2012,13 +2034,25 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 				dma_length = (copy.y2 - copy.y1) * tgx->pitch;
 			}
 			if (convert_xrgb8888) {
+				u64 elapsed_ns;
+
 				stage_started_ns = ktime_get_ns();
 				tgx_xrgb8888_to_rgb565(tgx, source_vaddr,
 							 fb->pitches[0],
 							 dma_offset / tgx->pitch,
 							 (dma_offset + dma_length) /
 							 tgx->pitch);
-				conversion_ns += ktime_get_ns() - stage_started_ns;
+				elapsed_ns = ktime_get_ns() - stage_started_ns;
+				conversion_ns += elapsed_ns;
+				if (imported_object) {
+					atomic64_add(elapsed_ns,
+						     &tgx->prime_conversion_ns);
+					atomic64_inc(&tgx->prime_conversion_count);
+				} else {
+					atomic64_add(elapsed_ns,
+						     &tgx->host_conversion_ns);
+					atomic64_inc(&tgx->host_conversion_count);
+				}
 			}
 		} else {
 			dma_length = tgx->frame_bytes;
