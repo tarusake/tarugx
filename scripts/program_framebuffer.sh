@@ -3,7 +3,7 @@
 # Authorized destructive operation: replace external Flash with this GPU image.
 set -eu
 cd "$(dirname "$0")/.."
-out=build/gowin_framebuffer/tarugx/impl/pnr
+out=${TARUGX_FLASH_OUT:-build/gowin_framebuffer/tarugx/impl/pnr}
 python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
 test -s "$out/tarugx.fs"
 python3 scripts/bitstream_manifest.py verify "$out"
