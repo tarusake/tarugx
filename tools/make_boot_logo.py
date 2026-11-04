@@ -44,7 +44,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         ppm = Path(tmp)/'logo.ppm'
         subprocess.run(['convert', str(args.source), '-background', 'black',
-                        '-alpha', 'remove', '-alpha', 'off', '-resize', '360x',
+                        '-alpha', 'remove', '-alpha', 'off', '-resize', '352x',
                         '-dither', 'None', '-colors', '128', '-depth', '8', str(ppm)], check=True)
         magic, dimensions, maximum, rgb = ppm.read_bytes().split(b'\n', 3)
         assert magic == b'P6' and maximum == b'255'

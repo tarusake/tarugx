@@ -340,7 +340,9 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 生成PCIe IP、PHY復旧、Auto ROM、パイプラインDDR構成を再現する場合は、
 `GOWIN_SH`を設定して`scripts/build_verified_framebuffer.sh`を実行します。
 実験構成の選択には`TARUGX_PCIE_GENERATED_DIR`や`TARUGX_PCIE_*`環境変数を使います。
-ロゴ入りROMを選ぶ場合は`TARUGX_PCIE_ROM_FILE`へ生成したROMのパスを指定します。
+検証ビルドは既定で1080p対応の`TaruGxSplash.rom`を再生成し、TaruGXロゴ入りROMを
+組み込みます。診断などで別のROMを選ぶ場合だけ、`TARUGX_PCIE_ROM_FILE`へそのパスを
+指定します。
 環境変数を省略した既定構成が最新の実機検証構成と同じとは限りません。
 検証ビルドは合成成功時にVeryl、生成SystemVerilog、FPGA wrapper、制約、主要生成IP、
 bitstream、タイミングレポートのSHA-256を`tarugx_build_manifest.json`へ保存します。

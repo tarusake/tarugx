@@ -34,10 +34,21 @@ export TARUGX_PCIE_RAW_BAR_PROBE=1
 export TARUGX_PCIE_AUTO_ROM=1
 export TARUGX_PCIE_PIPELINED_MEMORY=1
 
-# The ROM is copied into the FPGA project below.  Rebuild it from the current
-# GOP sources first so a stale 640p/format-specific artifact cannot survive a
-# source change and become part of an otherwise fresh FPGA build.
-make -C uefi "$PWD/build/uefi/TaruGxGop.rom"
+# The verified image shows the TaruGX logo before the firmware splash and also
+# carries the host-specific text-console initialization.  Rebuild it from the
+# current GOP sources so a stale 640p/format-specific artifact cannot survive a
+# source change and become part of an otherwise fresh FPGA build.  Diagnostics
+# may still opt into a different ROM explicitly.
+if [ -z "${TARUGX_PCIE_ROM_FILE:-}" ]; then
+    TARUGX_PCIE_ROM_FILE="$PWD/build/uefi/TaruGxSplash.rom"
+    export TARUGX_PCIE_ROM_FILE
+    make -C uefi "$TARUGX_PCIE_ROM_FILE"
+else
+    test -f "$TARUGX_PCIE_ROM_FILE" || {
+        echo "TARUGX_PCIE_ROM_FILE does not exist: $TARUGX_PCIE_ROM_FILE" >&2
+        exit 1
+    }
+fi
 
 # Regenerate the selected video PLL for every build. Generated IP is a build
 # input, so reusing an old 480p/720p/1080p file would silently build the wrong mode.
