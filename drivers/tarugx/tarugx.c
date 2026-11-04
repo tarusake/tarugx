@@ -228,18 +228,17 @@ static const struct drm_gem_object_funcs tgx_host_object_funcs;
 #define TGX_DMA_TEST_VRAM (2 * TGX_LEGACY_FRAME_BYTES)
 #define TGX_DMA_TIMEOUT_US 2000000
 #define TGX_1080P_DMA_TIMEOUT_US 30000000
+#define TGX_CONVERSION_DMA_ROWS 120
 
 static u32 tgx_fb_base(const struct tarugx *tgx, u32 index)
 {
 	return index * tgx->frame_bytes;
 }
 
-static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
-			    u32 vram_address, u32 length_bytes,
-			    unsigned int timeout_us)
+static int tgx_dma_start(struct tarugx *tgx, dma_addr_t host_address,
+			 u32 vram_address, u32 length_bytes)
 {
 	u32 status;
-	int ret;
 
 	if (!length_bytes || length_bytes > tgx->vram_bytes ||
 	    vram_address > tgx->vram_bytes - length_bytes)
@@ -254,6 +253,14 @@ static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 	writel(length_bytes, tgx->regs + TGX_REG_DMA_LENGTH);
 	writel(1, tgx->regs + TGX_REG_DMA_COMMAND);
 	readl(tgx->regs + TGX_REG_DMA_COMMAND);
+	return 0;
+}
+
+static int tgx_dma_wait(struct tarugx *tgx, unsigned int timeout_us)
+{
+	u32 status;
+	int ret;
+
 	ret = readl_poll_timeout(tgx->regs + TGX_REG_DMA_STATUS, status,
 				 status & (TGX_DMA_STATUS_DONE |
 					   TGX_DMA_STATUS_ERROR |
@@ -270,6 +277,18 @@ static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 		return -EIO;
 	}
 	return 0;
+}
+
+static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
+			    u32 vram_address, u32 length_bytes,
+			    unsigned int timeout_us)
+{
+	int ret;
+
+	ret = tgx_dma_start(tgx, host_address, vram_address, length_bytes);
+	if (ret)
+		return ret;
+	return tgx_dma_wait(tgx, timeout_us);
 }
 
 static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
@@ -1886,6 +1905,57 @@ static void tgx_xrgb8888_to_rgb565(struct tarugx *tgx,
 	}
 }
 
+static int tgx_xrgb8888_dma_pipeline(struct tarugx *tgx,
+				      const void *source_vaddr,
+				      u32 source_pitch, u32 target,
+				      u32 first_y, u32 last_y,
+				      u64 *conversion_ns, u64 *dma_ns)
+{
+	u32 current_y = first_y;
+	u32 current_last = min(first_y + TGX_CONVERSION_DMA_ROWS, last_y);
+	u64 started_ns;
+	int ret;
+
+	started_ns = ktime_get_ns();
+	tgx_xrgb8888_to_rgb565(tgx, source_vaddr, source_pitch,
+				       current_y, current_last);
+	*conversion_ns += ktime_get_ns() - started_ns;
+
+	while (current_y < last_y) {
+		u32 next_y = current_last;
+		u32 next_last = min(next_y + TGX_CONVERSION_DMA_ROWS, last_y);
+		u32 offset = current_y * tgx->pitch;
+		u32 length = (current_last - current_y) * tgx->pitch;
+		u64 dma_started_ns;
+
+		dma_wmb();
+		dma_started_ns = ktime_get_ns();
+		ret = tgx_dma_start(tgx, tgx->dma_staging_addr + offset,
+				    target + offset, length);
+		if (ret)
+			return ret;
+
+		/* The next rows occupy a separate part of the coherent staging
+		 * buffer, so the CPU can safely fill them while the FPGA reads the
+		 * current rows. */
+		if (next_y < last_y) {
+			started_ns = ktime_get_ns();
+			tgx_xrgb8888_to_rgb565(tgx, source_vaddr, source_pitch,
+					       next_y, next_last);
+			*conversion_ns += ktime_get_ns() - started_ns;
+		}
+
+		ret = tgx_dma_wait(tgx, TGX_1080P_DMA_TIMEOUT_US);
+		*dma_ns += ktime_get_ns() - dma_started_ns;
+		if (ret)
+			return ret;
+		current_y = next_y;
+		current_last = next_last;
+	}
+
+	return 0;
+}
+
 static void tgx_update(struct drm_simple_display_pipe *pipe,
 		       struct drm_plane_state *old)
 {
@@ -2033,27 +2103,6 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 				dma_offset = copy.y1 * tgx->pitch;
 				dma_length = (copy.y2 - copy.y1) * tgx->pitch;
 			}
-			if (convert_xrgb8888) {
-				u64 elapsed_ns;
-
-				stage_started_ns = ktime_get_ns();
-				tgx_xrgb8888_to_rgb565(tgx, source_vaddr,
-							 fb->pitches[0],
-							 dma_offset / tgx->pitch,
-							 (dma_offset + dma_length) /
-							 tgx->pitch);
-				elapsed_ns = ktime_get_ns() - stage_started_ns;
-				conversion_ns += elapsed_ns;
-				if (imported_object) {
-					atomic64_add(elapsed_ns,
-						     &tgx->prime_conversion_ns);
-					atomic64_inc(&tgx->prime_conversion_count);
-				} else {
-					atomic64_add(elapsed_ns,
-						     &tgx->host_conversion_ns);
-					atomic64_inc(&tgx->host_conversion_count);
-				}
-			}
 		} else {
 			dma_length = tgx->frame_bytes;
 		}
@@ -2063,17 +2112,35 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 					tgx->dma_staging + y * tgx->pitch,
 					&shadow->data[0], y * fb->pitches[0],
 					tgx->pitch);
-		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
-		stage_started_ns = ktime_get_ns();
-		ret = tgx_dma_transfer(tgx,
-				       (convert_xrgb8888 ? tgx->dma_staging_addr :
-				       dma_source_available ? source_dma_addr :
+		if (convert_xrgb8888) {
+			u64 conversion_before = conversion_ns;
+			u64 elapsed_ns;
+
+			ret = tgx_xrgb8888_dma_pipeline(tgx, source_vaddr,
+					fb->pitches[0], target,
+					dma_offset / tgx->pitch,
+					(dma_offset + dma_length) / tgx->pitch,
+					&conversion_ns, &dma_ns);
+			elapsed_ns = conversion_ns - conversion_before;
+			if (imported_object) {
+				atomic64_add(elapsed_ns, &tgx->prime_conversion_ns);
+				atomic64_inc(&tgx->prime_conversion_count);
+			} else {
+				atomic64_add(elapsed_ns, &tgx->host_conversion_ns);
+				atomic64_inc(&tgx->host_conversion_count);
+			}
+		} else {
+			dma_wmb();
+			stage_started_ns = ktime_get_ns();
+			ret = tgx_dma_transfer(tgx,
+				       (dma_source_available ? source_dma_addr :
 				       tgx->dma_staging_addr) + dma_offset,
 				       target + dma_offset, dma_length,
 				       tgx->dma_only_scanout ?
 				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
-		dma_ns += ktime_get_ns() - stage_started_ns;
+			dma_ns += ktime_get_ns() - stage_started_ns;
+		}
 		mutex_unlock(&tgx->dma_lock);
 		if (!ret) {
 			atomic64_inc(&tgx->dma_uploads);
