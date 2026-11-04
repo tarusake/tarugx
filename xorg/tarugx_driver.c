@@ -46,6 +46,8 @@ typedef struct {
     int fd;
     char *device;
     void *map;
+    uint8_t *shadow;
+    uint8_t *shadow_synced;
     size_t map_size;
     uint32_t handle;
     uint32_t fb_id;
@@ -58,6 +60,7 @@ typedef struct {
     Pixel solid_color;
     uint64_t solid_count;
     uint64_t copy_count;
+    uint64_t upload_count;
     uint64_t fallback_count;
     uint64_t submit_failures;
     int last_submit_errno;
@@ -95,6 +98,57 @@ static int tarugx_submit(TaruGXPtr tgx, struct drm_tarugx_command *command)
     return 0;
 }
 
+static void tarugx_shadow_fill(TaruGXPtr tgx, int x, int y,
+                               int width, int height, uint16_t color)
+{
+    uint32_t pair = (uint32_t)color | ((uint32_t)color << 16);
+
+    for (int row = 0; row < height; row++) {
+        uint16_t *shadow = (uint16_t *)(tgx->shadow +
+            (y + row) * TARUGX_PITCH + x * 2);
+        uint16_t *synced = (uint16_t *)(tgx->shadow_synced +
+            (y + row) * TARUGX_PITCH + x * 2);
+        int column = 0;
+
+        if (((uintptr_t)shadow & 3) && width) {
+            shadow[column] = synced[column] = color;
+            column++;
+        }
+        for (; column + 1 < width; column += 2) {
+            memcpy(&shadow[column], &pair, sizeof(pair));
+            memcpy(&synced[column], &pair, sizeof(pair));
+        }
+        if (column < width)
+            shadow[column] = synced[column] = color;
+    }
+}
+
+static void tarugx_shadow_copy_one(uint8_t *buffer, int src_x, int src_y,
+                                   int dst_x, int dst_y,
+                                   int width, int height)
+{
+    if (dst_y > src_y) {
+        for (int row = height - 1; row >= 0; row--)
+            memmove(buffer + (dst_y + row) * TARUGX_PITCH + dst_x * 2,
+                    buffer + (src_y + row) * TARUGX_PITCH + src_x * 2,
+                    (size_t)width * 2);
+    } else {
+        for (int row = 0; row < height; row++)
+            memmove(buffer + (dst_y + row) * TARUGX_PITCH + dst_x * 2,
+                    buffer + (src_y + row) * TARUGX_PITCH + src_x * 2,
+                    (size_t)width * 2);
+    }
+}
+
+static void tarugx_shadow_copy(TaruGXPtr tgx, int src_x, int src_y,
+                               int dst_x, int dst_y, int width, int height)
+{
+    tarugx_shadow_copy_one(tgx->shadow, src_x, src_y, dst_x, dst_y,
+                           width, height);
+    tarugx_shadow_copy_one(tgx->shadow_synced, src_x, src_y, dst_x, dst_y,
+                           width, height);
+}
+
 static Bool tarugx_prepare_solid(PixmapPtr pixmap, int alu,
                                  Pixel planemask, Pixel color)
 {
@@ -123,8 +177,11 @@ static void tarugx_solid(PixmapPtr pixmap, int x1, int y1, int x2, int y2)
         .color = tgx->solid_color,
     };
 
-    if (x2 > x1 && y2 > y1 && !tarugx_submit(tgx, &command))
+    if (x2 > x1 && y2 > y1 && !tarugx_submit(tgx, &command)) {
+        tarugx_shadow_fill(tgx, x1, y1, x2 - x1, y2 - y1,
+                           (uint16_t)tgx->solid_color);
         tgx->solid_count++;
+    }
 }
 
 static void tarugx_done_solid(PixmapPtr pixmap)
@@ -164,13 +221,115 @@ static void tarugx_copy(PixmapPtr destination, int src_x, int src_y,
         .height = height,
     };
 
-    if (width > 0 && height > 0 && !tarugx_submit(tgx, &command))
+    if (width > 0 && height > 0 && !tarugx_submit(tgx, &command)) {
+        tarugx_shadow_copy(tgx, src_x, src_y, dst_x, dst_y, width, height);
         tgx->copy_count++;
+    }
 }
 
 static void tarugx_done_copy(PixmapPtr pixmap)
 {
     (void)pixmap;
+}
+
+static Bool tarugx_prepare_access(PixmapPtr pixmap, int index)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(pixmap->drawable.pScreen);
+    TaruGXPtr tgx = TARUGXPTR(scrn);
+    unsigned long offset = exaGetPixmapOffset(pixmap);
+
+    (void)index;
+    if (!exaDrawableIsOffscreen(&pixmap->drawable))
+        return TRUE;
+    /* All EXA pixmaps live in the linear BAR2 aperture.  Hardware submits are
+     * synchronous.  EXA still requires the CPU pointer and pitch to be made
+     * explicit while a fallback accesses a framebuffer-resident pixmap. */
+    __sync_synchronize();
+    if (offset >= tgx->map_size)
+        return FALSE;
+    pixmap->devPrivate.ptr = tarugx_pixmap_is_front(pixmap) ?
+        tgx->shadow : (uint8_t *)tgx->map + offset;
+    pixmap->devKind = exaGetPixmapPitch(pixmap);
+    return TRUE;
+}
+
+static void tarugx_finish_access(PixmapPtr pixmap, int index)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(pixmap->drawable.pScreen);
+    TaruGXPtr tgx = TARUGXPTR(scrn);
+
+    (void)index;
+    __sync_synchronize();
+    if (exaDrawableIsOffscreen(&pixmap->drawable) &&
+        tarugx_pixmap_is_front(pixmap)) {
+        volatile uint32_t *vram = (volatile uint32_t *)tgx->map;
+        uint32_t *shadow = (uint32_t *)tgx->shadow;
+        uint32_t *synced = (uint32_t *)tgx->shadow_synced;
+        size_t words = TARUGX_FRAME_BYTES / sizeof(uint32_t);
+
+        for (size_t word = 0; word < words; word++) {
+            if (shadow[word] != synced[word]) {
+                vram[word] = shadow[word];
+                synced[word] = shadow[word];
+            }
+        }
+        __sync_synchronize();
+        (void)vram[words - 1];
+    }
+}
+
+static Bool tarugx_upload_to_screen(PixmapPtr destination, int x, int y,
+                                    int width, int height, char *source,
+                                    int source_pitch)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(destination->drawable.pScreen);
+    TaruGXPtr tgx = TARUGXPTR(scrn);
+    size_t offset = exaGetPixmapOffset(destination);
+    int destination_pitch = exaGetPixmapPitch(destination);
+    Bool front = tarugx_pixmap_is_front(destination);
+
+    if (!exaDrawableIsOffscreen(&destination->drawable) ||
+        destination->drawable.bitsPerPixel != 16 || x < 0 || y < 0 ||
+        width <= 0 || height <= 0 || x + width > destination->drawable.width ||
+        y + height > destination->drawable.height || destination_pitch <= 0 ||
+        source_pitch < width * 2 || offset >= tgx->map_size ||
+        (size_t)(y + height - 1) * destination_pitch +
+            (size_t)(x + width) * 2 > tgx->map_size - offset)
+        return FALSE;
+    for (int row = 0; row < height; row++) {
+        const uint8_t *src = (const uint8_t *)source + row * source_pitch;
+        volatile uint16_t *dst = (volatile uint16_t *)
+            ((uint8_t *)tgx->map + offset +
+             (y + row) * destination_pitch + x * 2);
+        int column = 0;
+
+        if (((uintptr_t)dst & 3) && width) {
+            uint16_t pixel;
+            memcpy(&pixel, src, sizeof(pixel));
+            dst[column++] = pixel;
+        }
+        for (; column + 1 < width; column += 2) {
+            uint32_t pixels;
+            memcpy(&pixels, src + column * 2, sizeof(pixels));
+            *(volatile uint32_t *)&dst[column] = pixels;
+        }
+        if (column < width) {
+            uint16_t pixel;
+            memcpy(&pixel, src + column * 2, sizeof(pixel));
+            dst[column] = pixel;
+        }
+        if (front) {
+            uint8_t *shadow = tgx->shadow +
+                (y + row) * TARUGX_PITCH + x * 2;
+            uint8_t *synced = tgx->shadow_synced +
+                (y + row) * TARUGX_PITCH + x * 2;
+            memcpy(shadow, src, (size_t)width * 2);
+            memcpy(synced, src, (size_t)width * 2);
+        }
+    }
+    __sync_synchronize();
+    tgx->upload_count++;
+    return TRUE;
 }
 
 static void tarugx_wait_marker(ScreenPtr screen, int marker)
@@ -257,6 +416,15 @@ static Bool tarugx_create_front(ScrnInfoPtr scrn)
                    strerror(errno));
         return FALSE;
     }
+    tgx->shadow = calloc(1, TARUGX_FRAME_BYTES);
+    tgx->shadow_synced = calloc(1, TARUGX_FRAME_BYTES);
+    if (!tgx->shadow || !tgx->shadow_synced) {
+        tarugx_destroy_front(tgx);
+        errno = ENOMEM;
+        xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+                   "front shadow allocation failed\n");
+        return FALSE;
+    }
     handles[0] = create.handle;
     pitches[0] = create.pitch;
     if (drmModeAddFB2(tgx->fd, TARUGX_WIDTH, TARUGX_HEIGHT,
@@ -299,10 +467,13 @@ static void tarugx_destroy_front(TaruGXPtr tgx)
         drmModeRmFB(tgx->fd, tgx->fb_id);
     if (tgx->map)
         munmap(tgx->map, tgx->map_size);
+    free(tgx->shadow);
+    free(tgx->shadow_synced);
     if (tgx->handle)
         ioctl(tgx->fd, DRM_IOCTL_GEM_CLOSE, &close);
     tgx->fb_id = tgx->handle = 0;
     tgx->map = NULL;
+    tgx->shadow = tgx->shadow_synced = NULL;
 }
 
 static Bool tarugx_screen_init(ScreenPtr screen, int argc, char **argv)
@@ -355,7 +526,10 @@ static Bool tarugx_screen_init(ScreenPtr screen, int argc, char **argv)
     /* Keep EXA's allocator non-empty. The GEM is page aligned, leaving a
      * small tail after the visible frame; a zero-sized offscreen arena trips
      * an EXA 2.6 allocator assertion during server startup. */
-    tgx->exa->offScreenBase = TARUGX_FRAME_BYTES;
+    /* EXA 2.6 asserts when the offscreen arena is empty.  Expose one byte so
+     * the allocator initializes, but no pixmap can fit there; window/glyph
+     * pixmaps remain in system RAM and migrate through UploadToScreen. */
+    tgx->exa->offScreenBase = tgx->map_size - 1;
     tgx->exa->pixmapOffsetAlign = 4;
     tgx->exa->pixmapPitchAlign = 4;
     tgx->exa->maxX = TARUGX_WIDTH;
@@ -367,6 +541,9 @@ static Bool tarugx_screen_init(ScreenPtr screen, int argc, char **argv)
     tgx->exa->Copy = tarugx_copy;
     tgx->exa->DoneCopy = tarugx_done_copy;
     tgx->exa->WaitMarker = tarugx_wait_marker;
+    tgx->exa->PrepareAccess = tarugx_prepare_access;
+    tgx->exa->FinishAccess = tarugx_finish_access;
+    tgx->exa->UploadToScreen = tarugx_upload_to_screen;
     if (!exaDriverInit(screen, tgx->exa))
         return FALSE;
     tgx->close_screen = screen->CloseScreen;
@@ -384,10 +561,11 @@ static Bool tarugx_close_screen(ScreenPtr screen)
     CloseScreenProcPtr close_screen = tgx->close_screen;
 
     xf86DrvMsg(scrn->scrnIndex, X_INFO,
-               "EXA totals: solid=%llu copy=%llu fallback=%llu "
+               "EXA totals: solid=%llu copy=%llu upload=%llu fallback=%llu "
                "submit_failures=%llu last_errno=%d\n",
                (unsigned long long)tgx->solid_count,
                (unsigned long long)tgx->copy_count,
+               (unsigned long long)tgx->upload_count,
                (unsigned long long)tgx->fallback_count,
                (unsigned long long)tgx->submit_failures,
                tgx->last_submit_errno);
