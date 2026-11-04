@@ -100,6 +100,11 @@ MSI受信回数を確認できます。古いFlashイメージでページ切替
 確認でき、blitが失敗した場合だけCPUによるVRAM内コピーへフォールバックします。
 `update_profile`は直近の更新について、全体、XRGB8888→RGB565変換、PCIe DMA、
 VBlank待ちの時間をそれぞれnsで表示します。
+`conversion_profile`はXRGB8888変換を通常のhost GEMと外部PRIME GEMに分け、
+それぞれの累積回数、累積時間、平均時間をnsで表示します。2026-11-04の1080p実機では
+host平均9.83ms、PRIME平均10.23msでほぼ同等だったため、外部PRIMEの読出しではなく
+CPU色変換自体がボトルネックだと確認できました。8画素単位への手動展開と
+write-combine staging bufferはいずれも遅化したため不採用としています。
 ドライバーremove／shutdown開始時はrender fence待ちとVBlank待ちの両方へ終了状態を
 公開して即時に起床させます。IRQ停止後に100ms timeoutまで古いBARを参照し続けないため、
 SRAM更新やPCIe再列挙時のteardownを短く安全にします。2026-11-04に更新版自身の
@@ -154,7 +159,7 @@ XRGB8888実機でatomic ioctlは0.399msで復帰、約30.000ms後にout fenceが
 外部PRIME framebufferと通常dumb bufferを交互に120回nonblocking atomic flipする
 実機ストレスでは、RGB565が59.84fps、最大ioctl 0.205ms、プロセスCPU 1.2%で
 1080p60を実現しました。XRGB8888は30.43fps、最大ioctl 0.311ms、プロセスCPU 0.9%です。
-XRGB8888はRGB565変換とPCIe DMAの合計が16.7msのVBlank境界に近く、境界を超えたフレームが
+XRGB8888はCPU色変換約10msとPCIe DMA約10.5msが直列になり、16.7msのVBlank境界を超えたフレームが
 次のVBlankまで待つ30fpsに落ちるため、次の性能改善対象です。各試験でDMA 127回、
 page flip 125回、全failure／timeout 0を確認しました。
 
