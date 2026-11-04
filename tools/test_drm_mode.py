@@ -107,6 +107,10 @@ try:
     dma_profile = (device/'dma_profile').read_text().strip()
     update_profile = (device/'update_profile').read_text().strip()
     conversion_profile = (device/'conversion_profile').read_text().strip()
+    prime_profile = (device/'prime_profile').read_text().strip()
+    prime_timings = dict(
+        field.split('=', 1) for field in prime_profile.split()
+    )
     update_timings = dict(
         field.split('=', 1) for field in update_profile.split()
     )
@@ -116,6 +120,8 @@ try:
     assert counters['flip_timeouts'] == 0, counters
     assert counters['vblank_timeouts'] == 0, counters
     assert counters['page_flips'] >= 125 * iterations, counters
+    assert int(prime_timings['imports']) >= 1, prime_timings
+    assert int(prime_timings['segments']) >= 1, prime_timings
     assert int(update_timings['update_ns']) > 0, update_timings
     assert int(update_timings['dma_ns']) > 0, update_timings
     if 'pitch=7680' in run.stdout:
@@ -132,6 +138,7 @@ try:
                       'run_profiles': run_profiles,
                       'dma_profile': dma_profile,
                       'conversion_profile': conversion_profile,
+                      'prime_profile': prime_profile,
                       'update_profile': update_profile,
                       'physical_pages_synced': pages_synced}}))
 except Exception as error:

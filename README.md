@@ -138,12 +138,12 @@ submit自体は0.017msで復帰しました。fence、VRAM読戻し、WAITなし
 dma-buf FDへexportできます。同じTaruGXの別DRM fileへself-importしてGEM handleを
 共有でき、XRGB8888とRGB565の両方で表示回帰を実機確認しました。同時にschedulerのrunqueue数を
 標準priority数に合わせ、probe時のpriority範囲外警告を解消しました。
-ドライバー0.15以降は、外部dma-bufのscatter/gather tableがDMAアドレス空間で
-バッファ全体にわたり連続している場合に限りPRIME importを受け付けます。非連続な
-dma-bufは`EINVAL`で拒否し、PCIe DMAに不正な単一アドレスを渡しません。実機では
-DMA heapから確保したXRGB8888 8,294,400 byteとRGB565 4,149,248 byteを外部PRIME
-framebufferとして登録し、TaruGXのPCIe DMAでVRAMへ転送して1080p表示できることを
-確認しました。各モードでDMA 7回、page flip 5回、全failure／timeout 0です。
+ドライバー0.16以降は外部dma-buf専用GEM objectでscatter/gather tableとvmapを保持し、
+非連続な各DMA segmentをVRAM上の連続した位置へ順番に転送します。Linux DMA GEM helperの
+連続IOVA制限に依存しないため、断片化したPRIME framebufferも受け付けます。
+`prime_profile`属性はimport回数、直近と最大のsegment数を表示します。2つのmemfdを束ねた
+udmabufによる実機試験ではRGB565が64 segment、XRGB8888が129 segmentとなり、両方とも
+59.85fps、各DMA 127回、page flip 125回、全failure／timeout 0で1080p表示できました。
 さらに未完了の全面blit fenceを`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`で外部framebufferの
 WRITE fenceとして追加し、modeset直前は未完了、modeset復帰後は完了となることを
 確認しました。KMSがPRIME reservation fenceを待ってからPCIe DMAを始めるため、

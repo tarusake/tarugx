@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -16,6 +16,8 @@
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
+#include <linux/memfd.h>
+#include <linux/udmabuf.h>
 
 #include "tarugx_drm.h"
 
@@ -36,6 +38,47 @@ static uint32_t color(unsigned band)
 	};
 
 	return colors[band % 6];
+}
+
+static int create_fragmented_udmabuf(size_t size)
+{
+	struct udmabuf_create_list *request;
+	size_t first_size = (size / 2) & ~(size_t)(4096 - 1);
+	int control = -1, first = -1, second = -1, result = -1;
+
+	if (!first_size || first_size == size)
+		return -EINVAL;
+	request = calloc(1, sizeof(*request) + 2 * sizeof(request->list[0]));
+	if (!request)
+		return -ENOMEM;
+	request->flags = UDMABUF_FLAGS_CLOEXEC;
+	request->count = 2;
+	first = memfd_create("tarugx-prime-a", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	second = memfd_create("tarugx-prime-b", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	control = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+	if (first < 0 || second < 0 || control < 0 ||
+	    ftruncate(first, first_size) || ftruncate(second, size - first_size) ||
+	    fcntl(first, F_ADD_SEALS, F_SEAL_SHRINK) ||
+	    fcntl(second, F_ADD_SEALS, F_SEAL_SHRINK))
+		goto out;
+	request->list[0] = (struct udmabuf_create_item) {
+		.memfd = first,
+		.size = first_size,
+	};
+	request->list[1] = (struct udmabuf_create_item) {
+		.memfd = second,
+		.size = size - first_size,
+	};
+	result = ioctl(control, UDMABUF_CREATE_LIST, request);
+out:
+	free(request);
+	if (control >= 0)
+		close(control);
+	if (first >= 0)
+		close(first);
+	if (second >= 0)
+		close(second);
+	return result;
 }
 
 static double monotonic_seconds(void)
@@ -296,20 +339,25 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	puts("DRM PRIME self-import PASS: DMA-backed dumb buffer shared to a second file");
-	heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
-	if (heap_fd >= 0) {
+	heap_buffer_fd = create_fragmented_udmabuf(create.size);
+	if (heap_buffer_fd < 0) {
+		heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+		if (heap_fd >= 0) {
+			if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &heap_alloc)) {
+				perror("allocate external dma-buf");
+				goto out;
+			}
+			heap_buffer_fd = heap_alloc.fd;
+		}
+	}
+	if (heap_buffer_fd >= 0) {
 		uint32_t external_handles[4] = {0};
 		uint32_t external_pitches[4] = {0};
 		uint32_t external_offsets[4] = {0};
 
-		if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &heap_alloc)) {
-			perror("allocate external dma-buf");
-			goto out;
-		}
-		heap_buffer_fd = heap_alloc.fd;
 		if (drmPrimeFDToHandle(fd, heap_buffer_fd,
 				       &external_handle)) {
-			perror("import contiguous external dma-buf");
+			perror("import external dma-buf");
 			goto out;
 		}
 		external_handles[0] = external_handle;
@@ -447,7 +495,7 @@ int main(int argc, char **argv)
 		}
 		puts("DRM atomic explicit sync PASS: IN_FENCE_FD waited and OUT_FENCE_PTR signaled");
 		puts("DRM PRIME implicit sync PASS: modeset waited for imported write fence");
-		puts("DRM PRIME external scanout PASS: contiguous dma-buf uploaded by PCIe DMA");
+		puts("DRM PRIME external scanout PASS: scatter/gather dma-buf uploaded by PCIe DMA");
 	}
 	handles[0] = create.handle;
 	pitches[0] = create.pitch;
