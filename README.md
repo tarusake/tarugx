@@ -189,7 +189,10 @@ Xorg EXAで未対応演算をCPUへフォールバックしつつ、対応する
 `xorg/tarugx_driver.c`はこのfront bufferをXorgの1920×1080 RGB565画面として直接表示し、
 EXAのSolidとCopyをFPGA fill/blitへ接続します。2026-11-05のXfce実機試験では
 `x11perf`中に1,236コマンドをfailure 0で実行し、PCIe全面uploadは0でした。
-500×500 fillは約240回/秒、同サイズの画面内copyは約6.6回/秒でした。
+同一ワークロードのmodesetting shadow方式と比べ、Xorg CPU時間は12.16秒から4.61秒へ
+62%減り、PCIe uploadは329,580,534 byte／1,326回から0になりました。500×500 fillは
+約59.8回/秒から約242回/秒へ4.0倍になりました。一方、同サイズの画面内copyは
+約59.7回/秒から約6.6回/秒へ低下しており、次の最適化対象はFPGA blitです。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
