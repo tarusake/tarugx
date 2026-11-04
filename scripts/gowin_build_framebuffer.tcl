@@ -309,7 +309,15 @@ set_option -place_option 2
 # Gowin documents route option 1 as timing-priority; option 2 only shortens
 # routing runtime.  TaruGX runs the PCIe and DDR user paths at their 100 MHz
 # limit, so prefer timing closure over a faster build.
-set_option -route_option 1
+set route_option 1
+if {[info exists ::env(TARUGX_ROUTE_OPTION)]} {
+    set route_option $::env(TARUGX_ROUTE_OPTION)
+}
+if {$route_option ni {1 2}} {
+    error "TARUGX_ROUTE_OPTION must be 1 (timing) or 2 (fast)"
+}
+puts "Gowin route option: $route_option"
+set_option -route_option $route_option
 set_option -clock_route_order 1
 # SUG1220: keep the hard-UPAR handshake loop close to the SerDes block.
 set_option -serdesRetiming 1
