@@ -30,6 +30,11 @@ def make_primary(user, host_dir):
     output = subprocess.check_output([*env, "xrandr", "--current"], text=True)
     connected = [line.split()[0] for line in output.splitlines()
                  if len(line.split()) > 1 and line.split()[1] == "connected"]
+    # The fixed-mode TaruGX DDX owns one immutable screen and intentionally
+    # does not expose RandR output objects. There is nothing to select in that
+    # case. The modesetting fallback still has exactly one named output.
+    if not connected and "1920 x 1080" in output:
+        return
     if len(connected) != 1:
         raise RuntimeError("expected exactly one connected output on the dedicated TaruGX Xorg")
     run([*env, "xrandr", "--output", connected[0], "--primary"])

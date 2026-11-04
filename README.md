@@ -186,6 +186,10 @@ RGB565全面バッファとして確保できます。このオブジェクト�
 CPUのwrite-combined mmap、FPGA fill/blit、コピーなしscanoutが同じ画素を共有します。
 Xorg EXAで未対応演算をCPUへフォールバックしつつ、対応する矩形描画をFPGAへ投入する
 ためのfront bufferです。render nodeや非masterからの確保は`EACCES`で拒否します。
+`xorg/tarugx_driver.c`はこのfront bufferをXorgの1920×1080 RGB565画面として直接表示し、
+EXAのSolidとCopyをFPGA fill/blitへ接続します。2026-11-05のXfce実機試験では
+`x11perf`中に1,236コマンドをfailure 0で実行し、PCIe全面uploadは0でした。
+500×500 fillは約240回/秒、同サイズの画面内copyは約6.6回/秒でした。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
@@ -373,7 +377,8 @@ SRAM書込みに失敗した場合は外部Flashの構成へ戻してからホ�
   64-bit書込みを使用します。`dma_upload=0`の場合は全面更新もBAR2を使用します。
   部分更新前のページ同期にはFPGAの2D blitを使用します。画面fill/blitはDRM master限定、
   GEM対象fill/blitはrender node対応のprivate ioctlとしてコマンドキュー、fence、MSIまで
-  統合済みですが、通常のXorg描画が自動利用する段階ではありません。VRAM GEMの割当とmmap、非同期fence、
+  統合済みです。専用TaruGX Xorg DDXでは通常のXfce描画のうちEXA Solid/Copyを自動利用し、
+  それ以外をBAR2のCPU mappingへフォールバックします。VRAM GEMの割当とmmap、非同期fence、
   複数コマンド一括投入、GEM handleを対象にしたfill/blit、対応FPGAでのVRAM GEM
   直接scanout、binary／timeline syncobj入出力、標準DRM schedulerによる非同期入力fence待ち、
   64 jobの同時software queueを実機確認済みで、schedulerは4 entity／hardware credit 1です。
