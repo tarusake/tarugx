@@ -246,6 +246,16 @@ python3 tools/test_drm_render_ioctl.py
 python3 tools/test_drm_render_ioctl.py --keep-driver
 ```
 
+モジュールビルド、XRGB8888／RGB565のKMS・断片化PRIME・fence・ページフリップ、
+2D scheduler・直接scanoutを一括検証する場合は次を実行します。途中の各試験は作業版
+ドライバーを維持し、最後に従来ドライバーへ復元します。作業版をそのまま使う場合は
+`--keep-driver`を付けます。
+
+```sh
+python3 tools/test_drm_integration.py
+python3 tools/test_drm_integration.py --keep-driver
+```
+
 BAR2とDMAのDRM全面更新を同じ条件で比較する場合は、次を実行します。リポジトリの
 最新KMSテストをホスト上の一時ディレクトリでビルドするため、古いテストバイナリを
 誤って使いません。測定前の`dma_upload`値と表示サービスは終了時に復元します。
