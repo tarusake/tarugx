@@ -6,6 +6,7 @@
 #include <linux/dma-fence.h>
 #include <linux/dma-fence-chain.h>
 #include <linux/dma-resv.h>
+#include <linux/dma-buf.h>
 #include <linux/iosys-map.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
@@ -13,6 +14,7 @@
 #include <linux/mm.h>
 #include <linux/mutex.h>
 #include <linux/overflow.h>
+#include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -32,6 +34,7 @@
 #include <drm/drm_mm.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_prime.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_syncobj.h>
 #include <drm/drm_vma_manager.h>
@@ -82,6 +85,9 @@ struct tarugx {
 	atomic64_t host_conversion_count;
 	atomic64_t prime_conversion_ns;
 	atomic64_t prime_conversion_count;
+	atomic64_t prime_import_count;
+	atomic64_t prime_sg_segments;
+	atomic64_t prime_sg_segments_peak;
 	bool dma_available;
 	bool render_available;
 	bool active_fb_base_available;
@@ -153,7 +159,14 @@ struct tarugx_host_object {
 	dma_addr_t dma_addr;
 };
 
+struct tarugx_prime_object {
+	struct drm_gem_object base;
+	struct sg_table *sgt;
+	struct iosys_map map;
+};
+
 static const struct drm_gem_object_funcs tgx_host_object_funcs;
+static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 
 #define TGX_BAR2_BYTES SZ_4M
 #define TGX_LEGACY_WIDTH 640
@@ -289,6 +302,41 @@ static int tgx_dma_transfer(struct tarugx *tgx, dma_addr_t host_address,
 	if (ret)
 		return ret;
 	return tgx_dma_wait(tgx, timeout_us);
+}
+
+static int tgx_dma_transfer_sg(struct tarugx *tgx, struct sg_table *sgt,
+			       u32 source_offset, u32 vram_address,
+			       u32 length_bytes, unsigned int timeout_us)
+{
+	struct scatterlist *sg;
+	u32 remaining = length_bytes;
+	u32 skip = source_offset;
+	unsigned int i;
+
+	if (!sgt)
+		return -EINVAL;
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		u32 segment_length = sg_dma_len(sg);
+		u32 transfer_length;
+		int ret;
+
+		if (skip >= segment_length) {
+			skip -= segment_length;
+			continue;
+		}
+		transfer_length = min(segment_length - skip, remaining);
+		ret = tgx_dma_transfer(tgx, sg_dma_address(sg) + skip,
+				       vram_address, transfer_length, timeout_us);
+		if (ret)
+			return ret;
+		remaining -= transfer_length;
+		vram_address += transfer_length;
+		skip = 0;
+		if (!remaining)
+			return 0;
+	}
+
+	return -EINVAL;
 }
 
 static int tgx_blit_copy_frame(struct tarugx *tgx, u32 source, u32 target)
@@ -1528,6 +1576,18 @@ static ssize_t conversion_profile_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(conversion_profile);
 
+static ssize_t prime_profile_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "imports=%lld segments=%lld peak_segments=%lld\n",
+		atomic64_read(&tgx->prime_import_count),
+		atomic64_read(&tgx->prime_sg_segments),
+		atomic64_read(&tgx->prime_sg_segments_peak));
+}
+static DEVICE_ATTR_RO(prime_profile);
+
 static ssize_t dma_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -1611,6 +1671,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_physical_pages_synced.attr,
 	&dev_attr_update_profile.attr,
 	&dev_attr_conversion_profile.attr,
+	&dev_attr_prime_profile.attr,
 	&dev_attr_dma_test.attr,
 	NULL,
 };
@@ -1808,6 +1869,41 @@ static const struct drm_gem_object_funcs tgx_host_object_funcs = {
 	.vm_ops = &tgx_vram_vm_ops,
 };
 
+static void tgx_prime_object_free(struct drm_gem_object *gem)
+{
+	struct tarugx_prime_object *object =
+		container_of(gem, struct tarugx_prime_object, base);
+
+	if (iosys_map_is_set(&object->map))
+		dma_buf_vunmap_unlocked(gem->import_attach->dmabuf, &object->map);
+	drm_prime_gem_destroy(gem, object->sgt);
+	drm_gem_object_release(gem);
+	kfree(object);
+}
+
+static int tgx_prime_object_vmap(struct drm_gem_object *gem,
+				 struct iosys_map *map)
+{
+	struct tarugx_prime_object *object =
+		container_of(gem, struct tarugx_prime_object, base);
+
+	*map = object->map;
+	return 0;
+}
+
+static void tgx_prime_object_vunmap(struct drm_gem_object *gem,
+				    struct iosys_map *map)
+{
+	(void)gem;
+	iosys_map_clear(map);
+}
+
+static const struct drm_gem_object_funcs tgx_prime_object_funcs = {
+	.free = tgx_prime_object_free,
+	.vmap = tgx_prime_object_vmap,
+	.vunmap = tgx_prime_object_vunmap,
+};
+
 static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 			   struct drm_mode_create_dumb *args)
 {
@@ -1965,7 +2061,7 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 	struct drm_framebuffer *fb = state->fb;
 	struct drm_gem_object *gem;
 	struct tarugx_host_object *host_object = NULL;
-	struct drm_gem_dma_object *imported_object = NULL;
+	struct tarugx_prime_object *imported_object = NULL;
 	struct tarugx_vram_object *vram_object = NULL;
 	struct drm_rect damage, copy;
 	unsigned int x, y;
@@ -1993,15 +2089,15 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		vram_object = container_of(gem, struct tarugx_vram_object, base);
 	else if (gem && gem->funcs == &tgx_host_object_funcs)
 		host_object = container_of(gem, struct tarugx_host_object, base);
-	else if (gem && gem->import_attach)
-		imported_object = to_drm_gem_dma_obj(gem);
+	else if (gem && gem->funcs == &tgx_prime_object_funcs)
+		imported_object = container_of(gem, struct tarugx_prime_object,
+					       base);
 	if (host_object) {
 		source_dma_addr = host_object->dma_addr;
 		source_vaddr = host_object->vaddr;
 		dma_source_available = true;
 	} else if (imported_object) {
-		source_dma_addr = imported_object->dma_addr;
-		source_vaddr = imported_object->vaddr;
+		source_vaddr = imported_object->map.vaddr;
 		dma_source_available = true;
 	}
 	convert_xrgb8888 = tgx->format == DRM_FORMAT_RGB565 &&
@@ -2133,12 +2229,21 @@ static void tgx_update(struct drm_simple_display_pipe *pipe,
 		} else {
 			dma_wmb();
 			stage_started_ns = ktime_get_ns();
-			ret = tgx_dma_transfer(tgx,
-				       (dma_source_available ? source_dma_addr :
-				       tgx->dma_staging_addr) + dma_offset,
-				       target + dma_offset, dma_length,
-				       tgx->dma_only_scanout ?
-				       TGX_1080P_DMA_TIMEOUT_US : TGX_DMA_TIMEOUT_US);
+			if (imported_object)
+				ret = tgx_dma_transfer_sg(tgx, imported_object->sgt,
+						dma_offset, target + dma_offset,
+						dma_length,
+						tgx->dma_only_scanout ?
+						TGX_1080P_DMA_TIMEOUT_US :
+						TGX_DMA_TIMEOUT_US);
+			else
+				ret = tgx_dma_transfer(tgx,
+					       (dma_source_available ? source_dma_addr :
+					       tgx->dma_staging_addr) + dma_offset,
+					       target + dma_offset, dma_length,
+					       tgx->dma_only_scanout ?
+					       TGX_1080P_DMA_TIMEOUT_US :
+					       TGX_DMA_TIMEOUT_US);
 			dma_ns += ktime_get_ns() - stage_started_ns;
 		}
 		mutex_unlock(&tgx->dma_lock);
@@ -2251,11 +2356,18 @@ upload_complete:
 		dma_wmb();
 		mutex_lock(&tgx->dma_lock);
 		stage_started_ns = ktime_get_ns();
-		mirror_ret = tgx_dma_transfer(tgx,
-				(convert_xrgb8888 ? tgx->dma_staging_addr :
-				 source_dma_addr) + mirror_offset,
-				previous_base + mirror_offset, mirror_length,
-				TGX_1080P_DMA_TIMEOUT_US);
+		if (imported_object && !convert_xrgb8888)
+			mirror_ret = tgx_dma_transfer_sg(tgx,
+					imported_object->sgt, mirror_offset,
+					previous_base + mirror_offset,
+					mirror_length, TGX_1080P_DMA_TIMEOUT_US);
+		else
+			mirror_ret = tgx_dma_transfer(tgx,
+					(convert_xrgb8888 ?
+					 tgx->dma_staging_addr : source_dma_addr) +
+					 mirror_offset,
+					previous_base + mirror_offset, mirror_length,
+					TGX_1080P_DMA_TIMEOUT_US);
 		dma_ns += ktime_get_ns() - stage_started_ns;
 		mutex_unlock(&tgx->dma_lock);
 		if (mirror_ret) {
@@ -2428,9 +2540,40 @@ tgx_prime_import_sg_table(struct drm_device *drm,
 			  struct dma_buf_attachment *attach,
 			  struct sg_table *sgt)
 {
-	if (drm_prime_get_contiguous_size(sgt) < attach->dmabuf->size)
-		return ERR_PTR(-EINVAL);
-	return drm_gem_dma_prime_import_sg_table_vmap(drm, attach, sgt);
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct tarugx_prime_object *object;
+	s64 peak;
+	int ret;
+
+	object = kzalloc(sizeof(*object), GFP_KERNEL);
+	if (!object)
+		return ERR_PTR(-ENOMEM);
+	ret = dma_buf_vmap_unlocked(attach->dmabuf, &object->map);
+	if (ret) {
+		kfree(object);
+		return ERR_PTR(ret);
+	}
+	if (object->map.is_iomem) {
+		dma_buf_vunmap_unlocked(attach->dmabuf, &object->map);
+		kfree(object);
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+	drm_gem_private_object_init(drm, &object->base,
+				    PAGE_ALIGN(attach->dmabuf->size));
+	object->base.funcs = &tgx_prime_object_funcs;
+	object->sgt = sgt;
+	atomic64_inc(&tgx->prime_import_count);
+	atomic64_set(&tgx->prime_sg_segments, sgt->nents);
+	peak = atomic64_read(&tgx->prime_sg_segments_peak);
+	while (sgt->nents > peak) {
+		s64 previous = atomic64_cmpxchg(&tgx->prime_sg_segments_peak,
+						 peak, sgt->nents);
+
+		if (previous == peak)
+			break;
+		peak = previous;
+	}
+	return &object->base;
 }
 static const struct drm_driver tgx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC |
@@ -2445,7 +2588,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 15,
+	.major = 0, .minor = 16,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -2689,3 +2832,4 @@ static struct pci_driver tgx_pci_driver = {
 module_pci_driver(tgx_pci_driver);
 MODULE_DESCRIPTION("TaruGX/100 DRM/KMS framebuffer driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(DMA_BUF);
