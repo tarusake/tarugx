@@ -307,6 +307,10 @@ make -C uefi "$PWD/build/uefi/TaruGxSplash.rom"
 
 `TaruGxSplash.rom`は文字モード互換処理と1秒の起動ロゴを含む64KiB版です。
 `TaruGxEarlyText.rom`はロゴなしの互換版、`TaruGxGop.rom`は通常版です。
+通常版GOPはGPU versionを読み、旧FPGAでは640×480・XRGB8888、version 1.3以降では
+1920×1080・RGB565を公開します。RGB565ではUEFIの32-bit BLT色を変換し、隣接2画素を
+1回のBAR2 DWORD書込みへまとめます。検証FPGAビルドはGOP ROMも毎回再生成するため、
+古い解像度のROMを誤って再利用しません。
 画像データの再生成に限りImageMagickが必要です（`make -C uefi logo`）。
 
 ### FPGA実機ビルド

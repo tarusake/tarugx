@@ -98,10 +98,11 @@ static EFI_STATUS set_mode_impl(EFI_GRAPHICS_OUTPUT_PROTOCOL *g, UINT32 mode)
     t->mode.Mode = 0xffffffff;
     status = reg_write(t, 0x10, 0);
     if (EFI_ERROR(status)) return status;
-    if (tgx_blt(&t->io, &black, 0, 0, 0, 0, 0, TGX_WIDTH, TGX_HEIGHT, 0))
+    if (tgx_blt(&t->io, &black, 0, 0, 0, 0, 0,
+                t->io.width, t->io.height, 0))
         return EFI_DEVICE_ERROR;
     if (EFI_ERROR(reg_write(t, 0x18, 0)) || EFI_ERROR(reg_write(t, 0x1c, 0)) ||
-        EFI_ERROR(reg_write(t, 0x20, TGX_WIDTH*4)) || EFI_ERROR(reg_write(t, 0x24, 1)))
+        EFI_ERROR(reg_write(t, 0x20, t->io.pitch)) || EFI_ERROR(reg_write(t, 0x24, 1)))
         return EFI_DEVICE_ERROR;
     status = reg_write(t, 0x10, 1);
     if (!EFI_ERROR(status)) t->mode.Mode = 0;
@@ -302,7 +303,7 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     TGX *t;
     EFI_PCI_IO_PROTOCOL *pci;
     EFI_STATUS s;
-    UINT32 id;
+    UINT32 id, gpu_version;
     BOOLEAN saved = FALSE;
     if (!valid_remaining(remaining)) return EFI_UNSUPPORTED;
     t=find_context(controller);
@@ -316,7 +317,10 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     t->pci = pci;
     t->controller=controller;
     t->trace.version=2;
-    t->io = (struct tgx_io){t, fb_read, fb_write};
+    t->io = (struct tgx_io){
+        .context=t, .read=fb_read, .write=fb_write,
+        .width=TGX_WIDTH, .height=TGX_HEIGHT, .pitch=TGX_WIDTH*4,
+    };
     s = identify(pci);
     if (EFI_ERROR(s)) goto free;
     s = check_bar(pci, 0, 65536);
@@ -333,12 +337,18 @@ static EFI_STATUS EFIAPI start(EFI_DRIVER_BINDING_PROTOCOL *self,
     s = pci->Mem.Read(pci, EfiPciIoWidthUint32, 0, 0, 1, &id);
     if (EFI_ERROR(s)) goto free;
     if (id != 0x54475055) { s = EFI_UNSUPPORTED; goto free; }
+    s = pci->Mem.Read(pci, EfiPciIoWidthUint32, 0, 4, 1, &gpu_version);
+    if (EFI_ERROR(s)) goto free;
+    if (gpu_version >= 0x00010003) {
+        t->io.width=1920; t->io.height=1080; t->io.pitch=3840;
+        t->io.rgb565=1;
+    }
     t->gop.QueryMode = query; t->gop.SetMode = set_mode; t->gop.Blt = blt;
     t->gop.Mode = &t->mode;
-    t->info.HorizontalResolution = TGX_WIDTH;
-    t->info.VerticalResolution = TGX_HEIGHT;
+    t->info.HorizontalResolution = t->io.width;
+    t->info.VerticalResolution = t->io.height;
     t->info.PixelFormat = PixelBltOnly;
-    t->info.PixelsPerScanLine = TGX_WIDTH;
+    t->info.PixelsPerScanLine = t->io.width;
     t->mode.MaxMode = 1; t->mode.Mode = 0xffffffff;
     t->mode.Info = &t->info; t->mode.SizeOfInfo = sizeof(t->info);
     /* Parent-only requests must not create or initialize an output. */

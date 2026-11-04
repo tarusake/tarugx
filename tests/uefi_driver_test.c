@@ -10,7 +10,7 @@ EFI_BOOT_SERVICES *BS;
 static EFI_BOOT_SERVICES services;
 static EFI_PCI_IO_PROTOCOL mock_pci;
 static TGX *installed;
-static UINT32 registers[16], pixels[640*480];
+static UINT32 registers[16], pixels[1920*1080/2];
 static UINT64 attrs;
 static int allocations, opened, reject_install, fail_read, child_open, reject_child, reject_remove;
 static EFI_HANDLE output_handle=(EFI_HANDLE)(UINTN)123;
@@ -21,7 +21,8 @@ static EFI_STATUS EFIAPI splash_stall(UINTN microseconds)
 {
     assert(microseconds==1000000);
     unsigned colored=0;
-    for (unsigned i=0;i<640*480;i++) colored+=pixels[i]!=0;
+    unsigned count=registers[1]>=0x00010003 ? 1920*1080/2 : 640*480;
+    for (unsigned i=0;i<count;i++) colored+=pixels[i]!=0;
     assert(colored>10000 && !installed); /* Hold after drawing, before publishing GOP. */
     splash_stalls++;
     return EFI_SUCCESS;
@@ -203,9 +204,9 @@ int main(void)
     for (unsigned i=0;i<640*480;i++) colored+=pixels[i]!=0;
     assert(colored>10000); /* Logo was drawn during child creation. */
     assert(splash_stalls==1);
-    UINT32 saved_pixels[640*480];memcpy(saved_pixels,pixels,sizeof(pixels));
+    UINT32 saved_pixels[640*480];memcpy(saved_pixels,pixels,sizeof(saved_pixels));
     assert(start(&binding,NULL,NULL)==EFI_SUCCESS);
-    assert(!memcmp(saved_pixels,pixels,sizeof(pixels))); /* No repeated draw. */
+    assert(!memcmp(saved_pixels,pixels,sizeof(saved_pixels))); /* No repeated draw. */
     assert(splash_stalls==1); /* No repeated wait. */
 #endif
     assert(installed->mode.FrameBufferBase==0 && installed->mode.FrameBufferSize==0);
@@ -282,6 +283,18 @@ int main(void)
     rem.adr.ADR++;
     assert(supported(&binding,NULL,&rem.adr.Header)==EFI_UNSUPPORTED);
     assert(start(&binding,NULL,&rem.adr.Header)==EFI_UNSUPPORTED);
+    assert(!allocations && !instances && !opened && !contexts);
+    registers[1]=0x00010003;
+    assert(start(&binding,NULL,NULL)==EFI_SUCCESS && installed);
+    assert(installed->info.HorizontalResolution==1920);
+    assert(installed->info.VerticalResolution==1080);
+    assert(installed->info.PixelsPerScanLine==1920);
+    assert(installed->io.rgb565 && registers[0x20/4]==3840);
+    assert(blt(&installed->gop,&white,EfiBltVideoFill,
+               0,0,1919,1079,1,1,0)==EFI_SUCCESS);
+    assert((pixels[1920*1080/2-1]>>16)==0xffff);
+    assert(stop(&binding,NULL,1,&output_handle)==EFI_SUCCESS);
+    assert(stop(&binding,NULL,0,NULL)==EFI_SUCCESS);
     assert(!allocations && !instances && !opened && !contexts);
 #ifdef TARUGX_EARLY_TEXT_INIT
     assert(!live_events);

@@ -20,7 +20,7 @@ static int wr(void *p, size_t offset, uint32_t value)
 }
 int main(void)
 {
-    struct tgx_io io={NULL,rd,wr};
+    struct tgx_io io={.read=rd,.write=wr};
     uint32_t color=0xff123456, buffer[64];
     assert(!tgx_blt(&io,&color,0,0,0,0,0,640,480,0));
     assert(writes==640*480 && reads==1);
@@ -59,5 +59,16 @@ int main(void)
     fail=1;
     assert(tgx_blt(&io,&color,0,0,0,0,0,1,1,0)==-2);
     assert(tgx_blt(&io,buffer,1,0,0,0,0,1,1,0)==-2);
+    fail=0;reads=writes=0;memset(fb,0,sizeof(fb));
+    struct tgx_io rgb565={.read=rd,.write=wr,.width=4,.height=2,
+                          .pitch=8,.rgb565=1};
+    uint32_t red=0x00ff0000, readback=0;
+    assert(!tgx_blt(&rgb565,&red,0,0,0,0,0,4,2,0));
+    for(unsigned i=0;i<4;i++)assert(fb[i]==0xf800f800);
+    assert(!tgx_blt(&rgb565,&readback,1,1,1,0,0,1,1,0));
+    assert(readback==red);
+    uint32_t blue=0x000000ff;
+    assert(!tgx_blt(&rgb565,&blue,2,0,0,2,0,1,1,0));
+    assert((fb[1]&0xffff)==0x001f);
     puts("GOP BLT: fill, pitch, readback, overlap, overflow and I/O errors passed");
 }

@@ -34,6 +34,11 @@ export TARUGX_PCIE_RAW_BAR_PROBE=1
 export TARUGX_PCIE_AUTO_ROM=1
 export TARUGX_PCIE_PIPELINED_MEMORY=1
 
+# The ROM is copied into the FPGA project below.  Rebuild it from the current
+# GOP sources first so a stale 640p/format-specific artifact cannot survive a
+# source change and become part of an otherwise fresh FPGA build.
+make -C uefi "$PWD/build/uefi/TaruGxGop.rom"
+
 # Regenerate the selected video PLL for every build. Generated IP is a build
 # input, so reusing an old 480p/720p/1080p file would silently build the wrong mode.
 sh scripts/gowin_generate_video.sh

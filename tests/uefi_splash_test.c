@@ -25,7 +25,8 @@ static int read_pixel(void *ctx, size_t offset, uint32_t *value)
 }
 int main(void)
 {
-    struct tgx_io io={NULL,read_pixel,write_pixel};
+    struct tgx_io io={.read=read_pixel,.write=write_pixel,
+                      .width=TGX_WIDTH,.height=TGX_HEIGHT,.pitch=TGX_WIDTH*4};
     memset(fb,0x55,sizeof(fb));
     assert(tgx_boot_splash(&io)==0);
     assert(writes==TGX_LOGO_WIDTH*TGX_LOGO_HEIGHT && reads==1);

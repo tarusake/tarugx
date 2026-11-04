@@ -10,6 +10,8 @@ struct tgx_io {
     void *context;
     int (*read)(void *, size_t, uint32_t *);
     int (*write)(void *, size_t, uint32_t);
+    size_t width, height, pitch;
+    int rgb565;
 };
 /* 0 success, -1 invalid geometry/buffer, -2 transport error. */
 int tgx_blt(struct tgx_io *, void *, unsigned, size_t, size_t,

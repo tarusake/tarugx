@@ -44,7 +44,7 @@ test: | $(OUT)
 	python3 ../tests/test_efi_rom.py
 	python3 -m unittest discover -s ../tests -p test_rom_mem.py
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
-	 -I. splash.c ../tests/uefi_splash_test.c -o $(OUT)/splash-test
+	 -I. splash.c blt.c ../tests/uefi_splash_test.c -o $(OUT)/splash-test
 	$(OUT)/splash-test
 	$(CC) $(CFLAGS) -Os -g -fsanitize=address,undefined -DTARUGX_EARLY_TEXT_INIT \
 	 -DTARUGX_BOOT_SPLASH ../tests/uefi_driver_test.c blt.c splash.c -o $(OUT)/driver-splash-test
