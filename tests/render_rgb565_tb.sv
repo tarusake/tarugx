@@ -27,6 +27,7 @@ module render_rgb565_tb;
   .mem_rsp_data(brd),.mem_rsp_error(bre));
 
  byte unsigned memory[0:4095]; int fill_requests=0,blit_reads=0,blit_writes=0;
+ int before_reads,before_writes;
  task tick; @(posedge clk); #1; endtask
  task service_fill;
   while(!fill_done) begin
@@ -63,6 +64,16 @@ module render_rgb565_tb;
   tick();@(negedge clk);blit_valid=0;service_blit();
   assert(!blit_error&&blit_reads==blit_writes)else $fatal(1,"RGB565 blit requests");
   for(int y=0;y<2;y++)for(int x=0;x<17;x++)assert(pixel(1026+y*40+x*2)==16'hf800)else $fatal(1,"RGB565 blit data");
+  // A vertically overlapping, 256-bit-aligned rectangle is copied backwards
+  // one native beat per row instead of falling back to individual pixels.
+  for(int y=0;y<3;y++)for(int x=0;x<16;x++)begin
+   memory[2048+y*32+x*2]=8'(x+y);memory[2049+y*32+x*2]=8'(32'h80+y);
+  end
+  before_reads=blit_reads;before_writes=blit_writes;
+  src=2048;dst=2080;ss=32;ds=32;bw=16;bh=2;blit_valid=1;
+  tick();@(negedge clk);blit_valid=0;service_blit();
+  assert(!blit_error&&blit_reads-before_reads==2&&blit_writes-before_writes==2)
+   else $fatal(1,"RGB565 backwards burst requests");
   $display("RGB565 render: partial fill and unaligned 2D blit PASS");$finish;
  end
  initial begin #1000000;$fatal(1,"timeout");end

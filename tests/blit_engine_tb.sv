@@ -63,7 +63,8 @@ module blit_engine_tb;
   for(int y=0;y<3;y++)for(int x=0;x<12;x++)assert(get_pixel(4100+y*64+x*4)==snapshot[y*12+x])else $fatal(1,"horizontal overlap");
   // Vertical overlap must process bottom-to-top.
   for(int y=0;y<4;y++)for(int x=0;x<8;x++)begin set_pixel(8192+y*64+x*4,'h30000000+y*256+x);snapshot[y*8+x]=get_pixel(8192+y*64+x*4);end
-  command(8192,8256,64,64,8,4);service();assert(!error)else $fatal(1,"vertical overlap error");
+  before_reads=reads;before_writes=writes;command(8192,8256,64,64,8,4);service();
+  assert(!error&&reads-before_reads==4&&writes-before_writes==4)else $fatal(1,"vertical overlap burst");
   for(int y=0;y<4;y++)for(int x=0;x<8;x++)assert(get_pixel(8256+y*64+x*4)==snapshot[y*8+x])else $fatal(1,"vertical overlap");
   command(2,1024,32,32,4,1);tick();tick();assert(done&&error&&!mem_valid)else $fatal(1,"unaligned source");
   command(0,1024,14,32,4,2);tick();tick();assert(done&&error&&!mem_valid)else $fatal(1,"unaligned stride");

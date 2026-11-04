@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// One-command packed-pixel VRAM-to-VRAM rectangle copy engine.
 ///
-/// Aligned forward copies move eight pixels per read/write pair.  Unaligned,
-/// tail, and overlapping copies fall back to one pixel while every native
-/// request remains 256-bit aligned.  Backwards traversal provides memmove
+/// Aligned copies move a full 256-bit beat per read/write pair in either
+/// direction. Unaligned heads/tails fall back to one pixel while every native
+/// request remains 256-bit aligned. Backwards traversal provides memmove
 /// semantics for overlapping rectangles.
 module blit_engine #(
     param PIXEL_BYTES: u32 = 4,
@@ -228,6 +228,11 @@ module blit_engine #(
                 State::ReadIssue : {
                     transfer_count = if !backward && (src_pixel[4:0] == 0)
                         && (dst_pixel[4:0] == 0) && (pixels_left >= (PIXELS_PER_BEAT as 16)) ?
+                        (PIXELS_PER_BEAT as 5)
+                    : if backward
+                        && (src_pixel[4:0] == ((32 - PIXEL_BYTES) as 5))
+                        && (dst_pixel[4:0] == ((32 - PIXEL_BYTES) as 5))
+                        && (pixels_left >= (PIXELS_PER_BEAT as 16)) ?
                         (PIXELS_PER_BEAT as 5) : 5'd1;
                     if mem_ready {
                         state = State::ReadWait;
@@ -263,9 +268,11 @@ module blit_engine #(
                 State::Advance   : {
                     if pixels_left >: (transfer_count as 16) {
                         pixels_left = pixels_left - (transfer_count as 16);
-                        src_pixel   = if backward ? src_pixel - PIXEL_BYTES
+                        src_pixel   = if backward ?
+                            src_pixel - (transfer_count as 32) * PIXEL_BYTES
                             : src_pixel + (transfer_count as 32) * PIXEL_BYTES;
-                        dst_pixel   = if backward ? dst_pixel - PIXEL_BYTES
+                        dst_pixel   = if backward ?
+                            dst_pixel - (transfer_count as 32) * PIXEL_BYTES
                             : dst_pixel + (transfer_count as 32) * PIXEL_BYTES;
                         state       = State::ReadIssue;
                     } else {
