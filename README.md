@@ -246,6 +246,14 @@ python3 tools/test_drm_render_ioctl.py
 python3 tools/test_drm_render_ioctl.py --keep-driver
 ```
 
+Flash版と組み合わせて起動時から現行ドライバーを使う場合は、ホストの実行中カーネル向けに
+ビルドして永続インストールします。既存モジュールは初回だけ`tarugx.ko.previous`へ保存され、
+配置後に`depmod`とSHA-256照合を行います。
+
+```sh
+python3 tools/install_remote_driver.py
+```
+
 モジュールビルド、XRGB8888／RGB565のKMS・断片化PRIME・fence・ページフリップ、
 2D scheduler・直接scanoutを一括検証する場合は次を実行します。途中の各試験は作業版
 ドライバーを維持し、最後に従来ドライバーへ復元します。作業版をそのまま使う場合は
