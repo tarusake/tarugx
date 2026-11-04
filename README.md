@@ -188,11 +188,12 @@ Xorg EXAで未対応演算をCPUへフォールバックしつつ、対応する
 ためのfront bufferです。render nodeや非masterからの確保は`EACCES`で拒否します。
 `xorg/tarugx_driver.c`はこのfront bufferをXorgの1920×1080 RGB565画面として直接表示し、
 EXAのSolidとCopyをFPGA fill/blitへ接続します。2026-11-05のXfce実機試験では
-`x11perf`中に1,236コマンドをfailure 0で実行し、PCIe全面uploadは0でした。
-同一ワークロードのmodesetting shadow方式と比べ、Xorg CPU時間は12.16秒から4.61秒へ
-62%減り、PCIe uploadは329,580,534 byte／1,326回から0になりました。500×500 fillは
-約59.8回/秒から約242回/秒へ4.0倍になりました。一方、同サイズの画面内copyは
-約59.7回/秒から約6.6回/秒へ低下しており、次の最適化対象はFPGA blitです。
+`x11perf`中に1,243コマンドをfailure 0で実行し、PCIe全面uploadは0でした。
+同一ワークロードのmodesetting shadow方式と比べ、Xorg CPU時間は12.32秒から4.08秒へ
+約67%減り、PCIe uploadは360,266,564 byte／1,443回から0になりました。500×500 fillは
+約59.8回/秒から約242回/秒へ4.0倍になりました。blitは重なり後方コピーにも256-bit
+バーストを使用し、同サイズの画面内copyは従来の約6.6回/秒から約7.0回/秒へ改善しました。
+ただしshadow方式の約59.7回/秒には届かず、次は行ごとのDDR応答待ちを減らす必要があります。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
