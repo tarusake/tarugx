@@ -63,7 +63,7 @@ try:
         plymouth_config.parent.mkdir(parents=True, exist_ok=True)
         plymouth_config.write_text('FRAMEBUFFER=y\\n')
     subprocess.run(['update-initramfs', '-u', '-k', kernel], check=True,
-                   timeout=120, stdout=subprocess.DEVNULL)
+                   timeout=480, stdout=subprocess.DEVNULL)
     source_hash = hashlib.sha256(module.read_bytes()).hexdigest()
     installed_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
     if source_hash != installed_hash:
@@ -83,7 +83,7 @@ def main() -> None:
     names = ("Makefile", "tarugx.c", "tarugx_drm.h")
     files = {name: encoded(DRIVER / name) for name in names}
     output = Backend().remote(
-        remote_program(files), "install DRM driver", timeout=210
+        remote_program(files), "install DRM driver", timeout=600
     )
     print(output, end="")
 
