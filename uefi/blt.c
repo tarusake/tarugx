@@ -52,7 +52,7 @@ int tgx_blt(struct tgx_io *io, void *buffer, unsigned op, size_t sx, size_t sy,
 {
     size_t bx, by, x, y, row, col, offset = 0;
     unsigned char *b = buffer;
-    uint32_t pixel = 0;
+    uint32_t pixel = 0, drain;
     if (!io || !io->read || !io->write || op > 3 || !w || !h)
         return -1;
     if ((op == 1 || op == 3) && !rectangle(io, sx, sy, w, h)) return -1;
@@ -102,9 +102,15 @@ int tgx_blt(struct tgx_io *io, void *buffer, unsigned op, size_t sx, size_t sy,
                 }
                 if (video_write(io,dx+col,dy+row,last)) return -2;
             }
+            /* EFI_PCI_IO_PROTOCOL memory writes are posted.  A firmware can
+             * queue a full-screen fill or logo upload much faster than the
+             * FPGA's DDR path retires it.  Read back the end of every row so
+             * PCIe ordering bounds the outstanding writes instead of waiting
+             * until an entire 1080p BLT has been submitted. */
+            if (io->read(io->context,
+                video_offset(io,dx+w-1,dy+row)&~(size_t)3,&drain))
+                return -2;
         }
-        if (io->read(io->context,video_offset(io,dx+w-1,dy+h-1)&~(size_t)3,&pixel))
-            return -2;
         return 0;
     }
     for (row = 0; row < h; row++) {

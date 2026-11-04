@@ -64,6 +64,7 @@ int main(void)
                           .pitch=8,.rgb565=1};
     uint32_t red=0x00ff0000, readback=0;
     assert(!tgx_blt(&rgb565,&red,0,0,0,0,0,4,2,0));
+    assert(writes==4 && reads==2); /* Each row drains posted PCIe writes. */
     for(unsigned i=0;i<4;i++)assert(fb[i]==0xf800f800);
     assert(!tgx_blt(&rgb565,&readback,1,1,1,0,0,1,1,0));
     assert(readback==red);
