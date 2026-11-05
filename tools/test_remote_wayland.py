@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Verify Weston, an EGL client, and TaruGX KMS on the hardware host."""
 
+import argparse
+
 from recover_pcie import Backend
 
 
@@ -22,6 +24,7 @@ names = ('page_flips', 'flip_timeouts', 'vblank_timeouts', 'bytes_uploaded',
 weston = None
 client = None
 stage = 'check dependencies'
+use_pixman = __USE_PIXMAN__
 
 def counters():
     return {name: int((device/name).read_text()) for name in names}
@@ -66,10 +69,16 @@ try:
     environment.update({'XDG_RUNTIME_DIR': str(runtime),
                         'WAYLAND_DISPLAY': 'wayland-tarugx',
                         'LIBGL_ALWAYS_SOFTWARE': '1'})
+    if not use_pixman:
+        assert any(Path(directory, 'tarugx_dri.so').exists()
+                   for directory in ('/usr/lib/x86_64-linux-gnu/dri',
+                                     '/usr/lib/dri')), \
+            'install the TaruGX Mesa shim first'
     stage = 'start Weston DRM backend'
+    renderer_arguments = ['--use-pixman'] if use_pixman else []
     weston = subprocess.Popen([
         'weston', '--backend=drm-backend.so', '--drm-device=card0',
-        '--tty=2', '--use-pixman', '--current-mode',
+        '--tty=2', *renderer_arguments, '--current-mode',
         '--continue-without-input', '--no-config',
         '--socket=wayland-tarugx', '--log='+str(log_path),
     ], env=environment)
@@ -86,6 +95,8 @@ try:
     assert 'DRM: supports atomic modesetting' in log, log[-6000:]
     assert "Output 'HDMI-A-1' enabled" in log, log[-6000:]
     assert '1920x1080@60.0' in log, log[-6000:]
+    if not use_pixman:
+        assert 'GL renderer: llvmpipe' in log, log[-12000:]
     stage = 'identify Mesa renderer'
     egl = subprocess.run(['eglinfo', '-B'], env=environment,
                          capture_output=True, text=True, timeout=30)
@@ -119,7 +130,9 @@ try:
     assert delta['vblank_timeouts'] == 0, delta
     assert delta['dma_upload_failures'] == 0, delta
     assert delta['render_failures'] == 0, delta
-    result = {'result': 'wayland_egl_pass', 'fps': fps,
+    result = {'result': 'wayland_egl_pass',
+              'renderer': 'pixman' if use_pixman else 'mesa-llvmpipe',
+              'fps': fps,
               'client_cpu_percent_one_core': cpu_seconds * 100.0 / elapsed,
               'tarugx_dri_available': tarugx_dri_available,
               'delta': delta, 'mesa_report': egl_report[-6000:],
@@ -144,7 +157,14 @@ finally:
 
 
 def main() -> None:
-    output = Backend().remote(REMOTE, "test Weston EGL desktop", 180)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--pixman', action='store_true',
+        help='use the Pixman compositor instead of the Mesa GL compositor',
+    )
+    args = parser.parse_args()
+    remote = REMOTE.replace('__USE_PIXMAN__', repr(args.pixman))
+    output = Backend().remote(remote, "test Weston EGL desktop", 180)
     print(output, end="")
     if '"result": "wayland_egl_pass"' not in output or \
             '"xorg_restored": true' not in output:

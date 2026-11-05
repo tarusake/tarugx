@@ -226,8 +226,10 @@ static void fill_rect(uint8_t *pixels, uint32_t pitch, const drmModeClip *clip,
 int main(int argc, char **argv)
 {
 	struct drm_mode_create_dumb create = { .bpp = 32 };
+	struct drm_mode_create_dumb padded_create = { .bpp = 32 };
 	struct drm_mode_map_dumb map = {0};
 	struct drm_mode_destroy_dumb destroy = {0};
+	struct drm_mode_destroy_dumb padded_destroy = {0};
 	struct drm_gem_close import_close = {0};
 	struct dma_heap_allocation_data heap_alloc = {
 		.fd_flags = O_RDWR | O_CLOEXEC,
@@ -308,6 +310,26 @@ int main(int argc, char **argv)
 		fprintf(stderr, "no connected connector with a mode\n");
 		goto out;
 	}
+	padded_create.width = connector->modes[0].hdisplay;
+	padded_create.height = (connector->modes[0].vdisplay + 63) & ~63U;
+	if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &padded_create)) {
+		perror("create GBM-aligned dumb buffer");
+		goto out;
+	}
+	if (padded_create.height < connector->modes[0].vdisplay ||
+	    padded_create.pitch < padded_create.width * 4 ||
+	    padded_create.size < (uint64_t)padded_create.pitch *
+				 padded_create.height) {
+		fputs("invalid GBM-aligned dumb buffer layout\n", stderr);
+		goto out;
+	}
+	padded_destroy.handle = padded_create.handle;
+	if (drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &padded_destroy)) {
+		perror("destroy GBM-aligned dumb buffer");
+		goto out;
+	}
+	padded_create.handle = 0;
+	puts("DRM GBM padding PASS: aligned dumb-buffer backing accepted");
 	create.width = connector->modes[0].hdisplay;
 	create.height = connector->modes[0].vdisplay;
 	if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create)) {
@@ -661,6 +683,10 @@ int main(int argc, char **argv)
 	}
 	rc = 0;
 out:
+	if (padded_create.handle) {
+		padded_destroy.handle = padded_create.handle;
+		drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &padded_destroy);
+	}
 	if (import_close.handle && import_fd >= 0)
 		drmIoctl(import_fd, DRM_IOCTL_GEM_CLOSE, &import_close);
 	if (render_sync_file >= 0)

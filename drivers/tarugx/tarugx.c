@@ -2188,13 +2188,20 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 {
 	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
 	struct tarugx_host_object *object;
+	u32 max_width, max_height;
 	u64 pitch, size, max_size;
 	int ret;
 
 	if (!tgx->dma_only_scanout)
 		return drm_gem_shmem_dumb_create(file, drm, args);
-	if (!args->width || args->width > tgx->width || !args->height ||
-	    args->height > tgx->height ||
+	/* GBM may pad scanout allocations beyond the visible dimensions (Mesa's
+	 * kms_swrast pads 1080 lines to 1088).  The framebuffer and atomic checks
+	 * still require the visible mode, while the backing GEM may include this
+	 * bounded alignment padding. */
+	max_width = ALIGN(tgx->width, 64);
+	max_height = ALIGN(tgx->height, 64);
+	if (!args->width || args->width > max_width || !args->height ||
+	    args->height > max_height ||
 	    (args->bpp != tgx->cpp * 8 &&
 	     !(tgx->format == DRM_FORMAT_RGB565 && args->bpp == 32)))
 		return -EINVAL;
@@ -2202,7 +2209,7 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 	if (check_mul_overflow(pitch, (u64)args->height, &size))
 		return -EOVERFLOW;
 	size = PAGE_ALIGN(size);
-	max_size = PAGE_ALIGN((u64)tgx->width * tgx->height *
+	max_size = PAGE_ALIGN((u64)max_width * max_height *
 			      max_t(u32, tgx->cpp, args->bpp / 8));
 	if (!pitch || pitch > U32_MAX || !size ||
 	    size > max_size)
@@ -2875,7 +2882,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 16,
+	.major = 0, .minor = 17,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
