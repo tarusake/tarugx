@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// 1080p60 physical-link test pattern. This deliberately avoids DDR so the
+/// pixel PLL, TMDS serializer, board routing, and monitor lock can be tested
+/// independently from scanout bandwidth.
+module video_test_pattern_1080p (
+    clk          : input  clock    ,
+    rst_n        : input  reset    ,
+    de           : output logic    ,
+    hsync        : output logic    ,
+    vsync        : output logic    ,
+    rgb          : output logic<24>,
+    vblank_toggle: output logic    ,
+) {
+    var x          : logic<12>;
+    var y          : logic<11>;
+    var frame_start: logic    ;
+    inst timing: video_timing_1080p (
+        clk        ,
+        rst_n      ,
+        x          ,
+        y          ,
+        de         ,
+        hsync      ,
+        vsync      ,
+        frame_start,
+    );
+    always_comb {
+        rgb = 0;
+        if de {
+            if x <: 12'd240 {
+                rgb = 24'hffffff;
+            } else if x <: 12'd480 {
+                rgb = 24'hffff00;
+            } else if x <: 12'd720 {
+                rgb = 24'h00ffff;
+            } else if x <: 12'd960 {
+                rgb = 24'h00ff00;
+            } else if x <: 12'd1200 {
+                rgb = 24'hff00ff;
+            } else if x <: 12'd1440 {
+                rgb = 24'hff0000;
+            } else if x <: 12'd1680 {
+                rgb = 24'h0000ff;
+            } else {
+                rgb = 24'h202020;
+            }
+            // White border makes cropping and one-pixel timing errors visible.
+            if (x == 0) || (x == 12'd1919) || (y == 0) || (y == 11'd1079) {
+                rgb = 24'hffffff;
+            }
+        }
+    }
+    always_ff {
+        if_reset {
+            vblank_toggle = 0;
+        } else if frame_start {
+            vblank_toggle = !vblank_toggle;
+        }
+    }
+}

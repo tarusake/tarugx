@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// CTA-861 1280x720p60 timing: 1650x750 total, positive sync.
+module video_timing_720p (
+    clk        : input  clock    ,
+    rst_n      : input  reset    ,
+    x          : output logic<11>,
+    y          : output logic<10>,
+    de         : output logic    ,
+    hsync      : output logic    ,
+    vsync      : output logic    ,
+    frame_start: output logic    ,
+) {
+    always_ff {
+        if_reset {
+            x = 0;
+            y = 0;
+        } else if x == 1649 {
+            x = 0;
+            if y == 749 {
+                y = 0;
+            } else {
+                y = y + 10'd1;
+            }
+        } else {
+            x = x + 11'd1;
+        }
+    }
+    assign de          = (x <: 11'd1280) && (y <: 10'd720);
+    assign hsync       = (x >= 11'd1390) && (x <: 11'd1430);
+    assign vsync       = (y >= 10'd725) && (y <: 10'd730);
+    assign frame_start = (x == 0) && (y == 0);
+}

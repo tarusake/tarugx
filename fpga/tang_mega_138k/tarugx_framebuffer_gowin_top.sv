@@ -50,6 +50,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     logic [4:0] ltssm;
     wire [31:0] display_ctrl, display_color;
     wire active_buffer;
+    wire [31:0] active_fb_base;
     wire vblank_toggle;
     wire msi_req, msi_status, msi_ack;
     wire [1:0] msi_enable;
@@ -131,7 +132,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [5:0] app_rx_bar;
 `ifdef TARUGX_PCIE_ROM_DIAGNOSTIC
     wire app_rx_busy;
-    wire [19:0] app_raw_bar;
+    wire app_rom_hit;
 `ifdef TARUGX_PCIE_AUTO_ROM
     wire [19:0] rx_raw_tag={u_pcie.tl_rx_bardec0_w,u_pcie.PCIE_Controller_Top_pcie_tl_rx_bardec_i};
     localparam AUTO_ROM = 1;
@@ -143,7 +144,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .clk(tlp_clk), .rst_n(cpu_reset[1]),
         .in_sop(rx_sop), .in_eop(rx_eop), .in_valid(rx_valid), .in_data(rx_data),
         .in_bar(rx_bar_decode), .in_error(rx_error), .in_wait(rx_wait),
-        .in_tag(rx_raw_tag), .out_tag(app_raw_bar),
+        .in_tag(rx_raw_tag), .out_tag_match(app_rom_hit),
         .out_sop(app_rx_sop), .out_eop(app_rx_eop), .out_valid(app_rx_valid), .out_data(app_rx_data),
         .out_bar(app_rx_bar), .out_error(app_rx_error), .out_wait(app_rx_wait), .busy(app_rx_busy)
     );
@@ -171,7 +172,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [31:0] rom_data;
     tarugx_option_rom_diagnostic #(.AUTO_ROM(AUTO_ROM)) u_rom (
         .clk(tlp_clk), .rst_n(cpu_reset[1]), .completer_id({cfg_busdev,3'b000}),
-        .rom_hit(app_raw_bar == 20'h00040),
+        .rom_hit(app_rom_hit),
         .rx_sop(app_rx_sop), .rx_eop(app_rx_eop), .rx_valid(app_rx_valid), .rx_data(app_rx_data),
         .rx_bar(app_rx_bar), .rx_error(app_rx_error), .rx_wait(app_rx_wait), .rx_masknp(app_rx_masknp),
         .core_rx_valid(core_rx_valid), .core_rx_wait(core_rx_wait), .core_rx_masknp(core_rx_masknp),
@@ -189,7 +190,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     assign core_tx_wait=tx_wait;
     assign tx_valid=core_tx_valid, tx_sop=core_tx_sop, tx_eop=core_tx_eop, tx_data=core_tx_data;
 `endif
-    tarugx_tarugx_framebuffer_top u_core (
+    tarugx_tarugx_framebuffer_top #(
+`ifdef TARUGX_VIDEO_1080P
+        .GPU_VERSION(32'h0001_0003)
+`else
+        .GPU_VERSION(32'h0001_0001)
+`endif
+    ) u_core (
         .tlp_clk(tlp_clk), .tlp_rst_n(cpu_reset[1]),
         .completer_id({cfg_busdev, 3'b000}), .link_up(link_up), .perst_n(pcie_rstn),
         .clock_ready(clock_ready), .lane_status(lane_status), .ltssm(ltssm),
@@ -203,7 +210,8 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .fb_req_addr(fb_req_addr), .fb_req_wdata(fb_req_wdata), .fb_req_wstrb(fb_req_wstrb),
         .fb_rsp_valid(fb_rsp_valid), .fb_rsp_ready(fb_rsp_ready),
         .fb_rsp_rdata(cpu_response[31:0]), .fb_rsp_error(cpu_response[32]),
-        .active_buffer(active_buffer), .vblank_toggle(vblank_toggle),
+        .active_buffer(active_buffer), .active_fb_base(active_fb_base),
+        .vblank_toggle(vblank_toggle),
         .irq_enable(msi_enable),
         .fill_busy(fill_busy), .fill_done(fill_done), .fill_error(fill_error),
         .fill_command(fill_command), .fill_start(fill_start),
@@ -218,17 +226,24 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .clkin(sys_clk_p), .clkout0(pixel_clk), .clkout1(serial_clk), .lock(video_lock)
     );
     wire [25:0] video_settings;
+`ifdef TARUGX_VIDEO_LINK_TEST
+    assign video_settings = 26'b0;
+`else
     tarugx_display_config_cdc u_display_cdc (
         .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
         .dst_clk(pixel_clk), .dst_rst_n(pixel_reset[1]),
         .src_config({display_ctrl[1:0], display_color[23:0]}),
         .dst_config(video_settings)
     );
+`endif
     wire video_de, video_hsync, video_vsync;
     wire [23:0] video_rgb;
+    wire scan_video_de, scan_video_hsync, scan_video_vsync;
+    wire [23:0] scan_video_rgb;
     wire underflow, config_error;
     wire mem_active_buffer;
-    wire pixel_vblank_toggle;
+    wire [31:0] mem_active_fb_base;
+    wire pixel_vblank_toggle, scan_vblank_toggle;
     wire [63:0] fault_snapshot;
     wire [64:0] memory_settings;
     tarugx_display_config_cdc #(.WIDTH(65)) u_memory_config_cdc (
@@ -240,7 +255,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire mem_valid;
     wire mem_ready;
     wire mem_write;
-    wire [21:0] mem_addr;
+    wire [23:0] mem_addr;
     wire [255:0] mem_wdata;
     wire [31:0] mem_wstrb;
     wire mem_rsp_valid;
@@ -250,7 +265,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire scan_valid;
     wire scan_urgent;
     wire scan_ready;
-    wire [21:0] scan_addr;
+    wire [23:0] scan_addr;
     wire scan_rsp_valid;
     wire scan_rsp_ready;
     wire [255:0] scan_rsp_data;
@@ -285,14 +300,14 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire fill_cmd_valid, fill_cmd_ready, fill_engine_done, fill_engine_error;
     wire [127:0] fill_mem_command;
     wire fill_mem_valid, fill_mem_ready, fill_mem_rsp_valid, fill_mem_rsp_ready, fill_mem_rsp_error;
-    wire [21:0] fill_mem_addr;
+    wire [23:0] fill_mem_addr;
     wire [255:0] fill_mem_wdata;
     wire [31:0] fill_mem_wstrb;
     wire blit_cmd_valid, blit_cmd_ready, blit_engine_done, blit_engine_error;
     wire [159:0] blit_mem_command;
     wire blit_mem_valid, blit_mem_ready, blit_mem_write;
     wire blit_mem_rsp_valid, blit_mem_rsp_ready, blit_mem_rsp_error;
-    wire [21:0] blit_mem_addr;
+    wire [23:0] blit_mem_addr;
     wire [255:0] blit_mem_wdata, blit_mem_rsp_data;
     wire [31:0] blit_mem_wstrb;
     tarugx_fill_command_cdc u_fill_cdc (
@@ -304,7 +319,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .dst_valid(fill_cmd_valid), .dst_ready(fill_cmd_ready), .dst_command(fill_mem_command),
         .dst_done(fill_engine_done), .dst_error(fill_engine_error)
     );
-    tarugx_fill_engine u_fill_engine (
+    tarugx_fill_engine #(
+`ifdef TARUGX_VIDEO_1080P
+        .PIXEL_BYTES(2)
+`else
+        .PIXEL_BYTES(4)
+`endif
+    ) u_fill_engine (
         .clk(ui_clk), .rst_n(mem_reset[1]),
         .cmd_valid(fill_cmd_valid), .cmd_ready(fill_cmd_ready),
         .cmd_addr(fill_mem_command[31:0]), .cmd_stride(fill_mem_command[63:32]),
@@ -325,7 +346,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .dst_valid(blit_cmd_valid), .dst_ready(blit_cmd_ready), .dst_command(blit_mem_command),
         .dst_done(blit_engine_done), .dst_error(blit_engine_error)
     );
-    tarugx_blit_engine u_blit_engine (
+    tarugx_blit_engine #(
+`ifdef TARUGX_VIDEO_1080P
+        .PIXEL_BYTES(2)
+`else
+        .PIXEL_BYTES(4)
+`endif
+    ) u_blit_engine (
         .clk(ui_clk), .rst_n(mem_reset[1]),
         .cmd_valid(blit_cmd_valid), .cmd_ready(blit_cmd_ready),
         .cmd_src_addr(blit_mem_command[31:0]), .cmd_dst_addr(blit_mem_command[63:32]),
@@ -354,9 +381,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .cpu_rsp_valid(fb_rsp_valid), .cpu_rsp_ready(fb_rsp_ready), .cpu_response(cpu_response),
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .scan_valid(scan_valid),
-`ifndef TARUGX_PIPELINED_MEMORY
         .scan_urgent(scan_urgent),
-`endif
         .scan_ready(scan_ready),
         .scan_addr(scan_addr),
         .scan_rsp_valid(scan_rsp_valid),
@@ -384,17 +409,39 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(mem_rsp_data),
         .mem_rsp_error(mem_rsp_error)
     );
-`ifdef TARUGX_PIPELINED_MEMORY
-    tarugx_scanout_pipeline_engine u_scanout (
+`ifdef TARUGX_VIDEO_LINK_TEST
+    // Link-only images remove DDR scanout so timing and hardware tests isolate
+    // the selected pixel clock, serializer and physical HDMI path.
+    assign scan_valid = 1'b0;
+    assign scan_addr = 24'b0;
+    assign scan_rsp_ready = 1'b1;
+    assign scan_urgent = 1'b0;
+    assign underflow = 1'b0;
+    assign config_error = 1'b0;
+    assign mem_active_buffer = 1'b0;
+    assign mem_active_fb_base = 32'b0;
+    assign fault_snapshot = 64'b0;
 `else
-    tarugx_scanout_engine u_scanout (
+`ifdef TARUGX_PIPELINED_MEMORY
+    tarugx_scanout_pipeline_engine #(
+`else
+    tarugx_scanout_engine #(
 `endif
-        .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]), .enable(memory_settings[64]),
+`ifdef TARUGX_VIDEO_1080P
+        .VIDEO_1080P(1'b1)
+`else
+        .VIDEO_1080P(1'b0)
+`endif
+    ) u_scanout (
+        .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
+        .enable(memory_settings[64]),
         .fb_base(memory_settings[63:32]), .fb_stride(memory_settings[31:0]),
         .config_error(config_error), .active_buffer(mem_active_buffer),
+        .active_fb_base(mem_active_fb_base),
         .scan_urgent(scan_urgent), .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
-        .settings(video_settings), .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
-        .rgb(video_rgb), .underflow(underflow), .vblank_toggle(pixel_vblank_toggle),
+        .settings(video_settings),
+        .de(scan_video_de), .hsync(scan_video_hsync), .vsync(scan_video_vsync),
+        .rgb(scan_video_rgb), .underflow(underflow), .vblank_toggle(scan_vblank_toggle),
         .fault_snapshot(fault_snapshot),
         .mem_valid(scan_valid),
         .mem_ready(scan_ready),
@@ -404,16 +451,49 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_data(scan_rsp_data),
         .mem_rsp_error(scan_rsp_error)
     );
+`endif
+`ifdef TARUGX_VIDEO_LINK_TEST
+    wire pattern_vblank_toggle;
+`ifdef TARUGX_VIDEO_720P
+    tarugx_video_test_pattern_720p u_720p_pattern (
+        .clk(pixel_clk), .rst_n(pixel_reset[1]),
+        .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
+        .rgb(video_rgb), .vblank_toggle(pattern_vblank_toggle)
+    );
+`else
+    tarugx_video_test_pattern_1080p u_1080p_pattern (
+        .clk(pixel_clk), .rst_n(pixel_reset[1]),
+        .de(video_de), .hsync(video_hsync), .vsync(video_vsync),
+        .rgb(video_rgb), .vblank_toggle(pattern_vblank_toggle)
+    );
+`endif
+    assign pixel_vblank_toggle = pattern_vblank_toggle;
+`else
+    assign video_de = scan_video_de;
+    assign video_hsync = scan_video_hsync;
+    assign video_vsync = scan_video_vsync;
+    assign video_rgb = scan_video_rgb;
+    assign pixel_vblank_toggle = scan_vblank_toggle;
+`endif
     tarugx_display_config_cdc #(.WIDTH(1)) u_active_buffer_cdc (
         .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
         .src_config(mem_active_buffer), .dst_config(active_buffer)
     );
+    tarugx_display_config_cdc #(.WIDTH(32)) u_active_fb_base_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
+        .src_config(mem_active_fb_base), .dst_config(active_fb_base)
+    );
+`ifdef TARUGX_VIDEO_LINK_TEST
+    assign vblank_toggle = 1'b0;
+`else
     tarugx_display_config_cdc #(.WIDTH(1)) u_vblank_toggle_cdc (
         .src_clk(pixel_clk), .src_rst_n(pixel_reset[1]),
         .dst_clk(tlp_clk), .dst_rst_n(cpu_reset[1]),
         .src_config(pixel_vblank_toggle), .dst_config(vblank_toggle)
     );
+`endif
 `ifndef TARUGX_PCIE_NO_MSI
     tarugx_vblank_msi u_vblank_msi (
         .clk(tlp_clk), .rst_n(cpu_reset[1]), .enable(msi_enable),
@@ -561,12 +641,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .src_config(rom_probe_src), .dst_config(rom_probe_dbg)
     );
 `ifdef TARUGX_PCIE_AUTO_ROM
-`ifdef TARUGX_PIPELINED_MEMORY
-    // FR16: serial-latency counters do not apply to multiple outstanding reads.
-    wire [287:0] uart_snapshot = {32'h46523136,24'b0,reset_scope,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
-`else
     // Passive observation of project-owned Veryl signals, never vendor IP internals.
-    wire [183:0] scanout_perf_src, scanout_perf_dbg;
+    // The FIFO level and arbitration-wait fields remain valid with pipelined DDR;
+    // serial request/response latency fields do not and are not exported by FR17.
+    wire [183:0] scanout_perf_src;
     tarugx_scanout_debug_monitor u_scanout_debug (
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
@@ -578,6 +656,25 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_valid(mem_rsp_valid), .mem_rsp_ready(mem_rsp_ready),
         .snapshot(scanout_perf_src)
     );
+`ifdef TARUGX_PIPELINED_MEMORY
+    // FR17: keep PCIe recovery/fault data and use the former reset-scope area
+    // for pipeline-safe scanout wait/FIFO diagnostics. Layout after version:
+    // max_wait[16], reserved[32], frozen/armed/pad/min/max[24], reserved[8].
+    wire [39:0] pipeline_scanout_src = {
+        scanout_perf_src[183:168], scanout_perf_src[23:0]
+    };
+    wire [39:0] pipeline_scanout_dbg;
+    tarugx_display_config_cdc #(.WIDTH(40)) u_scanout_debug_cdc (
+        .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
+        .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),
+        .src_config(pipeline_scanout_src), .dst_config(pipeline_scanout_dbg)
+    );
+    wire [79:0] pipeline_scanout_debug = {
+        pipeline_scanout_dbg[39:24], 32'b0, pipeline_scanout_dbg[23:0], 8'b0
+    };
+    wire [287:0] uart_snapshot = {32'h46523137,pipeline_scanout_debug,5'b0,recovery_sync,pcie_diagnostic,debug_fault,debug_aux_sync};
+`else
+    wire [183:0] scanout_perf_dbg;
     tarugx_display_config_cdc #(.WIDTH(184), .SEND_UNCHANGED(1)) u_scanout_debug_cdc (
         .src_clk(ui_clk), .src_rst_n(mem_reset[1]),
         .dst_clk(debug_clk), .dst_rst_n(debug_reset_n),

@@ -6,11 +6,12 @@ module scanout_engine_tb;
  logic enable=1;logic [31:0] fb_base=0,fb_stride=2560;
  logic config_error,mem_valid,mem_ready,mem_rsp_valid=0,mem_rsp_ready;
  logic active_buffer;
- logic [21:0] mem_addr;logic [255:0] mem_rsp_data=0;logic mem_rsp_error=0;
+ logic [31:0] active_fb_base;
+ logic [23:0] mem_addr;logic [255:0] mem_rsp_data=0;logic mem_rsp_error=0;
  logic [25:0] settings=26'h1000000;
  logic de,hsync,vsync,underflow,vblank_toggle;logic [23:0] rgb;
  logic [63:0] fault_snapshot;
- int delay_count=0,cycle=0,frame=0,pixels=0;logic [21:0] saved_addr;
+ int delay_count=0,cycle=0,frame=0,pixels=0;logic [23:0] saved_addr;
  logic scan_urgent;
  tarugx_scanout_engine dut(.*);
  assign mem_ready=delay_count==0 && !mem_rsp_valid && cycle%7!=0;
@@ -32,7 +33,9 @@ module scanout_engine_tb;
  always @(posedge pixel_clk) if(pixel_rst_n) begin
   if(dut.display.frame_start) frame++;
   if((frame==2 || frame==3 || frame==4 || frame==5 || frame==8) && de) begin
-   assert(rgb==24'(int'(dut.display.y)*640+int'(dut.display.x))) else $fatal(1,"integrated pixel f%0d %0d,%0d %h",frame,dut.display.x,dut.display.y,rgb);
+   // The complete video bus is registered after pixel selection; internal x
+   // has advanced once while RGB/DE describe the preceding active pixel.
+   assert(dut.display.x>0 && rgb==24'(int'(dut.display.y)*640+int'(dut.display.x)-1)) else $fatal(1,"integrated pixel f%0d %0d,%0d %h",frame,dut.display.x,dut.display.y,rgb);
    pixels++;
   end
   if(frame>=6 && frame<=7 && de)

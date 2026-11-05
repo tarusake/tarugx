@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// Eight reserved response slots hide DDR read latency without dropping data.
 /// Responses must be ordered. Frame configuration changes only after full drain.
-module scanout_prefetch_reader (
+module scanout_prefetch_reader #(
+    param WIDTH        : u32 = 640,
+    param HEIGHT       : u32 = 480,
+    param INDEX_WIDTH  : u32 = 16 ,
+    param BYTES_PER_PIXEL: u32 = 4,
+    param PIXELS_PER_BEAT: u32 = 8,
+    param BEATS_PER_ROW: u32 = WIDTH / PIXELS_PER_BEAT,
+    param ROW_WIDTH    : u32 = $clog2(HEIGHT),
+    param COLUMN_WIDTH : u32 = $clog2(BEATS_PER_ROW),
+    param LAST_ROW     : bit<ROW_WIDTH> = (HEIGHT - 1) as ROW_WIDTH,
+    param LAST_COLUMN  : bit<COLUMN_WIDTH> = (BEATS_PER_ROW - 1) as COLUMN_WIDTH,
+    param LAST_INDEX   : bit<INDEX_WIDTH> = (HEIGHT * BEATS_PER_ROW - 1) as INDEX_WIDTH,
+) (
     clk          : input  clock     ,
     rst_n        : input  reset     ,
     enable       : input  logic     ,
@@ -9,27 +21,29 @@ module scanout_prefetch_reader (
     fb_stride    : input  logic<32> ,
     config_error : output logic     ,
     active_buffer: output logic     ,
+    active_fb_base: output logic<32>,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_rsp_valid: input  logic     ,
     mem_rsp_ready: output logic     ,
     mem_rsp_data : input  logic<256>,
     mem_rsp_error: input  logic     ,
     out_valid    : output logic     ,
     out_ready    : input  logic     ,
-    out_index    : output logic<16> ,
+    out_index    : output logic<INDEX_WIDTH>,
     out_data     : output logic<256>,
     out_error    : output logic     ,
 ) {
     var active        : logic         ;
-    var issued        : logic<16>     ;
-    var row           : logic<9>      ;
-    var column        : logic<7>      ;
-    var row_base      : logic<22>     ;
-    var stride        : logic<22>     ;
+    var requesting    : logic         ;
+    var row           : logic<ROW_WIDTH>   ;
+    var column        : logic<COLUMN_WIDTH>;
+    var row_base      : logic<24>     ;
+    var stride        : logic<24>     ;
     var reserved      : logic<4>      ;
     var capacity      : logic         ;
+    var response_ready: logic         ;
     var available     : logic<4>      ;
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -40,15 +54,18 @@ module scanout_prefetch_reader (
     var pending_stride: logic<32>     ;
     var pending_end   : logic<64>     ;
     let valid_config  : logic          = (pending_base[4:0] == 0) && (pending_stride[4:0] == 0)
-        && (pending_stride >= 2560) && (pending_end <= 64'h400000);
+        && (pending_stride >= WIDTH * BYTES_PER_PIXEL) && (pending_end <= 64'h1000000);
     // Keep the credit decision registered so the reservation counter does
     // not feed the request/counter clock enables on the same cycle.
-    assign mem_valid = active && (issued <: 38400) && capacity;
+    // The final accepted request clears this registered flag.  Keeping the
+    // 16-bit frame-count comparison out of mem_valid shortens the path into
+    // the asynchronous request FIFO at 100 MHz.
+    assign mem_valid = requesting && capacity;
     let issue: logic = mem_valid && mem_ready;
     // Native DDR responses cannot return in the request-accept cycle.  Keep
     // request admission out of the response-ready path so that the arbiter
     // and this response store are separated by a register boundary.
-    assign mem_rsp_ready = reserved != available;
+    assign mem_rsp_ready = response_ready;
     let response: logic = mem_rsp_valid && mem_rsp_ready;
     assign out_valid = available != 0;
     assign out_data  = data[head];
@@ -57,13 +74,14 @@ module scanout_prefetch_reader (
     always_ff {
         if_reset {
             active         = 0;
-            issued         = 0;
+            requesting     = 0;
             row            = 0;
             column         = 0;
             row_base       = 0;
             stride         = 0;
             reserved       = 0;
             capacity       = 1;
+            response_ready = 0;
             available      = 0;
             head           = 0;
             tail           = 0;
@@ -71,6 +89,7 @@ module scanout_prefetch_reader (
             out_index      = 0;
             config_error   = 0;
             active_buffer  = 0;
+            active_fb_base = 0;
             data           = '{default: '0};
             errors         = '{default: '0};
             config_pending = 0;
@@ -85,34 +104,39 @@ module scanout_prefetch_reader (
                 } else if !config_pending {
                     pending_base   = fb_base;
                     pending_stride = fb_stride;
-                    pending_end    = (fb_base as 64) + (fb_stride as 64) * 64'd479 + 64'd2560;
+                    pending_end    = (fb_base as 64) + (fb_stride as 64)
+                        * ((HEIGHT as 64) - 64'd1)
+                        + (WIDTH as 64) * (BYTES_PER_PIXEL as 64);
                     config_pending = 1;
                 } else {
                     config_pending = 0;
                     config_error   = !valid_config;
                     if valid_config {
                         active        = 1;
-                        active_buffer = pending_base != 0;
-                        issued        = 0;
+                        requesting    = 1;
+                        active_buffer  = pending_base != 0;
+                        active_fb_base = pending_base;
                         row           = 0;
                         column        = 0;
-                        row_base      = pending_base[21:0];
-                        mem_addr      = pending_base[21:0];
-                        stride        = pending_stride[21:0];
+                        row_base      = pending_base[23:0];
+                        mem_addr      = pending_base[23:0];
+                        stride        = pending_stride[23:0];
                         out_index     = 0;
                     }
                 }
             }
             if issue {
-                issued = issued + 16'd1;
-                if column == 79 {
+                if (row == LAST_ROW) && (column == LAST_COLUMN) {
+                    requesting = 0;
+                }
+                if column == LAST_COLUMN {
                     column   = 0;
-                    row      = row + 9'd1;
+                    row      = row + 1;
                     row_base = row_base + stride;
                     mem_addr = row_base + stride;
                 } else {
-                    column   = column + 7'd1;
-                    mem_addr = mem_addr + 22'd32;
+                    column   = column + 1;
+                    mem_addr = mem_addr + 24'd32;
                 }
             }
             if response {
@@ -122,10 +146,10 @@ module scanout_prefetch_reader (
             }
             if pop {
                 head = head + 3'd1;
-                if out_index == 38399 {
+                if out_index == LAST_INDEX {
                     active = 0;
                 } else {
-                    out_index = out_index + 16'd1;
+                    out_index = out_index + 1;
                 }
             }
             if issue && !pop {
@@ -142,6 +166,10 @@ module scanout_prefetch_reader (
             } else if pop && !response {
                 available = available - 4'd1;
             }
+            // Register the response admission decision so the reservation
+            // counter cannot drive every data-register clock enable directly.
+            // A newly issued native-DDR request cannot respond in this cycle.
+            response_ready = (reserved != available) || issue;
         }
     }
 }

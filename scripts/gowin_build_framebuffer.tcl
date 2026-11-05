@@ -31,6 +31,10 @@ set rom_diagnostic 0
 set raw_bar_probe 0
 set auto_rom 0
 set pipelined_memory 0
+set video_1080p 0
+set video_1080p_vendor 0
+set video_1080p_scanout 0
+set video_720p 0
 if {[info exists ::env(TARUGX_PCIE_POR_RELEASE_TEST)] && $::env(TARUGX_PCIE_POR_RELEASE_TEST) eq "1"} {
     if {![info exists ::env(TARUGX_PCIE_GENERATED_DIR)]} { error "POR release test requires a generated IP bundle" }
     set por_release_test 1
@@ -65,6 +69,21 @@ if {[info exists ::env(TARUGX_PCIE_PIPELINED_MEMORY)] && $::env(TARUGX_PCIE_PIPE
     if {!$auto_rom} { error "Pipelined memory requires auto ROM experiment" }
     set pipelined_memory 1
 }
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60"} {
+    set video_1080p 1
+}
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60_vendor"} {
+    set video_1080p 1
+    set video_1080p_vendor 1
+}
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "1080p60_scanout"} {
+    set video_1080p 1
+    set video_1080p_scanout 1
+}
+if {[info exists ::env(TARUGX_VIDEO_MODE)] && $::env(TARUGX_VIDEO_MODE) eq "720p60"} {
+    set video_720p 1
+}
+set video_link_test [expr {($video_1080p && !$video_1080p_scanout) || $video_720p}]
 set pcie_dir [file join $repo build gowin_pcie_x1]
 if {[info exists ::env(SIPEED_PCIE_GEN2_DIR)]} {
     set sample_dir [tarugx_required_dir SIPEED_PCIE_GEN2_DIR]
@@ -125,6 +144,10 @@ foreach source [list \
 puts [exec python3 [file join $repo scripts check_gowin_csr.py] [file join $pcie_dir serdes.csr]]
 
 if {$pipelined_memory} { set output_dir [file join $repo build gowin_framebuffer_pipeline] }
+if {$video_1080p} { set output_dir [file join $repo build gowin_framebuffer_1080p] }
+if {$video_1080p_vendor} { set output_dir [file join $repo build gowin_framebuffer_1080p_vendor] }
+if {$video_1080p_scanout} { set output_dir [file join $repo build gowin_framebuffer_1080p_scanout] }
+if {$video_720p} { set output_dir [file join $repo build gowin_framebuffer_720p] }
 
 create_project -name tarugx -dir $output_dir \
     -pn GW5AST-LV138PG484AC2/I1 -device_version B -force
@@ -142,8 +165,9 @@ if {[info exists ::env(SIPEED_HDMI_DIR)]} {
 }
 add_file [file join $repo build gowin_video tarugx_video_pll.v]
 foreach source [glob [file join $video_dir dvi-tx *.v]] {
-    if {[file tail $source] ne "dvi_tx_tmds_phy.v"} { add_file $source }
+    if {[file tail $source] ni {dvi_tx_tmds_phy.v dvi_tx_tmds_enc.v}} { add_file $source }
 }
+add_file [file join $repo fpga tang_mega_138k dvi_tx_tmds_enc.sv]
 add_file [file join $repo fpga tang_mega_138k dvi_tx_tmds_phy.sv]
 
 
@@ -169,7 +193,7 @@ add_file [file join $cam pll_init.v]
 add_file [file join $repo build gowin_ddr3_b DDR3MI.vg]
 add_file [file join $repo fpga tang_mega_138k tarugx_ddr3_wrapper.sv]
 set top_source [file join $repo fpga tang_mega_138k tarugx_framebuffer_gowin_top.sv]
-if {$recovery_experiment || $generated_no_msi || $por_release_test} {
+if {$recovery_experiment || $generated_no_msi || $por_release_test || $video_link_test} {
     set f [open $top_source r]; set top_text [read $f]; close $f
     if {$recovery_experiment} {
         set top_text [string map {"PCIE_RECOVERY_EXPERIMENT = 1'b0" "PCIE_RECOVERY_EXPERIMENT = 1'b1"} $top_text]
@@ -193,6 +217,9 @@ if {$recovery_experiment || $generated_no_msi || $por_release_test} {
     if {$raw_bar_probe} { set top_text "`define TARUGX_PCIE_RAW_BAR_PROBE\n$top_text" }
     if {$auto_rom} { set top_text "`define TARUGX_PCIE_AUTO_ROM\n$top_text" }
     if {$pipelined_memory} { set top_text "`define TARUGX_PIPELINED_MEMORY\n$top_text" }
+    if {$video_link_test} { set top_text "`define TARUGX_VIDEO_LINK_TEST\n$top_text" }
+    if {$video_1080p} { set top_text "`define TARUGX_VIDEO_1080P\n$top_text" }
+    if {$video_720p} { set top_text "`define TARUGX_VIDEO_720P\n$top_text" }
     set top_source [file join $output_dir tarugx_framebuffer_gowin_top.sv]
     set f [open $top_source w]; puts $f $top_text; close $f
 }
@@ -234,6 +261,22 @@ if {$recovery_experiment} {
         }
         set base_timing [join $kept "\n"]
     }
+    if {$video_link_test} {
+        # The physical-link test deliberately replaces and disables the DDR
+        # scanout pipeline.  Synthesis removes those blocks, so omit only the
+        # constraints whose endpoints cannot exist in this configuration.
+        set kept {}
+        foreach line [split $base_timing "\n"] {
+            if {[string match {*u_display_cdc*} $line] ||
+                [string match {*u_memory_config_cdc*} $line] ||
+                [string match {*u_active_buffer_cdc*} $line] ||
+                [string match {*u_vblank_toggle_cdc*} $line] ||
+                [string match {*u_scanout*} $line] ||
+                [string match {*fault_snapshot*} $line]} { continue }
+            lappend kept $line
+        }
+        set base_timing [join $kept "\n"]
+    }
     set f [open $recovery_sdc w]
     puts $f $base_timing
     puts $f {set_false_path -to [get_pins {recovery_experiment.u_recovery/ready_sync_0_s0/D recovery_experiment.u_recovery/perst_sync_0_s0/D recovery_meta*/D recovery_experiment.u_reset_scope/inputs_meta*/D}]}
@@ -245,11 +288,14 @@ if {$recovery_experiment} {
             puts $f {set_max_delay 10 -from [get_pins {u_rom_probe_cdc/held*/Q}] -to [get_pins {u_rom_probe_cdc/dst_config*/D}]}
         }
     }
-    if {$auto_rom && !$pipelined_memory} {
+    if {$auto_rom} {
         puts $f {set_false_path -to [get_pins {u_scanout_debug/fault_sync_0_s0/D}]}
         puts $f {set_max_delay 10 -from [get_cells {u_scanout_debug/pop_gray*}] -to [get_cells {u_scanout_debug/pop_meta*}]}
         puts $f {set_false_path -to [get_pins {u_scanout_debug_cdc/ack_sync_0_s0/D u_scanout_debug_cdc/request_sync_0_s0/D}]}
-        puts $f {set_max_delay 10 -from [get_pins {u_scanout_debug_cdc/held*/Q}] -to [get_pins {u_scanout_debug_cdc/dst_config*/D}]}
+        # The payload is held until the toggle crosses two 10.5 MHz debug
+        # clock stages.  Bound routing well inside that ~190 ns settling time
+        # without imposing the unrelated 10 ns UI-clock period on this path.
+        puts $f {set_max_delay 20 -from [get_pins {u_scanout_debug_cdc/held*/Q}] -to [get_pins {u_scanout_debug_cdc/dst_config*/D}]}
     }
     close $f
     set timing_source $recovery_sdc
@@ -260,7 +306,18 @@ set_option -verilog_std sysv2017
 set_option -use_sspi_as_gpio 1
 set_option -use_cpu_as_gpio 1
 set_option -place_option 2
-set_option -route_option 2
+# Gowin documents route option 1 as timing-priority; option 2 only shortens
+# routing runtime.  TaruGX runs the PCIe and DDR user paths at their 100 MHz
+# limit, so prefer timing closure over a faster build.
+set route_option 1
+if {[info exists ::env(TARUGX_ROUTE_OPTION)]} {
+    set route_option $::env(TARUGX_ROUTE_OPTION)
+}
+if {$route_option ni {1 2}} {
+    error "TARUGX_ROUTE_OPTION must be 1 (timing) or 2 (fast)"
+}
+puts "Gowin route option: $route_option"
+set_option -route_option $route_option
 set_option -clock_route_order 1
 # SUG1220: keep the hard-UPAR handshake loop close to the SerDes block.
 set_option -serdesRetiming 1

@@ -13,15 +13,16 @@ module framebuffer_memory_pipeline (
     mem_clk       : input  'mem clock     ,
     mem_rst_n     : input  'mem reset     ,
     scan_valid    : input  'mem logic     ,
+    scan_urgent   : input  'mem logic     ,
     scan_ready    : output 'mem logic     ,
-    scan_addr     : input  'mem logic<22> ,
+    scan_addr     : input  'mem logic<24> ,
     scan_rsp_valid: output 'mem logic     ,
     scan_rsp_ready: input  'mem logic     ,
     scan_rsp_data : output 'mem logic<256>,
     scan_rsp_error: output 'mem logic     ,
     fill_valid    : input  'mem logic     ,
     fill_ready    : output 'mem logic     ,
-    fill_addr     : input  'mem logic<22> ,
+    fill_addr     : input  'mem logic<24> ,
     fill_wdata    : input  'mem logic<256>,
     fill_wstrb    : input  'mem logic<32> ,
     fill_rsp_valid: output 'mem logic     ,
@@ -30,7 +31,7 @@ module framebuffer_memory_pipeline (
     blit_valid    : input  'mem logic     ,
     blit_ready    : output 'mem logic     ,
     blit_write    : input  'mem logic     ,
-    blit_addr     : input  'mem logic<22> ,
+    blit_addr     : input  'mem logic<24> ,
     blit_wdata    : input  'mem logic<256>,
     blit_wstrb    : input  'mem logic<32> ,
     blit_rsp_valid: output 'mem logic     ,
@@ -40,7 +41,7 @@ module framebuffer_memory_pipeline (
     mem_valid     : output 'mem logic     ,
     mem_ready     : input  'mem logic     ,
     mem_write     : output 'mem logic     ,
-    mem_addr      : output 'mem logic<22> ,
+    mem_addr      : output 'mem logic<24> ,
     mem_wdata     : output 'mem logic<256>,
     mem_wstrb     : output 'mem logic<32> ,
     mem_rsp_valid : input  'mem logic     ,
@@ -57,7 +58,7 @@ module framebuffer_memory_pipeline (
     var lane_valid      : 'mem logic     ;
     var lane_ready      : 'mem logic     ;
     var lane_write      : 'mem logic     ;
-    var lane_addr       : 'mem logic<22> ;
+    var lane_addr       : 'mem logic<24> ;
     var lane_wdata      : 'mem logic<256>;
     var lane_wstrb      : 'mem logic<32> ;
     var lane_rsp_valid  : 'mem logic     ;
@@ -67,7 +68,7 @@ module framebuffer_memory_pipeline (
     var render_valid    : 'mem logic     ;
     var render_ready    : 'mem logic     ;
     var render_write    : 'mem logic     ;
-    var render_addr     : 'mem logic<22> ;
+    var render_addr     : 'mem logic<24> ;
     var render_wdata    : 'mem logic<256>;
     var render_wstrb    : 'mem logic<32> ;
     var render_rsp_valid: 'mem logic     ;
@@ -172,6 +173,7 @@ module framebuffer_memory_pipeline (
         cpu_rsp_data  : render_rsp_data ,
         cpu_rsp_error : render_rsp_error,
         scan_valid                      ,
+        scan_urgent                     ,
         scan_ready                      ,
         scan_addr                       ,
         scan_rsp_valid                  ,

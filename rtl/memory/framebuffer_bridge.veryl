@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Ordered 4 MiB byte aperture with eight backend requests in flight.
+/// Ordered 16 MiB VRAM aperture with eight backend requests in flight.
 /// Every request receives one response; invalid/no-op requests retire locally.
 module framebuffer_bridge (
     clk          : input  clock     ,
@@ -17,7 +17,7 @@ module framebuffer_bridge (
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
     mem_write    : output logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_wdata    : output logic<256>,
     mem_wstrb    : output logic<32> ,
     mem_rsp_valid: input  logic     ,
@@ -37,7 +37,7 @@ module framebuffer_bridge (
     var response_data : logic<32>    ;
     var response_error: logic        ;
 
-    let address_error: logic = (req_addr[31:22] != 0) || (req_addr[1:0] != 0);
+    let address_error: logic = (req_addr[31:24] != 0) || (req_addr[1:0] != 0);
     let empty_write: logic = req_write && (req_wstrb == 0);
     let local_request: logic = address_error || empty_write;
     let issue_accept: logic = issuing && mem_ready;
@@ -89,7 +89,7 @@ module framebuffer_bridge (
             if backend_push {
                 issuing   = 1;
                 mem_write = req_write;
-                mem_addr  = {req_addr[21:5], 5'b0};
+                mem_addr  = {req_addr[23:5], 5'b0};
                 mem_wdata = req_wdata;
                 mem_wstrb = if req_write ? req_wstrb : 0;
             }

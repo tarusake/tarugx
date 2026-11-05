@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-"""Decode complete FR03 through FR16 UART lines; ignore partial captures."""
+"""Decode complete FR03 through FR17 UART lines; ignore partial captures."""
 import json
 import re
 import sys
@@ -26,10 +26,12 @@ def decode(line):
                 **({"raw_bar": f"{payload & 0xfffff:05x}"} if version in (0x46523130, 0x46523131) else {})
             }
         }
+    pipeline_fault = version in (0x46523136, 0x46523137)
+    pipeline_diagnostics = version == 0x46523137
     performance = version in (0x46523133, 0x46523134)
     if performance:
         version = 0x46523033  # FR13 preserves the fault/aux portion only.
-    automatic_rom = version in (0x46523132, 0x46523136)
+    automatic_rom = version in (0x46523132, 0x46523136, 0x46523137)
     if automatic_rom:
         version = 0x46523037  # FR12 carries the FR07 fault/reset layout.
     if version not in (0x46523033, 0x46523034, 0x46523035, 0x46523036, 0x46523037):
@@ -39,6 +41,16 @@ def decode(line):
     fault = (payload >> 8) & ((1 << 64) - 1)
     if automatic_rom:
         status["automatic_rom"] = True
+    if pipeline_diagnostics:
+        diagnostic = (payload >> 176) & ((1 << 80) - 1)
+        fifo = (diagnostic >> 8) & ((1 << 24) - 1)
+        status["pipeline_scanout"] = {
+            "max_scan_wait_cycles": diagnostic >> 64,
+            "frozen": bool((fifo >> 23) & 1),
+            "level_armed": bool((fifo >> 22) & 1),
+            "min_level_upper_estimate": (fifo >> 10) & 1023,
+            "max_level_upper_estimate": fifo & 1023,
+        }
     if performance:
         perf = (payload >> 72) & ((1 << 184) - 1)
         status["automatic_rom"] = True
@@ -78,11 +90,31 @@ def decode(line):
                               "reset_active": (recovery >> 2) & 1}
     if version == 0x46523037:
         status["phy_recovery"] = True
-    if version in (0x46523036, 0x46523037):
+    if version in (0x46523036, 0x46523037) and not pipeline_diagnostics:
         trace = (payload >> 176) & ((1 << 56) - 1)
         status["reset_scope"] = dict(zip(
             ("flags", "before", "during_high", "during_low", "after_high", "after_low", "current"),
             ((trace >> shift) & 255 for shift in (48, 40, 32, 24, 16, 8, 0))))
+    # FR16 is emitted by the pipelined 1080p image.  Its framebuffer snapshot
+    # has wider coordinates/indices and the sticky marker is `armed` at bit 2;
+    # bit 3 is `solid`, so treating bit 3 as the legacy capture marker hides a
+    # real FIFO starvation whenever normal (non-solid) scanout is active.
+    if pipeline_fault:
+        status["fault_captured"] = bool(fault & 4)
+        if status["fault_captured"]:
+            status.update(
+                fault_layout="1080p-rgb565",
+                x=fault >> 52,
+                y=(fault >> 41) & 0x7ff,
+                expected=(fault >> 23) & 0x3ffff,
+                actual=(fault >> 5) & 0x3ffff,
+                display_enable=(fault >> 4) & 1,
+                solid=(fault >> 3) & 1,
+                armed=(fault >> 2) & 1,
+                consuming=(fault >> 1) & 1,
+                fifo_valid=fault & 1,
+            )
+        return status
     # A status flag can precede the bundled snapshot by one diagnostic cycle.
     status["fault_captured"] = bool(fault & 8)
     if status["fault_captured"]:

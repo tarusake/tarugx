@@ -9,7 +9,7 @@ module framebuffer_commit_tb;
  logic rx_wait,rx_masknp,tx_wait=0,tx_sop,tx_eop;logic [7:0] tx_valid;logic [255:0] tx_data;
  logic [3:0] led_status;logic uart_tx_o;
  logic [31:0] display_ctrl,display_color,committed_base,committed_stride;
- logic active_buffer=0,vblank_toggle=0;logic [1:0] irq_enable;
+ logic active_buffer=0,vblank_toggle=0;logic [31:0] active_fb_base=0;logic [1:0] irq_enable;
  logic fill_busy=0,fill_done=0,fill_error=0,fill_start;logic [127:0] fill_command;
  logic blit_busy=0,blit_done=0,blit_error=0,blit_start;logic [159:0] blit_command;
  logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;

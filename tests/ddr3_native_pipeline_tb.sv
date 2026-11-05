@@ -3,7 +3,7 @@
 module ddr3_native_pipeline_tb;
  logic clk=0,rst_n=0,calibrated=0;always #5 clk=~clk;
  logic mem_valid=0,mem_ready,mem_write=0,mem_rsp_valid,mem_rsp_ready=0,mem_rsp_error;
- logic [21:0] mem_addr=0;logic [255:0] mem_wdata=256'h1234,mem_rsp_data;
+ logic [23:0] mem_addr=0;logic [255:0] mem_wdata=256'h1234,mem_rsp_data;
  logic [31:0] mem_wstrb=32'h0000a55a;
  logic cmd_ready=0,cmd_en;logic [2:0] cmd;logic [28:0] addr;
  logic wr_data_rdy=0,wr_data_en,wr_data_end;logic [255:0] wr_data;
@@ -11,16 +11,43 @@ module ddr3_native_pipeline_tb;
  tarugx_ddr3_native_pipeline dut(.*);
  task tick;@(posedge clk);#1;endtask
  task request(input bit w,input int a);
-  @(negedge clk);assert(mem_ready)else $fatal(1,"ready");mem_valid=1;mem_write=w;mem_addr=22'(a);
+  @(negedge clk);assert(mem_ready)else $fatal(1,"ready");mem_valid=1;mem_write=w;mem_addr=24'(a);
   tick();@(negedge clk);mem_valid=0;
  endtask
  initial begin
   tick();@(negedge clk);rst_n=1;tick();assert(!mem_ready)else $fatal;
   calibrated=1;tick();
+  // With the native interface continuously ready, the holding register must
+  // refill on every issue edge instead of inserting an empty cycle.
+  begin
+   int accepted=0,issued=0,first_issue=-1,last_issue=-1,cycles=0;
+   @(negedge clk);mem_valid=1;mem_write=1;mem_addr=0;
+   cmd_ready=1;wr_data_rdy=1;
+   while(issued<8)begin
+    bit will_accept,will_issue;
+    will_accept=mem_valid&&mem_ready;
+    will_issue=cmd_en;
+    tick();cycles++;
+    if(will_accept)begin
+     accepted++;@(negedge clk);mem_addr=24'(accepted*32);
+     if(accepted==8)mem_valid=0;
+    end else @(negedge clk);
+    if(will_issue)begin
+     if(first_issue<0)first_issue=cycles;
+     last_issue=cycles;issued++;
+    end
+   end
+   assert(accepted==8&&last_issue-first_issue==7)else
+    $fatal(1,"bubble-free issue accepted=%0d issued=%0d span=%0d",accepted,issued,last_issue-first_issue);
+   cmd_ready=0;wr_data_rdy=0;mem_rsp_ready=1;
+   while(mem_rsp_valid)tick();
+   @(negedge clk);mem_rsp_ready=0;
+  end
   for(int batch=0;batch<4;batch++)begin
+   int base=batch==3?'hfff000:0;
    for(int n=0;n<8;n++)begin
-    request(1'(n),32*(batch*8+n));
-    assert(addr==29'((batch*8+n)*8) && cmd==3'((n%2!=0)?0:1))else $fatal(1,"address/cmd");
+    request(1'(n),base+32*(batch*8+n));
+    assert(addr==29'((base+32*(batch*8+n))/4) && cmd==3'((n%2!=0)?0:1))else $fatal(1,"address/cmd");
     if(n%2!=0)begin
      cmd_ready=1;wr_data_rdy=0;tick();assert(!cmd_en)else $fatal(1,"split ready");
      @(negedge clk);cmd_ready=0;wr_data_rdy=1;tick();assert(!cmd_en)else $fatal(1,"split ready");
@@ -50,7 +77,7 @@ module ddr3_native_pipeline_tb;
   mem_rsp_ready=1;tick();@(negedge clk);mem_rsp_ready=0;
   request(0,0);cmd_ready=1;tick();@(negedge clk);cmd_ready=0;rst_n=0;tick();
   assert(!cmd_en && !mem_rsp_valid)else $fatal(1,"reset pending");
-  $display("Native pipeline: 8 reserved slots, mixed ordered responses, return bursts, backpressure, wrap, errors, reset PASS");$finish;
+  $display("Native pipeline: bubble-free issue, 8 reserved slots, mixed ordered responses, return bursts, backpressure, wrap, errors, reset PASS");$finish;
  end
  initial begin #100000;$fatal(1,"timeout");end
 endmodule

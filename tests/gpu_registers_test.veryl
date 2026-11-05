@@ -10,6 +10,7 @@ module gpu_registers_reset_and_read {
     var req_wdata      : logic<32> ;
     var req_wstrb      : logic<4>  ;
     var active_buffer  : logic     ;
+    var active_fb_base : logic<32> ;
     var vblank_toggle  : logic     ;
     var fill_busy      : logic     ;
     var fill_done      : logic     ;
@@ -27,6 +28,8 @@ module gpu_registers_reset_and_read {
     var dma_busy       : logic     ;
     var dma_done       : logic     ;
     var dma_error      : logic     ;
+    var dma_error_code : logic<4>  ;
+    var dma_profile    : logic<192>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
     var rsp_rdata      : logic<32> ;
@@ -50,7 +53,9 @@ module gpu_registers_reset_and_read {
     var dma_length_bytes: logic<32>;
     var dma_cmd_valid   : logic    ;
 
-    inst dut: gpu_registers (
+    inst dut: gpu_registers #(
+        GPU_VERSION: 32'h0001_0002,
+    ) (
         clk              ,
         rst              ,
         req_valid        ,
@@ -59,6 +64,7 @@ module gpu_registers_reset_and_read {
         req_wdata        ,
         req_wstrb        ,
         active_buffer    ,
+        active_fb_base   ,
         vblank_toggle    ,
         fill_busy        ,
         fill_done        ,
@@ -76,6 +82,8 @@ module gpu_registers_reset_and_read {
         dma_busy         ,
         dma_done         ,
         dma_error        ,
+        dma_error_code   ,
+        dma_profile      ,
         req_ready        ,
         rsp_valid        ,
         rsp_rdata        ,
@@ -107,6 +115,7 @@ module gpu_registers_reset_and_read {
         req_wdata     = 0;
         req_wstrb     = 0;
         active_buffer = 1;
+        active_fb_base = 32'h0025_8000;
         vblank_toggle = 1;
         fill_busy     = 0;
         fill_done     = 0;
@@ -124,6 +133,8 @@ module gpu_registers_reset_and_read {
         dma_busy      = 0;
         dma_done      = 0;
         dma_error     = 0;
+        dma_error_code = 0;
+        dma_profile   = 0;
         rst.assert();
         clk.next(1);
         $assert(display_ctrl == 0);
@@ -140,7 +151,7 @@ module gpu_registers_reset_and_read {
         $assert(!rsp_error);
         req_addr = 16'h0004;
         clk.next(1);
-        $assert(rsp_rdata == 32'h0001_0000);
+        $assert(rsp_rdata == 32'h0001_0002);
         req_addr = 16'h0008;
         clk.next(1);
         $assert(rsp_rdata == 32'h0000_0001);
@@ -153,6 +164,28 @@ module gpu_registers_reset_and_read {
         req_addr = 16'h002c;
         clk.next(1);
         $assert(rsp_rdata == 1);
+        req_addr = 16'h0034;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h0025_8000);
+        dma_profile = 192'h6666_6666_5555_5555_4444_4444_3333_3333_2222_2222_1111_1111;
+        req_addr = 16'h00d8;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h1111_1111);
+        req_addr = 16'h00dc;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h2222_2222);
+        req_addr = 16'h00e0;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h3333_3333);
+        req_addr = 16'h00e4;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h4444_4444);
+        req_addr = 16'h00ec;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h5555_5555);
+        req_addr = 16'h00f0;
+        clk.next(1);
+        $assert(rsp_rdata == 32'h6666_6666);
         req_addr = 16'h0001;
         clk.next(1);
         $assert(rsp_error);
@@ -174,6 +207,7 @@ module gpu_registers_write_byte_enable_and_commit {
     var req_wdata      : logic<32> ;
     var req_wstrb      : logic<4>  ;
     var active_buffer  : logic     ;
+    var active_fb_base : logic<32> ;
     var vblank_toggle  : logic     ;
     var fill_busy      : logic     ;
     var fill_done      : logic     ;
@@ -191,6 +225,8 @@ module gpu_registers_write_byte_enable_and_commit {
     var dma_busy       : logic     ;
     var dma_done       : logic     ;
     var dma_error      : logic     ;
+    var dma_error_code : logic<4>  ;
+    var dma_profile    : logic<192>;
     var req_ready      : logic     ;
     var rsp_valid      : logic     ;
     var rsp_rdata      : logic<32> ;
@@ -223,6 +259,7 @@ module gpu_registers_write_byte_enable_and_commit {
         req_wdata        ,
         req_wstrb        ,
         active_buffer    ,
+        active_fb_base   ,
         vblank_toggle    ,
         fill_busy        ,
         fill_done        ,
@@ -240,6 +277,8 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy         ,
         dma_done         ,
         dma_error        ,
+        dma_error_code   ,
+        dma_profile      ,
         req_ready        ,
         rsp_valid        ,
         rsp_rdata        ,
@@ -271,6 +310,7 @@ module gpu_registers_write_byte_enable_and_commit {
         req_wdata     = 0;
         req_wstrb     = 0;
         active_buffer = 0;
+        active_fb_base = 0;
         vblank_toggle = 0;
         fill_busy     = 0;
         fill_done     = 0;
@@ -288,6 +328,8 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy      = 0;
         dma_done      = 0;
         dma_error     = 0;
+        dma_error_code = 0;
+        dma_profile   = 0;
         rst.assert();
         clk.next(1);
         clk.next(1);
@@ -509,9 +551,13 @@ module gpu_registers_write_byte_enable_and_commit {
         dma_busy  = 0;
         dma_done  = 1;
         dma_error = 1;
+        dma_error_code = 4'd6;
         req_write = 0;
         clk.next(1);
         dma_done = 0;
+        $assert(rsp_rdata == 32'h0000_0006);
+        req_addr = 16'h00e8;
+        clk.next(1);
         $assert(rsp_rdata == 32'h0000_0006);
         req_write = 1;
         req_addr  = 16'h00d0;

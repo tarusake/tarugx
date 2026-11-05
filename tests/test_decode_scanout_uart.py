@@ -10,11 +10,41 @@ spec.loader.exec_module(decoder)
 
 
 class DecodeTest(unittest.TestCase):
+    def test_fr17_pipeline_diagnostics_and_fault(self):
+        fifo = (1 << 23) | (1 << 22) | (7 << 10) | 511
+        diagnostic = (23 << 64) | (fifo << 8)
+        fault = ((800 << 52) | (717 << 41) | (86090 << 23) |
+                 (86090 << 5) | 0x16)
+        payload = (0x46523137 << 256) | (diagnostic << 176) | (fault << 8) | 0xfd
+        data = decoder.decode(f"D1111X{payload:072X}")
+        self.assertEqual(data["pipeline_scanout"], dict(
+            max_scan_wait_cycles=23,
+            frozen=True, level_armed=True,
+            min_level_upper_estimate=7, max_level_upper_estimate=511))
+        self.assertTrue(data["fault_captured"])
+        self.assertEqual((data["x"], data["y"]), (800, 717))
+        self.assertNotIn("reset_scope", data)
+
     def test_fr16_pipeline_fault_layout(self):
         data=decoder.decode("D1110X46523136" + "0" * 64)
         self.assertTrue(data["automatic_rom"])
         self.assertFalse(data["fault_captured"])
         self.assertNotIn("performance",data)
+
+    def test_fr16_real_1080p_starvation(self):
+        # Captured on hardware: valid fell at x=800, y=717 while the FIFO's
+        # retained index still matched the expected RGB565 beat.
+        raw = "D1111X46523136000000031E061D1E051E030001EFF7170001020F10F3F332059AA8252A0956FD"
+        data = decoder.decode(raw)
+        self.assertTrue(data["fault_captured"])
+        self.assertEqual(data["fault_layout"], "1080p-rgb565")
+        self.assertEqual((data["x"], data["y"]), (800, 717))
+        self.assertEqual((data["expected"], data["actual"]), (86090, 86090))
+        self.assertEqual(data["display_enable"], 1)
+        self.assertEqual(data["solid"], 0)
+        self.assertEqual(data["armed"], 1)
+        self.assertEqual(data["consuming"], 1)
+        self.assertEqual(data["fifo_valid"], 0)
 
     def test_fr14_performance(self):
         data=decoder.decode("D1110X46523134" + "0" * 64)

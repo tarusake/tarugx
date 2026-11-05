@@ -3,7 +3,9 @@
 ///
 /// The request interface accepts one 32-bit, naturally aligned transaction per
 /// cycle. `req_wstrb` is a byte write enable in little-endian lane order.
-module gpu_registers (
+module gpu_registers #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     req_valid      : input  logic     ,
@@ -12,6 +14,7 @@ module gpu_registers (
     req_wdata      : input  logic<32> ,
     req_wstrb      : input  logic<4>  ,
     active_buffer  : input  logic     ,
+    active_fb_base : input  logic<32> ,
     vblank_toggle  : input  logic     ,
     fill_busy      : input  logic     ,
     fill_done      : input  logic     ,
@@ -29,6 +32,8 @@ module gpu_registers (
     dma_busy       : input  logic     ,
     dma_done       : input  logic     ,
     dma_error      : input  logic     ,
+    dma_error_code : input  logic<4>  ,
+    dma_profile    : input  logic<192>,
     req_ready      : output logic     ,
     rsp_valid      : output logic     ,
     rsp_rdata      : output logic<32> ,
@@ -53,7 +58,6 @@ module gpu_registers (
     dma_cmd_valid   : output logic    ,
 ) {
     const GPU_ID           : logic<32> = 32'h5447_5055;
-    const GPU_VERSION      : logic<32> = 32'h0001_0000;
     const GPU_STATUS       : logic<32> = 32'h0000_0001;
     var   fill_addr        : logic<32>;
     var   fill_stride      : logic<32>;
@@ -114,6 +118,7 @@ module gpu_registers (
                 14'h000a: rsp_rdata = {31'b0, active_buffer};
                 14'h000b: rsp_rdata = {31'b0, vblank_toggle};
                 14'h000c: rsp_rdata = {30'b0, irq_enable};
+                14'h000d: rsp_rdata = active_fb_base;
                 14'h0018: rsp_rdata = fill_addr;
                 14'h0019: rsp_rdata = fill_stride;
                 14'h001a: rsp_rdata = fill_size;
@@ -140,6 +145,13 @@ module gpu_registers (
                 14'h0034: rsp_rdata = 32'b0;
                 14'h0035: rsp_rdata = {26'b0, dma_cmd_valid, dma_cmd_ready, dma_rejected,
                     dma_error_sticky, dma_done_sticky, dma_busy};
+                14'h0036: rsp_rdata = dma_profile[31:0];
+                14'h0037: rsp_rdata = dma_profile[63:32];
+                14'h0038: rsp_rdata = dma_profile[95:64];
+                14'h0039: rsp_rdata = dma_profile[127:96];
+                14'h003a: rsp_rdata = {28'b0, dma_error_code};
+                14'h003b: rsp_rdata = dma_profile[159:128];
+                14'h003c: rsp_rdata = dma_profile[191:160];
                 default : {
                     rsp_rdata = 32'b0;
                     rsp_error = 1'b1;

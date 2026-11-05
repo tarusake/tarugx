@@ -64,6 +64,7 @@ module tarugx_top (
         unsupported               ,
         malformed                 ,
         active_buffer  : 1'b0     ,
+        active_fb_base : 32'b0    ,
         vblank_toggle  : 1'b0     ,
         fill_busy      : 1'b0     ,
         fill_done      : 1'b0     ,

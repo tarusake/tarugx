@@ -9,13 +9,13 @@ module memory_self_test (
     busy         : output logic     ,
     done         : output logic     ,
     failed       : output logic     ,
-    fail_addr    : output logic<22> ,
+    fail_addr    : output logic<24> ,
     fail_data    : output logic<256>,
     fail_error   : output logic     ,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
     mem_write    : output logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_wdata    : output logic<256>,
     mem_wstrb    : output logic<32> ,
     mem_rsp_valid: input  logic     ,
@@ -38,7 +38,7 @@ module memory_self_test (
     assign done          = state == State::Finish;
     assign mem_valid     = (state == State::Write) || (state == State::Read);
     assign mem_write     = state == State::Write;
-    assign mem_addr      = {13'b0, index, 5'b0};
+    assign mem_addr      = {15'b0, index, 5'b0};
     assign mem_wstrb     = 32'hffff_ffff;
     assign mem_wdata     = expected;
     assign mem_rsp_ready = (state == State::WriteWait) || (state == State::ReadWait) || (mem_valid && mem_ready);

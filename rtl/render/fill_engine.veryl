@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// One-command 32-bpp rectangle fill engine.
+/// One-command packed-pixel rectangle fill engine.
 ///
 /// Commands use a byte address for the first pixel and a byte stride.  The
 /// engine emits aligned 256-bit masked writes, so a full group of eight pixels
 /// becomes one native DDR request.  One request is outstanding at a time; a
 /// later command queue can provide command-level overlap without changing this
 /// memory contract.
-module fill_engine (
+module fill_engine #(
+    param PIXEL_BYTES: u32 = 4,
+    param PIXEL_BITS : u32 = PIXEL_BYTES * 8,
+    param PIXELS_PER_BEAT: u32 = 32 / PIXEL_BYTES,
+) (
     clk          : input  clock     ,
     rst_n        : input  reset     ,
     cmd_valid    : input  logic     ,
@@ -21,7 +25,7 @@ module fill_engine (
     error        : output logic     ,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_wdata    : output logic<256>,
     mem_wstrb    : output logic<32> ,
     mem_rsp_valid: input  logic     ,
@@ -43,23 +47,24 @@ module fill_engine (
     #[sv("syn_preserve=1")]
     var state      : State    ;
     var row_addr   : logic<32>;
-    var word_addr  : logic<22>;
+    var word_addr  : logic<24>;
     var stride     : logic<32>;
     var width      : logic<16>;
     var remaining  : logic<16>;
     var rows_left  : logic<16>;
-    var lane       : logic<3> ;
+    var lane       : logic<4> ;
     var color      : logic<32>;
     var tail       : logic<64>;
     var multiplicand: logic<64>;
     var multiplier : logic<16>;
     var multiply_step: logic<5>;
     var end_address: logic<64>;
-    let slots      : logic<5>  = 5'd8 - (lane as 5);
+    let slots      : logic<5>  = (PIXELS_PER_BEAT as 5) - (lane as 5);
     let pixels     : logic<5>  = if remaining <: (slots as 16) ? (remaining as 5) : slots;
     let next_row   : logic<32> = row_addr + stride;
-    let row_bytes  : logic<64> = (width as 64) << 2;
-    let command_basic_ok: logic = (row_addr[1:0] == 0) && (stride[1:0] == 0) && (width != 0) && (rows_left != 0)
+    let row_bytes  : logic<64> = (width as 64) * (PIXEL_BYTES as 64);
+    let command_basic_ok: logic = (row_addr % PIXEL_BYTES == 0)
+        && (stride % PIXEL_BYTES == 0) && (width != 0) && (rows_left != 0)
         && ((stride as 64) >= row_bytes);
     assign cmd_ready     = state == State::Idle;
     assign busy          = state != State::Idle;
@@ -70,10 +75,16 @@ module fill_engine (
     always_comb {
         mem_wdata = 0;
         mem_wstrb = 0;
-        for i in 0..8 {
-            mem_wdata[i * 32+:32] = color;
-            if ((i as 3) >= lane) && ((i as 5) <: ((lane as 5) + pixels)) {
-                mem_wstrb[i * 4+:4] = 4'hf;
+        for i in 0..PIXELS_PER_BEAT {
+            if PIXEL_BYTES == 2 {
+                mem_wdata[i * PIXEL_BITS+:PIXEL_BITS] = ({
+                    color[23:19], color[15:10], color[7:3]
+                } as PIXEL_BITS);
+            } else {
+                mem_wdata[i * PIXEL_BITS+:PIXEL_BITS] = color as PIXEL_BITS;
+            }
+            if ((i as 5) >= (lane as 5)) && ((i as 5) <: ((lane as 5) + pixels)) {
+                mem_wstrb[i * PIXEL_BYTES+:PIXEL_BYTES] = '1;
             }
         }
     }
@@ -140,10 +151,10 @@ module fill_engine (
                     state       = State::Bounds;
                 }
                 State::Bounds: {
-                    if end_address <= 64'h400000 {
-                        word_addr = {row_addr[21:5], 5'b0};
+                    if end_address <= 64'h1000000 {
+                        word_addr = {row_addr[23:5], 5'b0};
                         remaining = width;
-                        lane      = row_addr[4:2];
+                        lane      = if PIXEL_BYTES == 2 ? row_addr[4:1] : {1'b0, row_addr[4:2]};
                         state     = State::Issue;
                     } else {
                         error = 1;
@@ -164,7 +175,7 @@ module fill_engine (
                             state = State::Idle;
                         } else if remaining >: (pixels as 16) {
                             remaining = remaining - (pixels as 16);
-                            word_addr = word_addr + 22'd32;
+                            word_addr = word_addr + 24'd32;
                             lane      = 0;
                             state     = State::Issue;
                         } else {
@@ -177,10 +188,10 @@ module fill_engine (
                 }
                 State::NextRow: {
                     row_addr  = next_row;
-                    word_addr = {next_row[21:5], 5'b0};
+                    word_addr = {next_row[23:5], 5'b0};
                     remaining = width;
                     rows_left = rows_left - 16'd1;
-                    lane      = next_row[4:2];
+                    lane      = if PIXEL_BYTES == 2 ? next_row[4:1] : {1'b0, next_row[4:2]};
                     state     = State::Issue;
                 }
                 State::Finish: {

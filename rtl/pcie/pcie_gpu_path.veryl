@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// BAR0/BAR2 router. A pending BAR2 write stalls later BAR0 reads.
-module pcie_gpu_path (
+module pcie_gpu_path #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     completer_id   : input  logic<16> ,
@@ -21,6 +23,7 @@ module pcie_gpu_path (
     unsupported    : output logic     ,
     malformed      : output logic     ,
     active_buffer  : input  logic     ,
+    active_fb_base : input  logic<32> ,
     vblank_toggle  : input  logic     ,
     fill_busy      : input  logic     ,
     fill_done      : input  logic     ,
@@ -169,11 +172,15 @@ module pcie_gpu_path (
     var dma_busy        : logic    ;
     var dma_done        : logic    ;
     var dma_error       : logic    ;
+    var dma_error_code  : logic<4> ;
+    var dma_profile     : logic<192>;
     var dma_host_address: logic<64>;
     var dma_vram_address: logic<32>;
     var dma_length_bytes: logic<32>;
     var dma_cmd_valid   : logic    ;
-    inst bridge: bar0_tlp_bridge (
+    inst bridge: bar0_tlp_bridge #(
+        GPU_VERSION,
+    ) (
         clk                                                          ,
         rst                                                          ,
         completer_id                                                 ,
@@ -194,6 +201,7 @@ module pcie_gpu_path (
         unsupported    : b0_unsupported                              ,
         malformed      : b0_malformed                                ,
         active_buffer                                                ,
+        active_fb_base                                               ,
         vblank_toggle                                                ,
         fill_busy                                                    ,
         fill_done                                                    ,
@@ -211,6 +219,8 @@ module pcie_gpu_path (
         dma_busy                                                     ,
         dma_done                                                     ,
         dma_error                                                    ,
+        dma_error_code                                               ,
+        dma_profile                                                  ,
         display_ctrl                                                 ,
         display_color                                                ,
         display_mode                                                 ,
@@ -263,6 +273,8 @@ module pcie_gpu_path (
         busy: dma_busy,
         done: dma_done,
         error: dma_error,
+        error_code: dma_error_code,
+        profile: dma_profile,
         rx_sop,
         rx_eop,
         rx_valid,

@@ -62,7 +62,8 @@ set_option -verilog_std sysv2017
 set_option -use_sspi_as_gpio 1
 set_option -use_cpu_as_gpio 1
 set_option -place_option 2
-set_option -route_option 2
+# Use the timing-priority router for the same reason as the framebuffer build.
+set_option -route_option 1
 set_option -clock_route_order 1
 # Flash-boot settings for Tang Mega 138K.  The standard-Dock PCIe example
 # requires the maximum supported loading rate, and compression keeps the

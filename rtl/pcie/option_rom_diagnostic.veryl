@@ -38,8 +38,10 @@ module option_rom_diagnostic #(
     rom_data        : input  logic<32> ,
     diagnostic_error: output logic     ,
 ) {
-    enum State: logic<2> {
+    enum State: logic<3> {
         Idle,
+        Drain,
+        Accept,
         RomPlan,
         Rom,
         Config,
@@ -59,7 +61,10 @@ module option_rom_diagnostic #(
         && (!(fmt[0] || fmt[1]) || rx_valid[4]);
     let cfg_select     : logic      = rx_bar[0] && !rx_bar[2] && ((fmt == 0) || (fmt == 2)) && (h0[28:24] == 0)
         && ((h2[15:2] == 14'h10) || (h2[15:2] == 14'h11) || (h2[15:2] == 14'h12));
-    let rom_select     : logic      = (rx_bar == 0) && memory_read;
+    // AUTO_ROM receives a wrapper-qualified hit captured with this RX beat.
+    // Using it directly avoids putting the six-bit BAR comparison on the
+    // timing-critical path from the RX skid buffer into the core/DMA router.
+    let rom_select     : logic      = (if AUTO_ROM != 0 ? rom_hit : (rx_bar == 0)) && memory_read;
     let selected       : logic      = framed && (cfg_select || rom_select);
     let core_pending   : logic      = core_rx_masknp || (|core_tx_valid);
     let cfg_ok         : logic      = (h0[9:0] == 1) && (h1[7:4] == 0) && (h1[3:0] != 0) && (h2[1:0] == 0);
@@ -84,14 +89,18 @@ module option_rom_diagnostic #(
     var rom_tx_eop     : logic     ;
     var rom_tx_data    : logic<256>;
     let request_address: logic<32>  = if fmt[0] ? h3 : h2;
-    let accept         : logic      = selected && (state == State::Idle) && !core_pending && stream_ready;
+    // Selected overlay requests first wait for all core traffic to drain, then
+    // cross a registered Accept state.  This keeps DMA/core activity out of
+    // the configuration-register clock-enable timing path.
+    let accept         : logic      = selected && (state == State::Accept);
     assign core_rx_valid = if (state == State::Idle) && !selected ? rx_valid : 8'b0;
-    assign core_tx_wait  = tx_wait || (state != State::Idle);
-    assign rx_wait       = if state != State::Idle ?
-        (|rx_valid)
+    assign core_tx_wait  = tx_wait || ((state != State::Idle) && (state != State::Drain));
+    assign rx_wait       = if state == State::Idle ?
+        (if selected ? 1'b1 : core_rx_wait)
+    : if state == State::Accept ?
+        1'b0
     :
-        (if selected ? (core_pending || !stream_ready) : core_rx_wait)
-    ;
+        (|rx_valid);
     assign rx_masknp     = (state != State::Idle) || core_rx_masknp || (selected && memory_read);
     inst stream: option_rom_completion_stream (
         clk                                  ,
@@ -244,6 +253,10 @@ module option_rom_diagnostic #(
                 if cfg_ready {
                     state = State::Idle;
                 }
+            } else if state == State::Drain {
+                if !core_pending && stream_ready {
+                    state = State::Accept;
+                }
             } else if accept {
                 if rom_select {
                     rom_h0      = h0;
@@ -270,6 +283,8 @@ module option_rom_diagnostic #(
                     cfg_data   = if h2[15:2] == 14'h12 ? (AUTO_ROM as 32) : (if h2[2] ? base : enabled);
                     state      = State::Config;
                 }
+            } else if selected {
+                state = State::Drain;
             }
         }
     }

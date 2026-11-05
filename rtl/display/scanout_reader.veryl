@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// UI-clock reader for fixed 640x480 XRGB8888 frames, eight pixels per beat.
+/// UI-clock reader for fixed-mode packed pixel frames.
 /// Configuration is sampled between frames. FIFO entries carry a frame index.
-module scanout_reader (
+module scanout_reader #(
+    param WIDTH       : u32 = 640,
+    param HEIGHT      : u32 = 480,
+    param INDEX_WIDTH : u32 = 16 ,
+    param BYTES_PER_PIXEL: u32 = 4,
+    param PIXELS_PER_BEAT: u32 = 8,
+    param BEATS_PER_ROW: u32 = WIDTH / PIXELS_PER_BEAT,
+    param ROW_WIDTH   : u32 = $clog2(HEIGHT),
+    param COLUMN_WIDTH: u32 = $clog2(BEATS_PER_ROW),
+    param LAST_ROW    : bit<ROW_WIDTH> = (HEIGHT - 1) as ROW_WIDTH,
+    param LAST_COLUMN : bit<COLUMN_WIDTH> = (BEATS_PER_ROW - 1) as COLUMN_WIDTH,
+    param LAST_INDEX  : bit<INDEX_WIDTH> = (HEIGHT * BEATS_PER_ROW - 1) as INDEX_WIDTH,
+) (
     clk          : input  clock     ,
     rst_n        : input  reset     ,
     enable       : input  logic     ,
@@ -9,16 +21,17 @@ module scanout_reader (
     fb_stride    : input  logic<32> ,
     config_error : output logic     ,
     active_buffer: output logic     ,
+    active_fb_base: output logic<32>,
     mem_valid    : output logic     ,
     mem_ready    : input  logic     ,
-    mem_addr     : output logic<22> ,
+    mem_addr     : output logic<24> ,
     mem_rsp_valid: input  logic     ,
     mem_rsp_ready: output logic     ,
     mem_rsp_data : input  logic<256>,
     mem_rsp_error: input  logic     ,
     out_valid    : output logic     ,
     out_ready    : input  logic     ,
-    out_index    : output logic<16> ,
+    out_index    : output logic<INDEX_WIDTH>,
     out_data     : output logic<256>,
     out_error    : output logic     ,
 ) {
@@ -29,13 +42,16 @@ module scanout_reader (
         Push,
     }
     var state       : State    ;
-    var row         : logic<9> ;
-    var column      : logic<7> ;
-    var row_base    : logic<22>;
-    var stride      : logic<22>;
-    let end_address : logic<64> = (fb_base as 64) + (fb_stride as 64) * 64'd479 + 64'd2560;
-    let valid_config: logic     = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0) && (fb_stride >= 2560)
-        && (end_address <= 64'h400000);
+    var row         : logic<ROW_WIDTH>   ;
+    var column      : logic<COLUMN_WIDTH>;
+    var row_base    : logic<24>;
+    var stride      : logic<24>;
+    let end_address : logic<64> = (fb_base as 64) + (fb_stride as 64)
+        * ((HEIGHT as 64) - 64'd1)
+        + (WIDTH as 64) * (BYTES_PER_PIXEL as 64);
+    let valid_config: logic     = (fb_base[4:0] == 0) && (fb_stride[4:0] == 0)
+        && (fb_stride >= WIDTH * BYTES_PER_PIXEL)
+        && (end_address <= 64'h1000000);
     assign mem_valid     = state == State::Issue;
     assign mem_rsp_ready = (state == State::Wait) || ((state == State::Issue) && mem_ready);
     assign out_valid     = state == State::Push;
@@ -51,18 +67,20 @@ module scanout_reader (
             out_data      = 0;
             out_error     = 0;
             config_error  = 0;
-            active_buffer = 0;
+            active_buffer  = 0;
+            active_fb_base = 0;
         } else {
             case state {
                 State::Start: {
                     config_error = enable && !valid_config;
                     if enable && valid_config {
                         row           = 0;
-                        active_buffer = fb_base != 0;
+                        active_buffer  = fb_base != 0;
+                        active_fb_base = fb_base;
                         column        = 0;
-                        row_base      = fb_base[21:0];
-                        mem_addr      = fb_base[21:0];
-                        stride        = fb_stride[21:0];
+                        row_base      = fb_base[23:0];
+                        mem_addr      = fb_base[23:0];
+                        stride        = fb_stride[23:0];
                         out_index     = 0;
                         state         = State::Issue;
                     }
@@ -75,18 +93,18 @@ module scanout_reader (
                 State::Wait: {}
                 State::Push: {
                     if out_ready {
-                        if (row == 479) && (column == 79) {
+                        if (row == LAST_ROW) && (column == LAST_COLUMN) {
                             state = State::Start;
                         } else {
-                            out_index = out_index + 16'd1;
-                            if column == 79 {
+                            out_index = out_index + 1;
+                            if column == LAST_COLUMN {
                                 column   = 0;
-                                row      = row + 9'd1;
+                                row      = row + 1;
                                 row_base = row_base + stride;
                                 mem_addr = row_base + stride;
                             } else {
-                                column   = column + 7'd1;
-                                mem_addr = mem_addr + 22'd32;
+                                column   = column + 1;
+                                mem_addr = mem_addr + 24'd32;
                             }
                             state = State::Issue;
                         }

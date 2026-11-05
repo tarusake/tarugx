@@ -8,6 +8,8 @@ module pcie_dma_subsystem_tb;
   logic [63:0] cmd_host_address = 0;
   logic [31:0] cmd_vram_address = 0, cmd_length_bytes = 0;
   logic busy, done, error;
+  logic [3:0] error_code;
+  logic [191:0] profile;
   logic rx_sop = 0, rx_eop = 0;
   logic [7:0] rx_valid = 0, rx_error = 0;
   logic [255:0] rx_data = 0;
@@ -75,6 +77,9 @@ module pcie_dma_subsystem_tb;
     cmd_valid = 1; tick();
     @(negedge clk); cmd_valid = 0;
     while (tx_valid == 0) tick();
+    tick();
+    check(profile[31:0] != 0 && profile[63:32] != 0,
+          "DMA busy/TX-stall profiling mismatch");
     check(tx_sop && tx_eop && tx_valid == 8'hf0
           && tx_data[255:224] == 32'h20000002,
           "integrated DMA MRd64 mismatch");
@@ -94,6 +99,10 @@ module pcie_dma_subsystem_tb;
     accept_fb(32'h00002000, 64'h55667788_11223344, 0);
     while (!done) tick();
     check(!error && !busy, "integrated DMA completion mismatch");
+    check(profile[31:0] != 0 && profile[63:32] != 0,
+          "DMA profile was not retained after completion");
+    check(profile[191:160] != 0,
+          "DMA completion-busy profile was not retained after completion");
 
     // A CPU BAR access still owns its response after sharing the same port.
     cpu_req_write = 0; cpu_req_addr = 32'h00003000;

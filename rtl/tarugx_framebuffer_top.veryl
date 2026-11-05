@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 /// PCIe BAR0/BAR2 application core. FB_COMMIT snapshots base/stride.
-module tarugx_framebuffer_top (
+module tarugx_framebuffer_top #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     tlp_clk         : input  clock     ,
     tlp_rst_n       : input  reset     ,
     completer_id    : input  logic<16> ,
@@ -39,6 +41,7 @@ module tarugx_framebuffer_top (
     fb_rsp_rdata    : input  logic<32> ,
     fb_rsp_error    : input  logic     ,
     active_buffer   : input  logic     ,
+    active_fb_base  : input  logic<32> ,
     vblank_toggle   : input  logic     ,
     irq_enable      : output logic<2>  ,
     fill_busy       : input  logic     ,
@@ -69,7 +72,9 @@ module tarugx_framebuffer_top (
     var fb_stride    : logic<32>;
     var fb_commit    : logic    ;
 
-    inst app: pcie_gpu_path (
+    inst app: pcie_gpu_path #(
+        GPU_VERSION,
+    ) (
         clk            : tlp_clk  ,
         rst            : tlp_rst_n,
         completer_id              ,
@@ -90,6 +95,7 @@ module tarugx_framebuffer_top (
         unsupported               ,
         malformed                 ,
         active_buffer             ,
+        active_fb_base            ,
         vblank_toggle             ,
         fill_busy                 ,
         fill_done                 ,

@@ -3,7 +3,7 @@
 module memory_arbiter_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic cpu_valid=0,cpu_ready,cpu_write=1,cpu_rsp_valid,cpu_rsp_ready=0,cpu_rsp_error;
- logic [21:0] cpu_addr=32,scan_addr=64,mem_addr;
+ logic [23:0] cpu_addr=32,scan_addr=64,mem_addr;
  logic [255:0] cpu_wdata=256'h123, cpu_rsp_data,scan_rsp_data,mem_wdata,mem_rsp_data=256'h987;
  logic [31:0] cpu_wstrb='hff00,mem_wstrb;
  logic scan_valid=0,scan_ready,scan_rsp_valid,scan_rsp_ready=0,scan_rsp_error;

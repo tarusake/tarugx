@@ -26,6 +26,8 @@ module memory_request_cdc #(
     var request_empty : 'dst logic;
     var response_full : 'dst logic;
     var response_empty: 'src logic;
+    var request_ready : 'src logic;
+    var response_ready: 'dst logic;
     var request_almost_full : 'src logic;
     var response_almost_full: 'dst logic;
     var request_fifo_data   : 'dst logic<REQUEST_WIDTH>;
@@ -35,12 +37,31 @@ module memory_request_cdc #(
     var request_pop         : 'dst logic;
     var response_pop        : 'src logic;
 
-    assign src_ready     = !request_full;
+    assign src_ready     = request_ready;
     assign dst_valid     = request_buffer_valid;
-    assign dst_rsp_ready = !response_full;
+    assign dst_rsp_ready = response_ready;
     assign src_rsp_valid = response_buffer_valid;
     assign request_pop   = !request_empty && (!request_buffer_valid || dst_ready);
     assign response_pop  = !response_empty && (!response_buffer_valid || src_rsp_ready);
+
+    // Stop one entry before full, then register the admission decision.  The
+    // extra cycle consumes the final FIFO entry without ever overflowing it,
+    // while keeping the FIFO flags off the upstream ready/valid critical path.
+    always_ff (src_clk, src_rst_n) {
+        if_reset {
+            request_ready = 0;
+        } else {
+            request_ready = !request_almost_full;
+        }
+    }
+
+    always_ff (dst_clk, dst_rst_n) {
+        if_reset {
+            response_ready = 0;
+        } else {
+            response_ready = !response_almost_full;
+        }
+    }
 
     always_ff (dst_clk, dst_rst_n) {
         if_reset {
@@ -69,7 +90,7 @@ module memory_request_cdc #(
     inst requests: $std::async_fifo::<$std::synchronizer_basic> #(
         WIDTH    : REQUEST_WIDTH,
         DEPTH                 ,
-        THRESHOLD: DEPTH / 2  ,
+        THRESHOLD: DEPTH - 1  ,
     ) (
         is_clk        : src_clk               ,
         is_rst        : src_rst_n             ,
@@ -87,7 +108,7 @@ module memory_request_cdc #(
     inst responses: $std::async_fifo::<$std::synchronizer_basic> #(
         WIDTH    : 33       ,
         DEPTH               ,
-        THRESHOLD: DEPTH / 2,
+        THRESHOLD: DEPTH - 1,
     ) (
         is_clk        : dst_clk                       ,
         is_rst        : dst_rst_n                     ,

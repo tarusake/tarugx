@@ -19,13 +19,32 @@ enum { W = 640, H = 480, FRAMES = 120 };
 
 enum {
     REG_ACTIVE_BUFFER = 0x28,
+    REG_IRQ_ENABLE = 0x30,
     REG_FILL_ADDR = 0x60,
     REG_FILL_STRIDE = 0x64,
     REG_FILL_SIZE = 0x68,
     REG_FILL_COLOR = 0x6c,
     REG_FILL_COMMAND = 0x70,
     REG_FILL_STATUS = 0x74,
+    REG_BLIT_SRC = 0x80,
+    REG_BLIT_DST = 0x84,
+    REG_BLIT_SRC_STRIDE = 0x88,
+    REG_BLIT_DST_STRIDE = 0x8c,
+    REG_BLIT_SIZE = 0x90,
+    REG_QUEUE_FENCE = 0xa0,
+    REG_QUEUE_SUBMIT = 0xa4,
+    REG_QUEUE_STATUS = 0xa8,
+    REG_QUEUE_COMPLETED = 0xac,
     FRAME_BYTES = W * H * 4,
+    SPRITE_ADDRESS = 0x3f0000,
+    SPRITE_W = 80,
+    SPRITE_H = 160,
+};
+
+enum {
+    QUEUE_READY = 1 << 3,
+    QUEUE_ACTIVE = 1 << 4,
+    QUEUE_ERROR = 1 << 5,
 };
 
 struct buffer {
@@ -187,8 +206,8 @@ static void write_reg(volatile uint32_t *regs, unsigned offset, uint32_t value)
     (void)regs[offset / 4];
 }
 
-static int fill(volatile uint32_t *regs, uint32_t address, unsigned width,
-                unsigned height, uint32_t color)
+static int fill(volatile uint32_t *regs, uint32_t address, unsigned stride,
+                unsigned width, unsigned height, uint32_t color)
 {
     double deadline = now() + 2.0;
     const struct timespec pause = { .tv_nsec = 50000 };
@@ -202,7 +221,7 @@ static int fill(volatile uint32_t *regs, uint32_t address, unsigned width,
     if (status & 1)
         return -1;
     write_reg(regs, REG_FILL_ADDR, address);
-    write_reg(regs, REG_FILL_STRIDE, W * 4);
+    write_reg(regs, REG_FILL_STRIDE, stride);
     write_reg(regs, REG_FILL_SIZE, height << 16 | width);
     write_reg(regs, REG_FILL_COLOR, color);
     write_reg(regs, REG_FILL_COMMAND, 1);
@@ -222,8 +241,9 @@ static int run_fill_phase(volatile uint32_t *regs)
     for (unsigned frame = 0; frame < FRAMES; frame++) {
         unsigned x = frame * 11 % (W - 80);
         uint32_t shade = 0x00001820 + ((frame & 15) << 8);
-        if (fill(regs, base, W, H, shade) ||
-            fill(regs, base + (160 * W + x) * 4, 80, 160, 0x00ffffff)) {
+        if (fill(regs, base, W * 4, W, H, shade) ||
+            fill(regs, base + (160 * W + x) * 4, W * 4,
+                 SPRITE_W, SPRITE_H, 0x00ffffff)) {
             fprintf(stderr, "FPGA fill failed on frame %u\n", frame);
             return -1;
         }
@@ -236,6 +256,159 @@ static int run_fill_phase(volatile uint32_t *regs)
     fflush(stdout);
     sleep(1);
     return 0;
+}
+
+static int queue_ready(volatile uint32_t *regs, double deadline)
+{
+    const struct timespec pause = { .tv_nsec = 50000 };
+    uint32_t status;
+
+    do {
+        status = regs[REG_QUEUE_STATUS / 4];
+        if (!(status & QUEUE_READY))
+            nanosleep(&pause, NULL);
+    } while (!(status & QUEUE_READY) && now() < deadline);
+    return (status & QUEUE_READY) && !(status & QUEUE_ERROR) ? 0 : -1;
+}
+
+static int queue_fill(volatile uint32_t *regs, uint32_t address,
+                      unsigned stride, unsigned width, unsigned height,
+                      uint32_t color, uint32_t fence)
+{
+    if (queue_ready(regs, now() + 2.0))
+        return -1;
+    write_reg(regs, REG_FILL_ADDR, address);
+    write_reg(regs, REG_FILL_STRIDE, stride);
+    write_reg(regs, REG_FILL_SIZE, height << 16 | width);
+    write_reg(regs, REG_FILL_COLOR, color);
+    write_reg(regs, REG_QUEUE_FENCE, fence);
+    write_reg(regs, REG_QUEUE_SUBMIT, 1);
+    return 0;
+}
+
+static int queue_blit(volatile uint32_t *regs, uint32_t source,
+                      uint32_t destination, unsigned width, unsigned height,
+                      uint32_t fence)
+{
+    if (queue_ready(regs, now() + 2.0))
+        return -1;
+    write_reg(regs, REG_BLIT_SRC, source);
+    write_reg(regs, REG_BLIT_DST, destination);
+    write_reg(regs, REG_BLIT_SRC_STRIDE, SPRITE_W * 4);
+    write_reg(regs, REG_BLIT_DST_STRIDE, W * 4);
+    write_reg(regs, REG_BLIT_SIZE, height << 16 | width);
+    write_reg(regs, REG_QUEUE_FENCE, fence);
+    write_reg(regs, REG_QUEUE_SUBMIT, 2);
+    return 0;
+}
+
+static int queue_wait(volatile uint32_t *regs, uint32_t fence)
+{
+    const struct timespec pause = { .tv_nsec = 50000 };
+    double deadline = now() + 2.0;
+    uint32_t completed, status;
+
+    do {
+        completed = regs[REG_QUEUE_COMPLETED / 4];
+        if (completed != fence)
+            nanosleep(&pause, NULL);
+    } while (completed != fence && now() < deadline);
+    status = regs[REG_QUEUE_STATUS / 4];
+    return completed == fence && !(status & (QUEUE_ACTIVE | QUEUE_ERROR)) &&
+           !(status & 7) ? 0 : -1;
+}
+
+static long long interrupt_count(void)
+{
+    const char *path = "/sys/bus/pci/devices/0000:01:00.0/msi_interrupts";
+    FILE *file = fopen(path, "r");
+    long long value = -1;
+
+    if (file) {
+        if (fscanf(file, "%lld", &value) != 1)
+            value = -1;
+        fclose(file);
+    }
+    return value;
+}
+
+static int run_blit_phase(volatile uint32_t *regs)
+{
+    const uint32_t background = 0x00301050;
+    uint32_t base = (regs[REG_ACTIVE_BUFFER / 4] & 1) * FRAME_BYTES;
+    uint32_t fence = regs[REG_QUEUE_COMPLETED / 4] + 1;
+    uint32_t original_irq = regs[REG_IRQ_ENABLE / 4];
+    long long interrupts_before, interrupts_after;
+    unsigned previous = 0;
+    int rc = -1;
+
+    if (fill(regs, base, W * 4, W, H, background) ||
+        fill(regs, SPRITE_ADDRESS, SPRITE_W * 4, SPRITE_W, SPRITE_H,
+             0x0000d8ff)) {
+        fputs("FPGA blit setup failed\n", stderr);
+        return -1;
+    }
+    write_reg(regs, REG_QUEUE_STATUS, QUEUE_ERROR);
+    write_reg(regs, REG_IRQ_ENABLE, original_irq | 2);
+    interrupts_before = interrupt_count();
+    double wall_start = now(), cpu_start = cpu_now();
+    for (unsigned frame = 0; frame < FRAMES; frame++) {
+        unsigned x = (frame * 8) % (W - SPRITE_W);
+        uint32_t final_fence = fence + 1;
+        if (queue_fill(regs, base + (160 * W + previous) * 4, W * 4,
+                       SPRITE_W, SPRITE_H, background, fence) ||
+            queue_blit(regs, SPRITE_ADDRESS, base + (160 * W + x) * 4,
+                       SPRITE_W, SPRITE_H, final_fence) ||
+            queue_wait(regs, final_fence)) {
+            fprintf(stderr, "FPGA queued blit failed on frame %u\n", frame);
+            goto restore_irq;
+        }
+        fence += 2;
+        previous = x;
+    }
+    int memfd = open("/sys/bus/pci/devices/0000:01:00.0/resource2",
+                     O_RDONLY | O_SYNC | O_CLOEXEC);
+    if (memfd < 0) {
+        perror("BAR2 verify open");
+        goto restore_irq;
+    }
+    volatile uint32_t *vram = mmap(NULL, 4 * 1024 * 1024, PROT_READ,
+                                   MAP_SHARED, memfd, 0);
+    if (vram == MAP_FAILED) {
+        perror("BAR2 verify mmap");
+        close(memfd);
+        goto restore_irq;
+    }
+    unsigned last = ((FRAMES - 1) * 8) % (W - SPRITE_W);
+    int verified = vram[base / 4] == background &&
+        vram[(base + (160 * W + last) * 4) / 4] == 0x0000d8ff &&
+        vram[(base + ((160 + SPRITE_H - 1) * W +
+                      last + SPRITE_W - 1) * 4) / 4] == 0x0000d8ff;
+    munmap((void *)vram, 4 * 1024 * 1024);
+    close(memfd);
+    if (!verified) {
+        fputs("FPGA blit readback verification failed\n", stderr);
+        goto restore_irq;
+    }
+    interrupts_after = interrupt_count();
+    if (interrupts_before < 0 || interrupts_after <= interrupts_before) {
+        fputs("FPGA queue completed without an observed MSI\n", stderr);
+        goto restore_irq;
+    }
+    double elapsed = now() - wall_start;
+    double cpu = cpu_now() - cpu_start;
+    printf("QUEUE+BLIT: %d frames + fence/readback/MSI PASS, %.3f s, "
+           "%.2f fps, %.2f ms/frame, process CPU %.1f%%, MSI %lld->%lld\n",
+           FRAMES, elapsed, FRAMES / elapsed, elapsed * 1000 / FRAMES,
+           elapsed ? cpu * 100 / elapsed : 0, interrupts_before,
+           interrupts_after);
+    fflush(stdout);
+    sleep(1);
+    rc = 0;
+
+restore_irq:
+    write_reg(regs, REG_IRQ_ENABLE, original_irq);
+    return rc;
 }
 
 int main(int argc, char **argv)
@@ -301,10 +474,10 @@ int main(int argc, char **argv)
         goto out;
     }
     enabled = 1;
-    puts("Watch the monitor: red BAR, blue DMA, then green FPGA FILL.");
+    puts("Watch the monitor: red BAR, blue DMA, green FILL, purple QUEUE+BLIT.");
     if (set_dma(parameter, 0) || run_phase(fd, &b, 0) ||
         set_dma(parameter, 1) || run_phase(fd, &b, 1) ||
-        run_fill_phase(regs))
+        run_fill_phase(regs) || run_blit_phase(regs))
         goto out;
     rc = EXIT_SUCCESS;
 

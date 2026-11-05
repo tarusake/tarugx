@@ -34,9 +34,45 @@ export TARUGX_PCIE_RAW_BAR_PROBE=1
 export TARUGX_PCIE_AUTO_ROM=1
 export TARUGX_PCIE_PIPELINED_MEMORY=1
 
+# The verified image shows the TaruGX logo before the firmware splash and also
+# carries the host-specific text-console initialization.  Rebuild it from the
+# current GOP sources so a stale 640p/format-specific artifact cannot survive a
+# source change and become part of an otherwise fresh FPGA build.  Diagnostics
+# may still opt into a different ROM explicitly.
+if [ -z "${TARUGX_PCIE_ROM_FILE:-}" ]; then
+    TARUGX_PCIE_ROM_FILE="$PWD/build/uefi/TaruGxSplash.rom"
+    export TARUGX_PCIE_ROM_FILE
+    make -C uefi "$TARUGX_PCIE_ROM_FILE"
+else
+    test -f "$TARUGX_PCIE_ROM_FILE" || {
+        echo "TARUGX_PCIE_ROM_FILE does not exist: $TARUGX_PCIE_ROM_FILE" >&2
+        exit 1
+    }
+fi
+
+# Regenerate the selected video PLL for every build. Generated IP is a build
+# input, so reusing an old 480p/720p/1080p file would silently build the wrong mode.
+sh scripts/gowin_generate_video.sh
+
 gowin_sh=${GOWIN_SH:-}
 if [ -z "$gowin_sh" ]; then
     gowin_sh=$(command -v gw_sh || true)
 fi
 test -n "$gowin_sh" || { echo "Set GOWIN_SH to the gw_sh executable" >&2; exit 1; }
-exec "$gowin_sh" scripts/gowin_build_framebuffer.tcl
+"$gowin_sh" scripts/gowin_build_framebuffer.tcl
+
+case "${TARUGX_VIDEO_MODE:-480p60}" in
+    1080p60) out=build/gowin_framebuffer_1080p/tarugx/impl/pnr ;;
+    1080p60_vendor) out=build/gowin_framebuffer_1080p_vendor/tarugx/impl/pnr ;;
+    1080p60_scanout) out=build/gowin_framebuffer_1080p_scanout/tarugx/impl/pnr ;;
+    720p60)  out=build/gowin_framebuffer_720p/tarugx/impl/pnr ;;
+    *)       out=build/gowin_framebuffer_pipeline/tarugx/impl/pnr ;;
+esac
+python3 scripts/check_gowin_timing.py "$out/tarugx_tr_content.html"
+test -s "$out/tarugx.fs"
+python3 scripts/bitstream_manifest.py create "$out" \
+    --video-mode "${TARUGX_VIDEO_MODE:-480p60}" \
+    --input "$generated/serdes.v" \
+    --input "$generated/serdes.csr" \
+    --input "$generated/pcie_controller/pcie_controller.v" \
+    --input "$generated/upar_arbiter/upar_arbiter.v"

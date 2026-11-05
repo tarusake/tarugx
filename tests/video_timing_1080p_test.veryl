@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#[test(video_timing_1080p_full_frame)]
+module video_timing_1080p_full_frame {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+    var x          : logic<12>;
+    var y          : logic<11>;
+    var de         : logic    ;
+    var hsync      : logic    ;
+    var vsync      : logic    ;
+    var frame_start: logic    ;
+    inst dut: video_timing_1080p (
+        clk             ,
+        rst_n      : rst,
+        x               ,
+        y               ,
+        de              ,
+        hsync           ,
+        vsync           ,
+        frame_start     ,
+    );
+    initial {
+        rst.assert();
+        for line in 0..1125 {
+            for pixel in 0..2200 {
+                $assert(x == pixel);
+                $assert(y == line);
+                $assert(de == ((pixel <: 1920) && (line <: 1080)));
+                $assert(hsync == ((pixel >= 2008) && (pixel <: 2052)));
+                $assert(vsync == ((line >= 1084) && (line <: 1089)));
+                $assert(frame_start == ((pixel == 0) && (line == 0)));
+                clk.next(1);
+            }
+        }
+        $assert(x == 0 && y == 0 && frame_start);
+        $finish();
+    }
+}

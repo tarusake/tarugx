@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#[test(scanout_reader_counts_full_1080p_frame)]
+module scanout_reader_counts_full_1080p_frame {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+    var enable        : logic     ;
+    var fb_base       : logic<32> ;
+    var fb_stride     : logic<32> ;
+    var config_error  : logic     ;
+    var active_buffer : logic     ;
+    var active_fb_base: logic<32> ;
+    var mem_valid     : logic     ;
+    var mem_ready     : logic     ;
+    var mem_addr      : logic<24> ;
+    var mem_rsp_valid : logic     ;
+    var mem_rsp_ready : logic     ;
+    var mem_rsp_data  : logic<256>;
+    var mem_rsp_error : logic     ;
+    var out_valid     : logic     ;
+    var out_ready     : logic     ;
+    var out_index     : logic<18> ;
+    var out_data      : logic<256>;
+    var out_error     : logic     ;
+    inst dut: scanout_reader #(
+        WIDTH      : 1920,
+        HEIGHT     : 1080,
+        INDEX_WIDTH: 18  ,
+        BYTES_PER_PIXEL: 2,
+        PIXELS_PER_BEAT: 16,
+    ) (
+        clk, rst_n: rst, enable, fb_base, fb_stride, config_error,
+        active_buffer, active_fb_base, mem_valid, mem_ready, mem_addr,
+        mem_rsp_valid, mem_rsp_ready, mem_rsp_data, mem_rsp_error,
+        out_valid, out_ready, out_index, out_data, out_error,
+    );
+    initial {
+        enable        = 0;
+        fb_base       = 32'h00001000;
+        fb_stride     = 32'd3840;
+        mem_ready     = 1;
+        mem_rsp_valid = 0;
+        mem_rsp_data  = 0;
+        mem_rsp_error = 0;
+        out_ready     = 1;
+        rst.assert();
+        enable = 1;
+        clk.next(1);
+        for beat in 0..129600 {
+            $assert(mem_valid);
+            $assert(mem_addr == 24'h001000 + (beat / 120) * 3840 + (beat % 120) * 32);
+            $assert(out_index == beat);
+            clk.next(1);
+            mem_rsp_data  = beat as 256;
+            mem_rsp_valid = 1;
+            clk.next(1);
+            mem_rsp_valid = 0;
+            $assert(out_valid && out_index == beat && out_data == beat);
+            clk.next(1);
+        }
+        $assert(!config_error);
+        $assert(active_buffer && active_fb_base == 32'h00001000);
+        $assert(out_index == 18'd129599);
+        clk.next(1);
+        $assert(!out_valid);
+        $finish();
+    }
+}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Complete one-outstanding DMA requester channel at the raw Gowin TLP edge.
+/// Complete eight-outstanding DMA requester channel at the raw Gowin TLP edge.
 module pcie_dma_channel #(
     param TIMEOUT_CYCLES: u32 = 1000000,
 ) (
@@ -14,6 +14,9 @@ module pcie_dma_channel #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    error_code      : output logic<4>  ,
+    slot_full_sample: output logic     ,
+    completion_busy_sample: output logic,
     tx_ready        : input  logic     ,
     tx_valid        : output logic<8>  ,
     tx_sop          : output logic     ,
@@ -34,13 +37,15 @@ module pcie_dma_channel #(
     fb_rsp_valid    : input  logic     ,
     fb_rsp_ready    : output logic     ,
     fb_rsp_error    : input  logic     ,
+    fb_window_full  : output logic     ,
 ) {
     var mrd_valid       : logic    ;
     var mrd_ready       : logic    ;
     var mrd_host_address: logic<64>;
-    var mrd_length_dw   : logic<5> ;
+    var mrd_length_dw   : logic<7> ;
     var mrd_tag         : logic<8> ;
-    var active_tags     : logic<256>;
+    var active_valid    : logic<8> ;
+    var active_tags     : logic<64>;
     var cpl_valid       : logic    ;
     var cpl_ready       : logic    ;
     var cpl_has_data    : logic    ;
@@ -50,6 +55,7 @@ module pcie_dma_channel #(
     var cpl_byte_count  : logic<12>;
     var cpl_lower_address: logic<7>;
     var cpl_tag         : logic<8>;
+    var cpl_end         : logic;
     var cpl_data        : logic<256>;
     var tx_parameter_error: logic;
 
@@ -66,11 +72,15 @@ module pcie_dma_channel #(
         busy,
         done,
         error,
+        error_code,
+        slot_full_sample,
+        completion_busy_sample,
         mrd_valid,
         mrd_ready,
         mrd_host_address,
         mrd_length_dw,
         mrd_tag,
+        active_valid,
         active_tags,
         cpl_valid,
         cpl_ready,
@@ -79,6 +89,7 @@ module pcie_dma_channel #(
         cpl_length_dw,
         cpl_lower_address,
         cpl_tag,
+        cpl_end,
         cpl_data,
         fb_req_valid,
         fb_req_ready,
@@ -88,6 +99,7 @@ module pcie_dma_channel #(
         fb_rsp_valid,
         fb_rsp_ready,
         fb_rsp_error,
+        fb_window_full,
     );
 
     inst request_tx: dma_read_request_tx (
@@ -108,12 +120,14 @@ module pcie_dma_channel #(
     inst completion_rx: dma_completion_rx (
         clk,
         rst_n,
+        clear: cmd_valid && cmd_ready,
         rx_sop,
         rx_eop,
         rx_valid,
         rx_data,
         rx_error,
         expected_requester  : requester_id,
+        active_valid,
         active_tags,
         completion_ready    : cpl_ready   ,
         rx_wait,
@@ -125,6 +139,7 @@ module pcie_dma_channel #(
         completion_byte_count: cpl_byte_count,
         completion_lower_address: cpl_lower_address,
         completion_tag      : cpl_tag,
+        completion_end      : cpl_end,
         completion_data     : cpl_data,
     );
 
@@ -133,6 +148,13 @@ module pcie_dma_channel #(
     let rx_completion_match: logic = rx_sop
         && ((rx_header_dw0[31:24] == 8'h4a) || (rx_header_dw0[31:24] == 8'h0a))
         && (rx_header_dw2[31:16] == requester_id)
-        && active_tags[rx_header_dw2[15:8]];
+        && ((active_valid[0] && (rx_header_dw2[15:8] == active_tags[7:0]))
+            || (active_valid[1] && (rx_header_dw2[15:8] == active_tags[15:8]))
+            || (active_valid[2] && (rx_header_dw2[15:8] == active_tags[23:16]))
+            || (active_valid[3] && (rx_header_dw2[15:8] == active_tags[31:24]))
+            || (active_valid[4] && (rx_header_dw2[15:8] == active_tags[39:32]))
+            || (active_valid[5] && (rx_header_dw2[15:8] == active_tags[47:40]))
+            || (active_valid[6] && (rx_header_dw2[15:8] == active_tags[55:48]))
+            || (active_valid[7] && (rx_header_dw2[15:8] == active_tags[63:56])));
     assign rx_claim = cpl_valid || rx_completion_match;
 }

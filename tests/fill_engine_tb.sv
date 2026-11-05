@@ -4,7 +4,7 @@ module fill_engine_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
  logic cmd_valid=0,cmd_ready;logic [31:0] cmd_addr=0,cmd_stride=0,cmd_color=0;
  logic [15:0] cmd_width=0,cmd_height=0;logic busy,done,error;
- logic mem_valid,mem_ready=0;logic [21:0] mem_addr;logic [255:0] mem_wdata;logic [31:0] mem_wstrb;
+ logic mem_valid,mem_ready=0;logic [23:0] mem_addr;logic [255:0] mem_wdata;logic [31:0] mem_wstrb;
  logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  byte unsigned memory[0:65535];int requests=0;
  tarugx_fill_engine dut(.*);
@@ -17,7 +17,7 @@ module fill_engine_tb;
  task service(input bit inject_error=0);
   while(!done)begin
    if(mem_valid)begin
-    logic [255:0] held_data;logic [31:0] held_strobe;logic [21:0] held_addr;
+    logic [255:0] held_data;logic [31:0] held_strobe;logic [23:0] held_addr;
     held_data=mem_wdata;held_strobe=mem_wstrb;held_addr=mem_addr;
     repeat(requests%3)begin tick();assert(mem_valid && mem_addr==held_addr && mem_wdata==held_data && mem_wstrb==held_strobe)else $fatal(1,"request changed");end
     @(negedge clk);mem_ready=1;tick();@(negedge clk);mem_ready=0;
@@ -43,7 +43,7 @@ module fill_engine_tb;
   command(2,64,4,1,1);tick();assert(done && error && !busy && !mem_valid)else $fatal(1,"unaligned command");
   command(0,12,4,1,1);tick();assert(done && error && !mem_valid)else $fatal(1,"short stride");
   command(0,17,4,2,1);tick();assert(done && error && !mem_valid)else $fatal(1,"unaligned stride");
-  command('h3ffffc,4,2,1,1);tick();assert(done && error && !mem_valid)else $fatal(1,"aperture overflow");
+  command('hfffffc,8,2,1,1);service();assert(done && error && !mem_valid)else $fatal(1,"aperture overflow");
   command(8192,64,8,2,32'hdeadbeef);service(1);assert(done && error && !busy)else $fatal(1,"backend error");
   command(16384,64,8,1,32'h01020304);while(!mem_valid)tick();@(negedge clk);rst_n=0;tick();
   assert(cmd_ready && !busy && !done && !mem_valid)else $fatal(1,"reset");

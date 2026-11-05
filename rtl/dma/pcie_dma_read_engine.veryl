@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Two-outstanding PCIe host-memory to VRAM DMA read engine.
+/// Eight-outstanding PCIe host-memory to VRAM DMA read engine.
 ///
-/// Requests are split at 64-byte Read Completion Boundaries and may contain up
-/// to sixteen DWORDs. Two tags may be active concurrently; Completion chunks
+/// Requests are split at 4 KiB boundaries and may contain up to 64 DWORDs.
+/// Eight tags may be active concurrently; Completion chunks
 /// are associated with their request slot and written through the 256-bit VRAM
 /// path. Completion packets may arrive in either tag order.
 module pcie_dma_read_engine #(
@@ -18,12 +18,16 @@ module pcie_dma_read_engine #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    error_code      : output logic<4>  ,
+    slot_full_sample: output logic     ,
+    completion_busy_sample: output logic,
     mrd_valid       : output logic     ,
     mrd_ready       : input  logic     ,
     mrd_host_address: output logic<64> ,
-    mrd_length_dw   : output logic<5>  ,
+    mrd_length_dw   : output logic<7>  ,
     mrd_tag         : output logic<8>  ,
-    active_tags     : output logic<256>,
+    active_valid    : output logic<8>  ,
+    active_tags     : output logic<64> ,
     cpl_valid       : input  logic     ,
     cpl_ready       : output logic     ,
     cpl_has_data    : input  logic     ,
@@ -31,6 +35,7 @@ module pcie_dma_read_engine #(
     cpl_length_dw   : input  logic<4>  ,
     cpl_lower_address: input logic<7>  ,
     cpl_tag         : input  logic<8>  ,
+    cpl_end         : input  logic     ,
     cpl_data        : input  logic<256>,
     fb_req_valid    : output logic     ,
     fb_req_ready    : input  logic     ,
@@ -40,6 +45,7 @@ module pcie_dma_read_engine #(
     fb_rsp_valid    : input  logic     ,
     fb_rsp_ready    : output logic     ,
     fb_rsp_error    : input  logic     ,
+    fb_window_full  : output logic     ,
 ) {
     enum State: logic<3> {
         Idle,
@@ -54,75 +60,147 @@ module pcie_dma_read_engine #(
     var length_bytes      : logic<32> ;
     var issue_remaining_dw: logic<30> ;
     var next_tag          : logic<8>  ;
-    var slot_valid        : logic<2>  ;
-    var slot_tag          : logic<8>  [2];
-    var slot_host         : logic<64> [2];
-    var slot_vram         : logic<32> [2];
-    var slot_length       : logic<5>  [2];
-    var slot_done         : logic<5>  [2];
-    var active_tag_mask   : logic<256>;
+    var request_pending   : logic     ;
+    var request_host      : logic<64> ;
+    var request_vram      : logic<32> ;
+    var request_length    : logic<7>  ;
+    var request_tag       : logic<8>  ;
+    var request_slot      : logic<3>  ;
+    var slot_valid        : logic<8>  ;
+    var slot_tag          : logic<8>  [8];
+    var slot_host         : logic<64> [8];
+    var slot_vram         : logic<32> [8];
+    var slot_length       : logic<7>  [8];
+    var slot_received     : logic<7>  [8];
     var chunk_pending     : logic     ;
-    var chunk_slot        : logic     ;
-    var chunk_words       : logic<256>;
-    var chunk_left        : logic<4>  ;
-    var chunk_total       : logic<4>  ;
-    var chunk_index       : logic<4>  ;
+    var chunk_slot        : logic<3>  ;
+    var chunk_words       : logic<512>;
+    var chunk_left        : logic<5>  ;
+    var chunk_flush       : logic     ;
+    var chunk_request_done: logic     ;
     var write_vram        : logic<32> ;
     var fb_outstanding    : logic<4>  ;
     var timeout_counter   : logic<32> ;
+    var completion_pending: logic     ;
+    var completion_matched: logic     ;
+    var completion_slot   : logic<3>  ;
+    var completion_has_data: logic    ;
+    var completion_error  : logic     ;
+    var completion_length : logic<4>  ;
+    var completion_lower  : logic<7>  ;
+    var completion_end    : logic     ;
+    var completion_words  : logic<256>;
 
-    let rcb_space_bytes: logic<7> = 7'd64 - {1'b0, issue_host[5:0]};
-    let rcb_space_dw   : logic<5> = rcb_space_bytes[6:2];
-    let next_request_dw: logic<5> = if issue_remaining_dw <: (rcb_space_dw as 30) ?
-        (issue_remaining_dw[4:0] as 5) : rcb_space_dw;
+    // Only the final 256 bytes of a 4 KiB page can constrain a 256-byte MRd.
+    // Keeping both comparisons seven bits wide avoids a long request-valid path.
+    let remaining_limit_dw: logic<7> = if |issue_remaining_dw[29:6] ?
+        7'd64 : {1'b0, issue_remaining_dw[5:0]};
+    let page_limit_dw: logic<7> = if issue_host[11:8] == 4'b1111 ?
+        7'd64 - {1'b0, issue_host[7:2]} : 7'd64;
+    let next_request_dw: logic<7> = if remaining_limit_dw <: page_limit_dw ?
+        remaining_limit_dw : page_limit_dw;
     let command_end: logic<33> = (issue_vram as 33) + (length_bytes as 33);
     let command_ok: logic = (issue_host[1:0] == 0) && (issue_vram[1:0] == 0)
         && (length_bytes != 0) && (length_bytes[1:0] == 0)
-        && (command_end <= 33'h00400000)
+        && (command_end <= 33'h01000000)
         && ((issue_host + (length_bytes as 64)) >= issue_host);
-    let issue_slot: logic = slot_valid[0];
+    let issue_slot: logic<3> = if !slot_valid[0] ? 0
+        : if !slot_valid[1] ? 1
+        : if !slot_valid[2] ? 2
+        : if !slot_valid[3] ? 3
+        : if !slot_valid[4] ? 4
+        : if !slot_valid[5] ? 5
+        : if !slot_valid[6] ? 6
+        : 7;
     let slot_available: logic = !(&slot_valid);
-    let tag_available: logic = !active_tags[next_tag];
-    let issue_possible: logic = (state == State::Run) && (issue_remaining_dw != 0)
-        && slot_available && tag_available;
-    let cpl_match0: logic = slot_valid[0] && (slot_tag[0] == cpl_tag);
-    let cpl_match1: logic = slot_valid[1] && (slot_tag[1] == cpl_tag);
-    let cpl_slot: logic = !cpl_match0;
-    let expected_address0: logic<64> = slot_host[0] + ((slot_done[0] as 64) << 2);
-    let expected_address1: logic<64> = slot_host[1] + ((slot_done[1] as 64) << 2);
-    let cpl_expected_lower: logic<7> = if cpl_slot ? expected_address1[6:0] : expected_address0[6:0];
-    let cpl_remaining0: logic<6> = (slot_length[0] as 6) - (slot_done[0] as 6);
-    let cpl_remaining1: logic<6> = (slot_length[1] as 6) - (slot_done[1] as 6);
-    let cpl_remaining: logic<6> = if cpl_slot ? cpl_remaining1 : cpl_remaining0;
-    let cpl_vram0: logic<32> = slot_vram[0] + ((slot_done[0] as 32) << 2);
-    let cpl_vram1: logic<32> = slot_vram[1] + ((slot_done[1] as 32) << 2);
-    let shifted_words: logic<256> = chunk_words >> ((chunk_index as 8) * 8'd32);
-    let write_word_count: logic<4> = if (write_vram[4:0] == 0) && (chunk_left >= 4'd8) ?
-        4'd8
-    : if (write_vram[2:0] == 0) && (chunk_left >= 4'd2) ?
-        4'd2
-    :
-        4'd1
-    ;
+    let tag_available: logic = !(slot_valid[0] && (slot_tag[0] == next_tag))
+        && !(slot_valid[1] && (slot_tag[1] == next_tag))
+        && !(slot_valid[2] && (slot_tag[2] == next_tag))
+        && !(slot_valid[3] && (slot_tag[3] == next_tag))
+        && !(slot_valid[4] && (slot_tag[4] == next_tag))
+        && !(slot_valid[5] && (slot_tag[5] == next_tag))
+        && !(slot_valid[6] && (slot_tag[6] == next_tag))
+        && !(slot_valid[7] && (slot_tag[7] == next_tag));
+    let issue_possible: logic = (state == State::Run) && !request_pending
+        && (issue_remaining_dw != 0) && slot_available && tag_available;
+    let cpl_match: logic<8> = {
+        slot_valid[7] && (slot_tag[7] == cpl_tag),
+        slot_valid[6] && (slot_tag[6] == cpl_tag),
+        slot_valid[5] && (slot_tag[5] == cpl_tag),
+        slot_valid[4] && (slot_tag[4] == cpl_tag),
+        slot_valid[3] && (slot_tag[3] == cpl_tag),
+        slot_valid[2] && (slot_tag[2] == cpl_tag),
+        slot_valid[1] && (slot_tag[1] == cpl_tag),
+        slot_valid[0] && (slot_tag[0] == cpl_tag),
+    };
+    let cpl_slot: logic<3> = if cpl_match[0] ? 0
+        : if cpl_match[1] ? 1
+        : if cpl_match[2] ? 2
+        : if cpl_match[3] ? 3
+        : if cpl_match[4] ? 4
+        : if cpl_match[5] ? 5
+        : if cpl_match[6] ? 6
+        : 7;
+    let expected_address: logic<64> = slot_host[completion_slot]
+        + ((slot_received[completion_slot] as 64) << 2);
+    let cpl_expected_lower: logic<7> = expected_address[6:0];
+    let cpl_remaining: logic<7> = (slot_length[completion_slot] as 7)
+        - (slot_received[completion_slot] as 7);
+    let cpl_vram: logic<32> = slot_vram[completion_slot]
+        + ((slot_received[completion_slot] as 32) << 2);
+    // A request may cover every DWORD up to the next 32-byte boundary.  The
+    // framebuffer arbiter shifts data and strobes into the addressed lanes,
+    // so restricting unaligned writes to one or two DWORDs only creates
+    // unnecessary DDR commands and raw PCIe RX backpressure.
+    let boundary_words: logic<4> = 4'd8 - {1'b0, write_vram[4:2]};
+    let write_word_count: logic<4> = if chunk_left <: (boundary_words as 5) ?
+        chunk_left[3:0] : boundary_words;
     let progress: logic = (mrd_valid && mrd_ready) || (cpl_valid && cpl_ready)
         || (fb_req_valid && fb_req_ready) || (fb_rsp_valid && fb_rsp_ready);
 
-    assign active_tags      = active_tag_mask;
+    assign active_valid     = slot_valid;
+    assign active_tags[7:0] = slot_tag[0];
+    assign active_tags[15:8] = slot_tag[1];
+    assign active_tags[23:16] = slot_tag[2];
+    assign active_tags[31:24] = slot_tag[3];
+    assign active_tags[39:32] = slot_tag[4];
+    assign active_tags[47:40] = slot_tag[5];
+    assign active_tags[55:48] = slot_tag[6];
+    assign active_tags[63:56] = slot_tag[7];
     assign cmd_ready        = state == State::Idle;
     assign busy             = state != State::Idle;
-    assign mrd_valid        = issue_possible;
-    assign mrd_host_address = issue_host;
-    assign mrd_length_dw    = next_request_dw;
-    assign mrd_tag          = next_tag;
-    assign cpl_ready        = (state == State::Run) && !chunk_pending
-        && (cpl_match0 || cpl_match1);
-    assign fb_req_valid     = (state == State::Run) && chunk_pending && (fb_outstanding <: 8);
+    assign mrd_valid        = request_pending;
+    assign mrd_host_address = request_host;
+    assign mrd_length_dw    = request_length;
+    assign mrd_tag          = request_tag;
+    // Keep accepting payload from the same Completion TLP until a full
+    // 32-byte DDR word is available. EOP flushes a short tail before another
+    // tag may proceed, so legal interleaving between Completion TLPs cannot
+    // deadlock the single repacking buffer.
+    assign cpl_ready        = (state == State::Run) && !completion_pending
+        && (!chunk_pending || (!chunk_flush && (chunk_left <= 5'd8)));
+    assign fb_req_valid     = (state == State::Run) && chunk_pending
+        && ((chunk_left >= (boundary_words as 5)) || chunk_flush)
+        && (fb_outstanding <: 8);
     assign fb_req_addr      = write_vram;
-    assign fb_req_wdata     = shifted_words;
-    assign fb_req_wstrb     = if write_word_count == 4'd8 ? 32'hffff_ffff
-        : if write_word_count == 4'd2 ? 32'h0000_00ff : 32'h0000_000f;
-    assign fb_rsp_ready     = ((state == State::Run) || (state == State::Fail))
-        && (fb_outstanding != 0);
+    assign fb_req_wdata     = chunk_words[255:0];
+    assign fb_req_wstrb     = case write_word_count {
+        4'd1: 32'h0000_000f,
+        4'd2: 32'h0000_00ff,
+        4'd3: 32'h0000_0fff,
+        4'd4: 32'h0000_ffff,
+        4'd5: 32'h000f_ffff,
+        4'd6: 32'h00ff_ffff,
+        4'd7: 32'h0fff_ffff,
+        4'd8: 32'hffff_ffff,
+        default: 32'b0,
+    };
+    // Outstanding writes are created only in Run, Finish requires zero, and
+    // Fail drains them before returning Idle.  The state decode is therefore
+    // redundant and only lengthens the response-FIFO ready/clock-enable path.
+    assign fb_rsp_ready     = fb_outstanding != 0;
+    assign fb_window_full   = (state == State::Run) && chunk_pending
+        && (fb_outstanding >= 8);
     let fb_request_accept: logic = fb_req_valid && fb_req_ready;
     let fb_response_accept: logic = fb_rsp_valid && fb_rsp_ready;
 
@@ -134,26 +212,49 @@ module pcie_dma_read_engine #(
             length_bytes       = 0;
             issue_remaining_dw = 0;
             next_tag           = 0;
+            request_pending    = 0;
+            request_host       = 0;
+            request_vram       = 0;
+            request_length     = 0;
+            request_tag        = 0;
+            request_slot       = 0;
             slot_valid         = 0;
             slot_tag           = '{default: '0};
             slot_host          = '{default: '0};
             slot_vram          = '{default: '0};
             slot_length        = '{default: '0};
-            slot_done          = '{default: '0};
-            active_tag_mask    = 0;
+            slot_received      = '{default: '0};
             chunk_pending      = 0;
             chunk_slot         = 0;
             chunk_words        = 0;
             chunk_left         = 0;
-            chunk_total        = 0;
-            chunk_index        = 0;
+            chunk_flush        = 0;
+            chunk_request_done = 0;
             write_vram         = 0;
             fb_outstanding     = 0;
             timeout_counter    = 0;
+            completion_pending = 0;
+            completion_matched = 0;
+            completion_slot    = 0;
+            completion_has_data = 0;
+            completion_error   = 0;
+            completion_length  = 0;
+            completion_lower   = 0;
+            completion_end     = 0;
+            completion_words   = 0;
             done               = 0;
             error              = 0;
+            error_code         = 0;
+            slot_full_sample   = 0;
+            completion_busy_sample = 0;
         } else {
             done = 0;
+            // Register diagnostic state before it reaches the wide profiling
+            // counters, keeping those counters off the 100 MHz DMA datapath.
+            slot_full_sample = (state == State::Run) && (issue_remaining_dw != 0)
+                && !request_pending && !slot_available;
+            completion_busy_sample = (state == State::Run)
+                && (completion_pending || chunk_pending);
             if fb_request_accept && !fb_response_accept {
                 fb_outstanding = fb_outstanding + 4'd1;
             } else if fb_response_accept && !fb_request_accept {
@@ -163,6 +264,7 @@ module pcie_dma_read_engine #(
                 timeout_counter = 0;
             } else if (state == State::Run) && (timeout_counter >= TIMEOUT_CYCLES - 1) {
                 error = 1;
+                error_code = 4'd8;
                 state = State::Fail;
             } else if state == State::Run {
                 timeout_counter = timeout_counter + 1;
@@ -175,10 +277,12 @@ module pcie_dma_read_engine #(
                     length_bytes       = cmd_length_bytes;
                     issue_remaining_dw = cmd_length_bytes[31:2];
                     slot_valid         = 0;
-                    active_tag_mask    = 0;
+                    request_pending    = 0;
                     chunk_pending      = 0;
+                    completion_pending = 0;
                     fb_outstanding     = 0;
                     error              = 0;
+                    error_code         = 0;
                     state              = State::Validate;
                 }
                 State::Validate: {
@@ -186,64 +290,112 @@ module pcie_dma_read_engine #(
                         state = State::Run;
                     } else {
                         error = 1;
+                        error_code = 4'd1;
                         state = State::Fail;
                     }
                 }
                 State::Run: {
+                    if cpl_valid && cpl_ready {
+                        completion_pending  = 1;
+                        completion_matched  = |cpl_match;
+                        completion_slot     = cpl_slot;
+                        completion_has_data = cpl_has_data;
+                        completion_error    = cpl_error;
+                        completion_length   = cpl_length_dw;
+                        completion_lower    = cpl_lower_address;
+                        completion_end      = cpl_end;
+                        completion_words    = cpl_data;
+                    }
+                    if issue_possible {
+                        request_pending    = 1;
+                        request_host       = issue_host;
+                        request_vram       = issue_vram;
+                        request_length     = next_request_dw;
+                        request_tag        = next_tag;
+                        request_slot       = issue_slot;
+                        issue_host         = issue_host + ((next_request_dw as 64) << 2);
+                        issue_vram         = issue_vram + ((next_request_dw as 32) << 2);
+                        issue_remaining_dw = issue_remaining_dw - (next_request_dw as 30);
+                        next_tag           = next_tag + 8'd1;
+                    }
                     if mrd_valid && mrd_ready {
-                        slot_valid[issue_slot]  = 1;
-                        slot_tag[issue_slot]    = next_tag;
-                        slot_host[issue_slot]   = issue_host;
-                        slot_vram[issue_slot]   = issue_vram;
-                        slot_length[issue_slot] = next_request_dw;
-                        slot_done[issue_slot]   = 0;
-                        active_tag_mask[next_tag] = 1;
-                        issue_host              = issue_host + ((next_request_dw as 64) << 2);
-                        issue_vram              = issue_vram + ((next_request_dw as 32) << 2);
-                        issue_remaining_dw      = issue_remaining_dw - (next_request_dw as 30);
-                        next_tag                = next_tag + 8'd1;
+                        slot_valid[request_slot]  = 1;
+                        slot_tag[request_slot]    = request_tag;
+                        slot_host[request_slot]   = request_host;
+                        slot_vram[request_slot]   = request_vram;
+                        slot_length[request_slot] = request_length;
+                        slot_received[request_slot] = 0;
+                        request_pending           = 0;
                     }
 
-                    if cpl_valid && cpl_ready {
-                        if cpl_error || !cpl_has_data || (cpl_length_dw == 0)
-                            || ((cpl_length_dw as 6) >: cpl_remaining)
-                            || (cpl_lower_address != cpl_expected_lower) {
+                    if completion_pending {
+                        completion_pending = 0;
+                        if !completion_matched {
                             error = 1;
+                            error_code = 4'd2;
+                            state = State::Fail;
+                        } else if completion_error {
+                            error = 1;
+                            error_code = 4'd3;
+                            state = State::Fail;
+                        } else if !completion_has_data || (completion_length == 0) {
+                            error = 1;
+                            error_code = 4'd4;
+                            state = State::Fail;
+                        } else if (completion_length as 7) >: cpl_remaining {
+                            error = 1;
+                            error_code = 4'd5;
+                            state = State::Fail;
+                        } else if completion_lower != cpl_expected_lower {
+                            error = 1;
+                            error_code = 4'd6;
                             state = State::Fail;
                         } else {
+                            if !chunk_pending {
+                                chunk_slot = completion_slot;
+                                write_vram = cpl_vram;
+                            }
+                            chunk_words = if !chunk_pending ?
+                                (completion_words as 512) :
+                                chunk_words | ((completion_words as 512)
+                                    << ((chunk_left as 9) * 9'd32));
+                            chunk_left = if !chunk_pending ?
+                                (completion_length as 5) :
+                                chunk_left + (completion_length as 5);
                             chunk_pending = 1;
-                            chunk_slot    = cpl_slot;
-                            chunk_words   = cpl_data;
-                            chunk_left    = cpl_length_dw;
-                            chunk_total   = cpl_length_dw;
-                            chunk_index   = 0;
-                            write_vram    = if cpl_slot ? cpl_vram1 : cpl_vram0;
+                            slot_received[completion_slot] = slot_received[completion_slot]
+                                + (completion_length as 7);
+                            chunk_request_done = ((slot_received[completion_slot]
+                                + (completion_length as 7)) >= slot_length[completion_slot]);
+                            if completion_end {
+                                chunk_flush = 1;
+                            }
                         }
                     }
 
                     if fb_request_accept {
                         write_vram  = write_vram + ((write_word_count as 32) << 2);
                         chunk_left  = chunk_left - write_word_count;
-                        chunk_index = chunk_index + write_word_count;
-                        if chunk_left <= write_word_count {
+                        chunk_words = chunk_words >> ((write_word_count as 9) * 9'd32);
+                        if chunk_left <= (write_word_count as 5) {
                             chunk_pending = 0;
-                            if (slot_done[chunk_slot] + (chunk_total as 5)) >= slot_length[chunk_slot] {
-                                active_tag_mask[slot_tag[chunk_slot]] = 0;
+                            chunk_flush = 0;
+                            if chunk_request_done {
                                 slot_valid[chunk_slot] = 0;
-                            } else {
-                                slot_done[chunk_slot] = slot_done[chunk_slot] + (chunk_total as 5);
                             }
+                            chunk_request_done = 0;
                         }
                     }
                     if fb_response_accept {
                         if fb_rsp_error {
                             error = 1;
+                            error_code = 4'd7;
                             state = State::Fail;
                         }
                     }
 
-                    if (issue_remaining_dw == 0) && (slot_valid == 0)
-                        && !chunk_pending && (fb_outstanding == 0) {
+                    if (issue_remaining_dw == 0) && !request_pending && (slot_valid == 0)
+                        && !completion_pending && !chunk_pending && (fb_outstanding == 0) {
                         state = State::Finish;
                     }
                 }
@@ -253,9 +405,10 @@ module pcie_dma_read_engine #(
                     state = State::Idle;
                 }
                 State::Fail: {
-                    slot_valid    = 0;
-                    active_tag_mask = 0;
-                    chunk_pending = 0;
+                    slot_valid      = 0;
+                    request_pending = 0;
+                    completion_pending = 0;
+                    chunk_pending   = 0;
                     if fb_outstanding == 0 {
                         done  = 1;
                         state = State::Idle;
@@ -263,6 +416,7 @@ module pcie_dma_read_engine #(
                 }
                 default: {
                     error = 1;
+                    error_code = 4'd9;
                     state = State::Fail;
                 }
             }

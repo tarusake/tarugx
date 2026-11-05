@@ -23,14 +23,15 @@ module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
  logic [31:0] fb_req_addr,fb_rsp_rdata=0;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  int packets=0,rom_reads=0;
  logic staged_sop,staged_eop,staged_wait,staged_mask,busy;
- logic [19:0] rx_tag=0,staged_tag,force_tag=0;
+ logic [19:0] rx_tag=0,force_tag=0;
+ logic staged_tag_match;
  logic hw_enabled=0;
  logic [31:0] hw_base=32'h80210000;
- wire rom_hit=staged_tag==20'h00040;
+ wire rom_hit=staged_tag_match;
  logic [7:0] staged_valid,staged_error;
  logic [5:0] staged_bar;logic [255:0] staged_data;
  tarugx_tlp_rx_buffer rx_buffer(.clk,.rst_n,.in_sop(rx_sop),.in_eop(rx_eop),.in_valid(rx_valid),
-  .in_data(rx_data),.in_bar(rx_bar),.in_error(rx_error),.in_wait(rx_wait),.in_tag(rx_tag),.out_tag(staged_tag),.out_sop(staged_sop),
+  .in_data(rx_data),.in_bar(rx_bar),.in_error(rx_error),.in_wait(rx_wait),.in_tag(rx_tag),.out_tag_match(staged_tag_match),.out_sop(staged_sop),
   .out_eop(staged_eop),.out_valid(staged_valid),.out_data(staged_data),.out_bar(staged_bar),
   .out_error(staged_error),.out_wait(staged_wait),.busy);
  assign rx_masknp=staged_mask|busy;
@@ -42,6 +43,7 @@ module option_rom_diagnostic_tb #(parameter int AUTO_MODE=0);
   .rx_bar_decode(staged_bar),.rx_data(staged_data),.rx_wait(core_rx_wait),.rx_masknp(core_rx_masknp),
   .tx_wait(core_tx_wait),.tx_valid(core_tx_valid),.tx_sop(core_tx_sop),.tx_eop(core_tx_eop),.tx_data(core_tx_data),
   .framing_error,.unsupported,.malformed,.fb_commit_pulse,.display_ctrl,.display_color,.display_mode,.fb_base,.fb_stride,
+  .active_fb_base(32'b0),
   .active_buffer,.vblank_toggle,.irq_enable,.fill_busy,.fill_done,.fill_error,.fill_command,.fill_start,
   .blit_busy,.blit_done,.blit_error,.blit_command,.blit_start,
   .queue_ready,.queue_level,.queue_active,.queue_completed,.queue_error,.queue_error_fence,

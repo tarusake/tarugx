@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Integrates the one-outstanding DMA requester with the shared PCIe and VRAM paths.
+/// Integrates the multi-outstanding DMA requester with the shared PCIe and VRAM paths.
 module pcie_dma_subsystem #(
     param TIMEOUT_CYCLES: u32 = 1000000,
 ) (
@@ -14,6 +14,8 @@ module pcie_dma_subsystem #(
     busy            : output logic     ,
     done            : output logic     ,
     error           : output logic     ,
+    error_code      : output logic<4>  ,
+    profile         : output logic<192>,
     rx_sop          : input  logic     ,
     rx_eop          : input  logic     ,
     rx_valid        : input  logic<8>  ,
@@ -75,15 +77,64 @@ module pcie_dma_subsystem #(
     var dma_fb_rsp_valid: logic     ;
     var dma_fb_rsp_ready: logic     ;
     var dma_fb_rsp_error: logic     ;
+    var dma_fb_window_full: logic   ;
     // Isolate the PCIe hard-IP configuration bus from the DMA datapath.  The
     // BDF is stable after enumeration, so one cycle of latency is harmless.
     var requester_id_q  : logic<16> ;
+    var busy_cycles     : logic<32> ;
+    var tx_stall_cycles : logic<32> ;
+    var rx_stall_cycles : logic<32> ;
+    var mem_stall_cycles: logic<32> ;
+    var rx_stall_sample : logic     ;
+    var slot_full_sample: logic     ;
+    var completion_busy_sample: logic;
+    var slot_full_cycles: logic<32> ;
+    var completion_busy_cycles: logic<32>;
+
+    assign profile = {completion_busy_cycles, slot_full_cycles, mem_stall_cycles,
+        rx_stall_cycles, tx_stall_cycles, busy_cycles};
 
     always_ff {
         if_reset {
             requester_id_q = 0;
+            busy_cycles      = 0;
+            tx_stall_cycles  = 0;
+            rx_stall_cycles  = 0;
+            mem_stall_cycles = 0;
+            rx_stall_sample  = 0;
+            slot_full_cycles = 0;
+            completion_busy_cycles = 0;
         } else {
             requester_id_q = requester_id;
+            // Break the raw PCIe receive path before the 32-bit profiling
+            // counter.  A one-cycle sampling offset is immaterial for a
+            // diagnostic counter and keeps it out of the 100 MHz datapath.
+            rx_stall_sample = |dma_rx_valid && dma_rx_wait;
+            if cmd_valid && cmd_ready {
+                busy_cycles      = 0;
+                tx_stall_cycles  = 0;
+                rx_stall_cycles  = 0;
+                mem_stall_cycles = 0;
+                slot_full_cycles = 0;
+                completion_busy_cycles = 0;
+            } else if busy {
+                busy_cycles += 1;
+                if |dma_tx_valid && !dma_tx_ready {
+                    tx_stall_cycles += 1;
+                }
+                if rx_stall_sample {
+                    rx_stall_cycles += 1;
+                }
+                if (dma_fb_req_valid && !dma_fb_req_ready) || dma_fb_window_full {
+                    mem_stall_cycles += 1;
+                }
+                if slot_full_sample {
+                    slot_full_cycles += 1;
+                }
+                if completion_busy_sample {
+                    completion_busy_cycles += 1;
+                }
+            }
         }
     }
 
@@ -103,7 +154,7 @@ module pcie_dma_subsystem #(
     ) (
         clk, rst_n, requester_id: requester_id_q,
         cmd_valid, cmd_ready, cmd_host_address, cmd_vram_address, cmd_length_bytes,
-        busy, done, error,
+        busy, done, error, error_code, slot_full_sample, completion_busy_sample,
         tx_ready: dma_tx_ready,
         tx_valid: dma_tx_valid,
         tx_sop: dma_tx_sop,
@@ -124,6 +175,7 @@ module pcie_dma_subsystem #(
         fb_rsp_valid: dma_fb_rsp_valid,
         fb_rsp_ready: dma_fb_rsp_ready,
         fb_rsp_error: dma_fb_rsp_error,
+        fb_window_full: dma_fb_window_full,
     );
 
     inst tx_arbiter: pcie_tx_arbiter (

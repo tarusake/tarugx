@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-/// Round-robin admission, eight ordered ownership slots, one held command.
+/// FIFO-aware admission, eight ordered ownership slots, two queued commands.
 module memory_arbiter_pipelined (
     clk           : input  clock     ,
     rst_n         : input  reset     ,
     cpu_valid     : input  logic     ,
     cpu_ready     : output logic     ,
     cpu_write     : input  logic     ,
-    cpu_addr      : input  logic<22> ,
+    cpu_addr      : input  logic<24> ,
     cpu_wdata     : input  logic<256>,
     cpu_wstrb     : input  logic<32> ,
     cpu_rsp_valid : output logic     ,
@@ -14,8 +14,9 @@ module memory_arbiter_pipelined (
     cpu_rsp_data  : output logic<256>,
     cpu_rsp_error : output logic     ,
     scan_valid    : input  logic     ,
+    scan_urgent   : input  logic     ,
     scan_ready    : output logic     ,
-    scan_addr     : input  logic<22> ,
+    scan_addr     : input  logic<24> ,
     scan_rsp_valid: output logic     ,
     scan_rsp_ready: input  logic     ,
     scan_rsp_data : output logic<256>,
@@ -23,7 +24,7 @@ module memory_arbiter_pipelined (
     mem_valid     : output logic     ,
     mem_ready     : input  logic     ,
     mem_write     : output logic     ,
-    mem_addr      : output logic<22> ,
+    mem_addr      : output logic<24> ,
     mem_wdata     : output logic<256>,
     mem_wstrb     : output logic<32> ,
     mem_rsp_valid : input  logic     ,
@@ -31,8 +32,18 @@ module memory_arbiter_pipelined (
     mem_rsp_data  : input  logic<256>,
     mem_rsp_error : input  logic     ,
 ) {
-    var issuing       : logic         ;
-    var prefer_scan   : logic         ;
+    var output_valid  : logic         ;
+    var output_write  : logic         ;
+    var output_addr   : logic<24>     ;
+    var output_wdata  : logic<256>    ;
+    var output_wstrb  : logic<32>     ;
+    var pending_valid : logic         ;
+    var pending_write : logic         ;
+    var pending_addr  : logic<24>     ;
+    var pending_wdata : logic<256>    ;
+    var pending_wstrb : logic<32>     ;
+    var cpu_burst     : logic<3>      ;
+    var urgent_grants : logic<2>      ;
     var owners        : logic      [8];
     var head          : logic<3>      ;
     var tail          : logic<3>      ;
@@ -41,11 +52,24 @@ module memory_arbiter_pipelined (
     var scan_response_valid: logic    ;
     var response_data : logic<256>    ;
     var response_error: logic         ;
-    let choose_scan   : logic          = scan_valid && (!cpu_valid || prefer_scan);
-    let capacity      : logic          = !issuing && (count <: 8);
+    // Keep round-robin safety below the scanout watermark.  With FIFO
+    // headroom, group at most four non-scanout requests before one scan read.
+    let burst_limit   : logic = cpu_burst >= 3'd4;
+    let urgent_limit  : logic = urgent_grants >= 2'd3;
+    let choose_scan   : logic = scan_valid && (!cpu_valid
+        || (if scan_urgent ? !urgent_limit : burst_limit));
+    // A two-entry command queue allows one request to enter while the older
+    // request leaves.  Unlike a same-cycle refill expression, admission never
+    // depends on downstream mem_ready, so the native-DDR ready path cannot
+    // become an upstream timing path.
+    let capacity      : logic          = !pending_valid && (count <: 8);
     assign scan_ready     = capacity && choose_scan;
     assign cpu_ready      = capacity && !choose_scan;
-    assign mem_valid      = issuing;
+    assign mem_valid      = output_valid;
+    assign mem_write      = output_write;
+    assign mem_addr       = output_addr;
+    assign mem_wdata      = output_wdata;
+    assign mem_wstrb      = output_wstrb;
     assign scan_rsp_valid = scan_response_valid;
     assign cpu_rsp_valid  = cpu_response_valid;
     assign scan_rsp_data  = response_data;
@@ -57,11 +81,24 @@ module memory_arbiter_pipelined (
         || (scan_response_valid && scan_rsp_ready);
     assign mem_rsp_ready = (count != 0) && (!response_valid || response_ready);
     let push: logic = (scan_valid && scan_ready) || (cpu_valid && cpu_ready);
+    let issue: logic = mem_valid && mem_ready;
+    let load_output: logic = push && (!output_valid || issue);
+    let load_pending: logic = push && output_valid && !issue;
     let pop : logic = mem_rsp_valid && mem_rsp_ready;
     always_ff {
         if_reset {
-            issuing        = 0;
-            prefer_scan    = 1;
+            output_valid   = 0;
+            output_write   = 0;
+            output_addr    = 0;
+            output_wdata   = 0;
+            output_wstrb   = 0;
+            pending_valid  = 0;
+            pending_write  = 0;
+            pending_addr   = 0;
+            pending_wdata  = 0;
+            pending_wstrb  = 0;
+            cpu_burst      = 0;
+            urgent_grants  = 0;
             owners         = '{default: '0};
             head           = 0;
             tail           = 0;
@@ -70,23 +107,47 @@ module memory_arbiter_pipelined (
             scan_response_valid = 0;
             response_data  = 0;
             response_error = 0;
-            mem_write      = 0;
-            mem_addr       = 0;
-            mem_wdata      = 0;
-            mem_wstrb      = 0;
         } else {
-            if issuing && mem_ready {
-                issuing = 0;
+            if issue {
+                if pending_valid {
+                    output_valid  = 1;
+                    output_write  = pending_write;
+                    output_addr   = pending_addr;
+                    output_wdata  = pending_wdata;
+                    output_wstrb  = pending_wstrb;
+                    pending_valid = 0;
+                } else {
+                    output_valid = 0;
+                }
             }
             if push {
-                issuing      = 1;
                 owners[tail] = choose_scan;
                 tail         = tail + 3'd1;
-                prefer_scan  = !choose_scan;
-                mem_write    = !choose_scan && cpu_write;
-                mem_addr     = if choose_scan ? scan_addr : cpu_addr;
-                mem_wdata    = if choose_scan ? 256'b0 : cpu_wdata;
-                mem_wstrb    = if choose_scan ? 32'b0 : cpu_wstrb;
+                if choose_scan {
+                    cpu_burst = 0;
+                    if scan_urgent && !urgent_limit {
+                        urgent_grants = urgent_grants + 2'd1;
+                    }
+                } else if scan_valid {
+                    cpu_burst = cpu_burst + 3'd1;
+                    urgent_grants = 0;
+                } else {
+                    cpu_burst = 0;
+                    urgent_grants = 0;
+                }
+            }
+            if load_output {
+                output_valid = 1;
+                output_write = !choose_scan && cpu_write;
+                output_addr  = if choose_scan ? scan_addr : cpu_addr;
+                output_wdata = if choose_scan ? 256'b0 : cpu_wdata;
+                output_wstrb = if choose_scan ? 32'b0 : cpu_wstrb;
+            } else if load_pending {
+                pending_valid = 1;
+                pending_write = !choose_scan && cpu_write;
+                pending_addr  = if choose_scan ? scan_addr : cpu_addr;
+                pending_wdata = if choose_scan ? 256'b0 : cpu_wdata;
+                pending_wstrb = if choose_scan ? 32'b0 : cpu_wstrb;
             }
             if pop {
                 cpu_response_valid  = !owners[head];

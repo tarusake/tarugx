@@ -4,24 +4,26 @@ module scanout_pipeline_tb;
  logic mem_clk=0,pixel_clk=0,rst_n=0;
  always #5 mem_clk=~mem_clk;always #20 pixel_clk=~pixel_clk;
  logic scan_valid,scan_ready,scan_urgent,scan_rsp_valid,scan_rsp_ready,scan_rsp_error;
- logic [21:0] scan_addr;logic [255:0] scan_rsp_data;
+ logic [23:0] scan_addr;logic [255:0] scan_rsp_data;
  logic cpu_ready,cpu_rsp_valid,cpu_rsp_error;logic [255:0] cpu_rsp_data;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid,mem_rsp_ready;
- logic [21:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data;logic [31:0] mem_wstrb;
+ logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data;logic [31:0] mem_wstrb;
  logic config_error,de,hsync,vsync,underflow,vblank_toggle;logic [23:0] rgb;logic [63:0] fault_snapshot;
  logic active_buffer;
+ logic [31:0] active_fb_base;
  tarugx_scanout_pipeline_engine scan(
   .mem_clk(mem_clk),.mem_rst_n(rst_n),.enable(1'b1),.fb_base(32'b0),.fb_stride(32'd2560),
-  .config_error(config_error),.active_buffer(active_buffer),.scan_urgent(scan_urgent),
+  .config_error(config_error),.active_buffer(active_buffer),.active_fb_base(active_fb_base),
+  .scan_urgent(scan_urgent),
   .mem_valid(scan_valid),.mem_ready(scan_ready),.mem_addr(scan_addr),
   .mem_rsp_valid(scan_rsp_valid),.mem_rsp_ready(scan_rsp_ready),.mem_rsp_data(scan_rsp_data),.mem_rsp_error(scan_rsp_error),
   .pixel_clk(pixel_clk),.pixel_rst_n(rst_n),.settings(26'h1000000),
   .de(de),.hsync(hsync),.vsync(vsync),.rgb(rgb),.underflow(underflow),.vblank_toggle(vblank_toggle),.fault_snapshot(fault_snapshot));
  tarugx_memory_arbiter_pipelined arb(
   .clk(mem_clk),.rst_n(rst_n),.cpu_valid(1'b1),.cpu_ready(cpu_ready),.cpu_write(1'b0),
-  .cpu_addr(22'd0),.cpu_wdata(256'b0),.cpu_wstrb(32'b0),.cpu_rsp_valid(cpu_rsp_valid),
+  .cpu_addr(24'd0),.cpu_wdata(256'b0),.cpu_wstrb(32'b0),.cpu_rsp_valid(cpu_rsp_valid),
   .cpu_rsp_ready(1'b1),.cpu_rsp_data(cpu_rsp_data),.cpu_rsp_error(cpu_rsp_error),
-  .scan_valid(scan_valid),.scan_ready(scan_ready),.scan_addr(scan_addr),
+  .scan_valid(scan_valid),.scan_urgent(scan_urgent),.scan_ready(scan_ready),.scan_addr(scan_addr),
   .scan_rsp_valid(scan_rsp_valid),.scan_rsp_ready(scan_rsp_ready),.scan_rsp_data(scan_rsp_data),.scan_rsp_error(scan_rsp_error),
   .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),.mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),
   .mem_rsp_valid(mem_rsp_valid),.mem_rsp_ready(mem_rsp_ready),.mem_rsp_data(mem_rsp_data),.mem_rsp_error(1'b0));
@@ -58,7 +60,9 @@ module scanout_pipeline_tb;
  always @(posedge pixel_clk)if(rst_n)begin
   if(scan.display.frame_start)frame++;
   if(frame>=2 && de)begin
-   assert(rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)))else $fatal(1,"pixel f%0d %0d,%0d",frame,scan.display.x,scan.display.y);
+   assert(scan.display.x>0 && rgb==24'(int'(scan.display.y)*640+int'(scan.display.x)-1))else
+    $fatal(1,"pixel f%0d %0d,%0d expected=%06x actual=%06x underflow=%0d qcount=%0d outstanding=%0d",
+     frame,scan.display.x,scan.display.y,24'(int'(scan.display.y)*640+int'(scan.display.x)-1),rgb,underflow,qcount,max_outstanding);
    pixels++;
   end
  end

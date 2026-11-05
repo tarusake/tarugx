@@ -4,7 +4,9 @@
 /// This module supplies the ordering point between posted writes and reads: it
 /// accepts requests in order and will not accept another request while a read
 /// Completion is pending. Gowin lane packing is intentionally outside it.
-module bar0_tlp_bridge (
+module bar0_tlp_bridge #(
+    param GPU_VERSION: bit<32> = 32'h0001_0001,
+) (
     clk            : input  clock     ,
     rst            : input  reset     ,
     completer_id   : input  logic<16> ,
@@ -25,6 +27,7 @@ module bar0_tlp_bridge (
     unsupported    : output logic     ,
     malformed      : output logic     ,
     active_buffer  : input  logic     ,
+    active_fb_base : input  logic<32> ,
     vblank_toggle  : input  logic     ,
     fill_busy      : input  logic     ,
     fill_done      : input  logic     ,
@@ -42,6 +45,8 @@ module bar0_tlp_bridge (
     dma_busy       : input  logic     ,
     dma_done       : input  logic     ,
     dma_error      : input  logic     ,
+    dma_error_code : input  logic<4>  ,
+    dma_profile    : input  logic<192>,
     display_ctrl   : output logic<32> ,
     display_color  : output logic<32> ,
     display_mode   : output logic<32> ,
@@ -105,7 +110,9 @@ module bar0_tlp_bridge (
     let accept        : logic = request_pending && decoded_valid;
     let ur_accept     : logic = request_pending && unsupported && ur_required;
 
-    inst registers: gpu_registers (
+    inst registers: gpu_registers #(
+        GPU_VERSION,
+    ) (
         clk                           ,
         rst                           ,
         req_valid      : accept       ,
@@ -118,6 +125,7 @@ module bar0_tlp_bridge (
         rsp_rdata      : reg_rsp_data ,
         rsp_error      : reg_rsp_error,
         active_buffer                 ,
+        active_fb_base                ,
         vblank_toggle                 ,
         fill_busy                     ,
         fill_done                     ,
@@ -135,6 +143,8 @@ module bar0_tlp_bridge (
         dma_busy                      ,
         dma_done                      ,
         dma_error                     ,
+        dma_error_code                ,
+        dma_profile                   ,
         display_ctrl                  ,
         display_color                 ,
         display_mode                  ,
