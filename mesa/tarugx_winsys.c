@@ -26,6 +26,7 @@ tarugx_winsys_is_device(int fd)
 bool
 tarugx_winsys_open(struct tarugx_winsys *winsys, int fd)
 {
+    struct drm_tarugx_get_param parameter;
     int duplicate;
 
     if (!winsys || fd < 0 || !tarugx_winsys_is_device(fd))
@@ -35,12 +36,40 @@ tarugx_winsys_open(struct tarugx_winsys *winsys, int fd)
         return false;
     memset(winsys, 0, sizeof(*winsys));
     winsys->fd = duplicate;
+    /* Drivers predating GET_PARAM already support flat triangles.  Keep that
+     * path available, but require an explicit capability for interpolation. */
+    winsys->caps = DRM_TARUGX_CAP_TRIANGLE;
+    parameter = (struct drm_tarugx_get_param) {
+        .param = DRM_TARUGX_PARAM_GPU_VERSION,
+    };
+    if (!drmIoctl(duplicate, DRM_IOCTL_TARUGX_GET_PARAM, &parameter))
+        winsys->gpu_version = (uint32_t)parameter.value;
+    parameter = (struct drm_tarugx_get_param) {
+        .param = DRM_TARUGX_PARAM_CAPS,
+    };
+    if (!drmIoctl(duplicate, DRM_IOCTL_TARUGX_GET_PARAM, &parameter))
+        winsys->caps = parameter.value;
     if (drmSyncobjCreate(duplicate, 0, &winsys->submit_syncobj)) {
         close(duplicate);
         winsys->fd = -1;
         return false;
     }
     return true;
+}
+
+bool
+tarugx_winsys_has_cap(const struct tarugx_winsys *winsys,
+                      uint64_t capability)
+{
+    return winsys && (winsys->caps & capability) == capability;
+}
+
+bool
+tarugx_winsys_supports_triangle_interpolation(
+    const struct tarugx_winsys *winsys)
+{
+    return tarugx_winsys_has_cap(
+        winsys, DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION);
 }
 
 void
@@ -131,6 +160,9 @@ tarugx_winsys_submit_triangles(
             .x2 = triangles[i].x2,
             .y2 = triangles[i].y2,
             .color = triangles[i].color,
+            .gradient_r = triangles[i].gradient_r,
+            .gradient_g = triangles[i].gradient_g,
+            .gradient_b = triangles[i].gradient_b,
         };
     }
     return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2,

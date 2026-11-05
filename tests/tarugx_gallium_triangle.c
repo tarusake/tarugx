@@ -95,6 +95,11 @@ main(int argc, char **argv)
         1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
     };
+    static const GLfloat gradient_colors[] = {
+        0.25f, 0.25f, 0.25f, 1.0f,
+        0.75f, 0.25f, 0.25f, 1.0f,
+        0.50f, 0.75f, 0.25f, 1.0f,
+    };
     static const GLfloat batch_positions[] = {
         -0.9f, -0.9f, -0.1f, -0.9f, -0.5f, -0.1f,
          0.1f, -0.9f,  0.9f, -0.9f,  0.5f, -0.1f,
@@ -142,6 +147,7 @@ main(int argc, char **argv)
     int software_fallback = 0;
     int batch = 0;
     int indexed = 0;
+    int gradient = 0;
     GLsizei vertex_count;
     int position_location;
     int color_location;
@@ -150,7 +156,7 @@ main(int argc, char **argv)
 
     if (argc < 2 || argc > 4) {
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
-                        "[--software|--batch|--indexed]\n",
+                        "[--software|--batch|--indexed|--gradient]\n",
                 argv[0]);
         return 2;
     }
@@ -171,6 +177,8 @@ main(int argc, char **argv)
             batch = 1;
         } else if (!strcmp(argv[3], "--indexed")) {
             indexed = 1;
+        } else if (!strcmp(argv[3], "--gradient")) {
+            gradient = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -232,7 +240,8 @@ main(int argc, char **argv)
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
                           batch ? batch_positions : positions);
     glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0,
-                          batch ? batch_colors : colors);
+                          batch ? batch_colors :
+                          (gradient ? gradient_colors : colors));
     glEnableVertexAttribArray(position_location);
     glEnableVertexAttribArray(color_location);
     if (software_fallback) {
@@ -272,7 +281,8 @@ main(int argc, char **argv)
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
            stride, software_fallback ? "softpipe" :
                    (batch ? "fpga-batch" :
-                    (indexed ? "fpga-indexed" : "fpga")), iterations,
+                    (indexed ? "fpga-indexed" :
+                     (gradient ? "fpga-gradient" : "fpga"))), iterations,
            iterations * (batch ? 4 : 1), draw_ms);
     if (batch)
         printf("top_left=%04x\ntop_right=%04x\n"
@@ -281,7 +291,14 @@ main(int argc, char **argv)
                pixels[198 * (stride / 2) + 1440],
                pixels[738 * (stride / 2) + 480],
                pixels[738 * (stride / 2) + 1440]);
-    if ((!batch &&
+    if ((gradient &&
+         ((pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 11) < 14 ||
+          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 11) > 17 ||
+          ((pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 5) & 63) < 29 ||
+          ((pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 5) & 63) > 34 ||
+          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) < 7 ||
+          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
+        (!batch && !gradient &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
         (batch &&
          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f ||

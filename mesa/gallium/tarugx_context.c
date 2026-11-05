@@ -128,16 +128,25 @@ tarugx_colors_equal(const float *a, const float *b)
 {
     unsigned i;
 
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 3; i++)
         if (fabsf(a[i] - b[i]) > 0.00001f)
             return false;
     return true;
 }
 
-static int32_t
-tarugx_fixed_16_8(float value)
+static bool
+tarugx_fixed_16_8(float value, int32_t *fixed)
 {
-    return (int32_t)lrintf(value * 256.0f);
+    long converted;
+
+    if (!isfinite(value) || value < -32768.0f ||
+        value > 8388607.0f / 256.0f)
+        return false;
+    converted = lrintf(value * 256.0f);
+    if (converted < -8388608L || converted > 8388607L)
+        return false;
+    *fixed = (int32_t)converted;
+    return true;
 }
 
 static uint32_t
@@ -154,21 +163,129 @@ tarugx_rgb888(const float *rgba)
 }
 
 static bool
-tarugx_prepare_triangle(const float *v0, const float *v1, const float *v2,
+tarugx_pack_gradient(double dx, double dy, uint32_t *packed)
+{
+    long fixed_x;
+    long fixed_y;
+
+    if (!isfinite(dx) || !isfinite(dy) ||
+        dx < -256.0 || dx > 32767.0 / 128.0 ||
+        dy < -256.0 || dy > 32767.0 / 128.0)
+        return false;
+    fixed_x = lrint(dx * 128.0);
+    fixed_y = lrint(dy * 128.0);
+    if (fixed_x < INT16_MIN || fixed_x > INT16_MAX ||
+        fixed_y < INT16_MIN || fixed_y > INT16_MAX)
+        return false;
+    *packed = (uint16_t)fixed_x | (uint32_t)(uint16_t)fixed_y << 16;
+    return true;
+}
+
+static bool
+tarugx_interpolated_channel(const float *v0, const float *v1,
+                            const float *v2, unsigned channel,
+                            double sample_x, double sample_y,
+                            double determinant, uint32_t *base,
+                            uint32_t *gradient)
+{
+    double x0 = v0[0], y0 = v0[1];
+    double x1 = v1[0], y1 = v1[1];
+    double x2 = v2[0], y2 = v2[1];
+    double c0 = v0[4 + channel] * 255.0;
+    double c1 = v1[4 + channel] * 255.0;
+    double c2 = v2[4 + channel] * 255.0;
+    double dx = ((c1 - c0) * (y2 - y0) -
+                 (c2 - c0) * (y1 - y0)) / determinant;
+    double dy = ((x1 - x0) * (c2 - c0) -
+                 (x2 - x0) * (c1 - c0)) / determinant;
+    double value = c0 + dx * (sample_x - x0) +
+                   dy * (sample_y - y0);
+    long rounded;
+
+    if (!isfinite(value) || value < 0.0 || value > 255.0 ||
+        !tarugx_pack_gradient(dx, dy, gradient))
+        return false;
+    rounded = lrint(value);
+    if (rounded < 0 || rounded > 255)
+        return false;
+    *base = (uint32_t)rounded;
+    return true;
+}
+
+static bool
+tarugx_prepare_triangle(struct tarugx_context_state *state,
+                        const struct tarugx_winsys_surface *surface,
+                        const float *v0, const float *v1, const float *v2,
                         struct tarugx_winsys_triangle *triangle)
 {
-    if (!tarugx_colors_equal(v0 + 4, v1 + 4) ||
-        !tarugx_colors_equal(v0 + 4, v2 + 4))
+    int32_t x0, y0, x1, y1, x2, y2;
+    bool flat = tarugx_colors_equal(v0 + 4, v1 + 4) &&
+                tarugx_colors_equal(v0 + 4, v2 + 4);
+    int32_t minimum_x;
+    int32_t minimum_y;
+    double sample_x;
+    double sample_y;
+    double determinant;
+    uint32_t base[3];
+    uint32_t gradient[3];
+    unsigned channel;
+
+    for (channel = 0; channel < 3; channel++)
+        if (!isfinite(v0[4 + channel]) ||
+            !isfinite(v1[4 + channel]) ||
+            !isfinite(v2[4 + channel]))
+            return false;
+    if (!tarugx_fixed_16_8(v0[0], &x0) ||
+        !tarugx_fixed_16_8(v0[1], &y0) ||
+        !tarugx_fixed_16_8(v1[0], &x1) ||
+        !tarugx_fixed_16_8(v1[1], &y1) ||
+        !tarugx_fixed_16_8(v2[0], &x2) ||
+        !tarugx_fixed_16_8(v2[1], &y2))
         return false;
     *triangle = (struct tarugx_winsys_triangle) {
-        .x0 = tarugx_fixed_16_8(v0[0]),
-        .y0 = tarugx_fixed_16_8(v0[1]),
-        .x1 = tarugx_fixed_16_8(v1[0]),
-        .y1 = tarugx_fixed_16_8(v1[1]),
-        .x2 = tarugx_fixed_16_8(v2[0]),
-        .y2 = tarugx_fixed_16_8(v2[1]),
+        .x0 = x0,
+        .y0 = y0,
+        .x1 = x1,
+        .y1 = y1,
+        .x2 = x2,
+        .y2 = y2,
         .color = tarugx_rgb888(v0 + 4),
     };
+    if (flat)
+        return true;
+    if (!tarugx_winsys_supports_triangle_interpolation(&state->winsys) ||
+        !isfinite(v0[3]) || !isfinite(v1[3]) || !isfinite(v2[3]) ||
+        fabsf(v0[3] - v1[3]) > 0.00001f ||
+        fabsf(v0[3] - v2[3]) > 0.00001f)
+        return false;
+
+    /* Fit colors against the same 16.8 vertex coordinates sent to hardware,
+     * then evaluate the initial color at the first clipped pixel center. */
+    minimum_x = MIN2(MIN2(x0, x1), x2);
+    minimum_y = MIN2(MIN2(y0, y1), y2);
+    sample_x = (minimum_x < 0 ? 0 : minimum_x >> 8) + 0.5;
+    sample_y = (minimum_y < 0 ? 0 : minimum_y >> 8) + 0.5;
+    if (sample_x >= surface->width || sample_y >= surface->height)
+        return false;
+    v0 = (const float[8]) { x0 / 256.0f, y0 / 256.0f,
+                            0.0f, v0[3], v0[4], v0[5], v0[6], v0[7] };
+    v1 = (const float[8]) { x1 / 256.0f, y1 / 256.0f,
+                            0.0f, v1[3], v1[4], v1[5], v1[6], v1[7] };
+    v2 = (const float[8]) { x2 / 256.0f, y2 / 256.0f,
+                            0.0f, v2[3], v2[4], v2[5], v2[6], v2[7] };
+    determinant = ((double)v1[0] - v0[0]) * ((double)v2[1] - v0[1]) -
+                  ((double)v2[0] - v0[0]) * ((double)v1[1] - v0[1]);
+    if (!isfinite(determinant) || fabs(determinant) < 1.0 / 65536.0)
+        return false;
+    for (channel = 0; channel < 3; channel++)
+        if (!tarugx_interpolated_channel(v0, v1, v2, channel,
+                                         sample_x, sample_y, determinant,
+                                         &base[channel], &gradient[channel]))
+            return false;
+    triangle->color = base[0] << 16 | base[1] << 8 | base[2];
+    triangle->gradient_r = gradient[0];
+    triangle->gradient_g = gradient[1];
+    triangle->gradient_b = gradient[2];
     return true;
 }
 
@@ -200,7 +317,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
         unsigned b = indices ? indices[i + 1] : start + i + 1;
         unsigned c = indices ? indices[i + 2] : start + i + 2;
 
-        if (!tarugx_prepare_triangle(vertices + a * stride,
+        if (!tarugx_prepare_triangle(state, &surface,
+                                     vertices + a * stride,
                                      vertices + b * stride,
                                      vertices + c * stride,
                                      &triangles[i / 3])) {

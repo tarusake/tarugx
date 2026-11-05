@@ -10,6 +10,8 @@
 struct tarugx_winsys {
     int fd;
     uint32_t submit_syncobj;
+    uint32_t gpu_version;
+    uint64_t caps;
 };
 
 struct tarugx_winsys_surface {
@@ -28,10 +30,17 @@ struct tarugx_winsys_triangle {
     int32_t x2;
     int32_t y2;
     uint32_t color;
+    uint32_t gradient_r;
+    uint32_t gradient_g;
+    uint32_t gradient_b;
 };
 
 bool tarugx_winsys_open(struct tarugx_winsys *winsys, int fd);
 void tarugx_winsys_close(struct tarugx_winsys *winsys);
+bool tarugx_winsys_has_cap(const struct tarugx_winsys *winsys,
+                           uint64_t capability);
+bool tarugx_winsys_supports_triangle_interpolation(
+    const struct tarugx_winsys *winsys);
 bool tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
                                   uint32_t width, uint32_t height,
                                   struct tarugx_winsys_surface *surface);
