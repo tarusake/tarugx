@@ -12,6 +12,7 @@ module fragment_writer (
     target_stride  : input  logic<32> ,
     target_width   : input  logic<16> ,
     target_height  : input  logic<16> ,
+    target_validated: input logic     ,
     fragment_valid : input  logic     ,
     fragment_ready : output logic     ,
     fragment_x     : input  logic<16> ,
@@ -52,15 +53,6 @@ module fragment_writer (
         (pending_y as 64) * (target_stride as 64);
     let column_offset: logic<64> = (pending_x as 64) * 64'd2;
     let pixel_address: logic<64> = (target_base as 64) + row_offset + column_offset;
-    let target_row_offset: logic<64> =
-        ((target_height as 64) - 64'd1) * (target_stride as 64);
-    let target_row_bytes: logic<64> = (target_width as 64) * 64'd2;
-    let target_end: logic<64> =
-        (target_base as 64) + target_row_offset + target_row_bytes;
-    let target_valid: logic = (target_width != 0) && (target_height != 0)
-        && !target_base[0] && !target_stride[0]
-        && ((target_stride as 64) >= target_row_bytes)
-        && (target_end <= 64'h01000000);
     let fragment_in_bounds: logic = (fragment_x <: target_width)
         && (fragment_y <: target_height);
     let fragment_ok: logic = target_ok && pending_in_bounds
@@ -151,7 +143,7 @@ module fragment_writer (
                 writes = 0;
             }
             if clear {
-                target_ok = target_valid;
+                target_ok = target_validated;
             }
         }
     }

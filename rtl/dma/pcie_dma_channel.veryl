@@ -44,6 +44,11 @@ module pcie_dma_channel #(
     var mrd_host_address: logic<64>;
     var mrd_length_dw   : logic<7> ;
     var mrd_tag         : logic<8> ;
+    var tx_request_valid: logic    ;
+    var tx_request_ready: logic    ;
+    var tx_request_host : logic<64>;
+    var tx_request_length: logic<7>;
+    var tx_request_tag  : logic<8> ;
     var active_valid    : logic<8> ;
     var active_tags     : logic<64>;
     var cpl_valid       : logic    ;
@@ -103,19 +108,42 @@ module pcie_dma_channel #(
     );
 
     inst request_tx: dma_read_request_tx (
-        request_valid: mrd_valid       ,
+        request_valid: tx_request_valid,
         requester_id                   ,
-        request_tag  : mrd_tag         ,
-        host_address : mrd_host_address,
-        length_dw    : mrd_length_dw   ,
+        request_tag  : tx_request_tag  ,
+        host_address : tx_request_host ,
+        length_dw    : tx_request_length,
         tx_wait      : !tx_ready       ,
-        request_ready: mrd_ready       ,
+        request_ready: tx_request_ready,
         request_error: tx_parameter_error,
         tx_sop                         ,
         tx_eop                         ,
         tx_valid                       ,
         tx_data                        ,
     );
+
+    // Decouple raw PCIe backpressure from the DMA engine's wide slot state.
+    // The engine retires a request into this one-entry buffer; the stable TLP
+    // then waits here until the hard IP accepts it.
+    assign mrd_ready = !tx_request_valid;
+    always_ff {
+        if_reset {
+            tx_request_valid  = 0;
+            tx_request_host   = 0;
+            tx_request_length = 0;
+            tx_request_tag    = 0;
+        } else {
+            if tx_request_valid && tx_request_ready {
+                tx_request_valid = 0;
+            }
+            if mrd_valid && mrd_ready {
+                tx_request_valid  = 1;
+                tx_request_host   = mrd_host_address;
+                tx_request_length = mrd_length_dw;
+                tx_request_tag    = mrd_tag;
+            }
+        }
+    }
 
     inst completion_rx: dma_completion_rx (
         clk,

@@ -71,6 +71,8 @@ module triangle_engine (
         + (((height as 64) - 64'd1) * (stride as 64)) + target_row_bytes;
     let target_shape_valid: logic = (width != 0) && (height != 0)
         && !base[0] && !stride[0] && ((stride as 64) >= target_row_bytes);
+    let target_validated: logic = target_shape_ok
+        && (target_end_checked <= 64'h01000000);
 
     inst raster: triangle_rasterizer (
         clk,
@@ -104,6 +106,7 @@ module triangle_engine (
         target_stride  : stride,
         target_width   : width,
         target_height  : height,
+        target_validated,
         fragment_valid,
         fragment_ready,
         fragment_x,
@@ -173,8 +176,7 @@ module triangle_engine (
                     state              = State::ValidateResolve;
                 }
                 State::ValidateResolve: {
-                    if target_shape_ok
-                        && (target_end_checked <= 64'h01000000) {
+                    if target_validated {
                         state = State::Launch;
                     } else {
                         failed = 1;
