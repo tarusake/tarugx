@@ -30,18 +30,23 @@ module triangle_rasterizer (
 ) {
     enum State: logic<5> {
         Idle,
+        AreaLoad,
         AreaFirst,
         AreaSecond,
         AreaResolve,
+        BoundsPair,
         BoundsCapture,
         BoundsCheck,
         BoundsClip,
+        Edge0Load,
         Edge0First,
         Edge0Second,
         Edge0Resolve,
+        Edge1Load,
         Edge1First,
         Edge1Second,
         Edge1Resolve,
+        Edge2Load,
         Edge2First,
         Edge2Second,
         Edge2Resolve,
@@ -76,6 +81,12 @@ module triangle_rasterizer (
     var row_edge2: signed logic<50>;
     var product_first: signed logic<50>;
     var product_second: signed logic<50>;
+    var multiply_left : signed logic<25>;
+    var multiply_right: signed logic<25>;
+    var pair_minimum_x: signed logic<24>;
+    var pair_minimum_y: signed logic<24>;
+    var pair_maximum_x: signed logic<24>;
+    var pair_maximum_y: signed logic<24>;
     var bound_minimum_x: signed logic<24>;
     var bound_minimum_y: signed logic<24>;
     var bound_maximum_x: signed logic<24>;
@@ -92,24 +103,6 @@ module triangle_rasterizer (
     let a_to_c_x: signed logic<25> = ca_x;
     let a_to_c_y: signed logic<25> = ca_y;
 
-    var minimum_x: signed logic<24>;
-    var minimum_y: signed logic<24>;
-    var maximum_x: signed logic<24>;
-    var maximum_y: signed logic<24>;
-    always_comb {
-        minimum_x = ax;
-        minimum_y = ay;
-        maximum_x = ax;
-        maximum_y = ay;
-        if bx <: minimum_x { minimum_x = bx; }
-        if cx <: minimum_x { minimum_x = cx; }
-        if by <: minimum_y { minimum_y = by; }
-        if cy <: minimum_y { minimum_y = cy; }
-        if bx >: maximum_x { maximum_x = bx; }
-        if cx >: maximum_x { maximum_x = cx; }
-        if by >: maximum_y { maximum_y = by; }
-        if cy >: maximum_y { maximum_y = cy; }
-    }
     let maximum_x_ceil: signed logic<25> =
         {bound_maximum_x[23], bound_maximum_x} + 25'sd255;
     let maximum_y_ceil: signed logic<25> =
@@ -134,50 +127,9 @@ module triangle_rasterizer (
     let c_to_a_x: signed logic<25> = -ca_x;
     let c_to_a_y: signed logic<25> = -ca_y;
 
-    // Command setup deliberately time-shares one 25x25 multiplier.  Setup is
-    // eight clocks longer, while pixel evaluation remains one add/compare
-    // pipeline and therefore keeps the same steady-state fragment rate.
-    var multiply_left : signed logic<25>;
-    var multiply_right: signed logic<25>;
-    always_comb {
-        multiply_left  = 0;
-        multiply_right = 0;
-        case state {
-            State::AreaFirst: {
-                multiply_left  = a_to_b_x;
-                multiply_right = a_to_c_y;
-            }
-            State::AreaSecond: {
-                multiply_left  = a_to_b_y;
-                multiply_right = a_to_c_x;
-            }
-            State::Edge0First: {
-                multiply_left  = a_to_b_x;
-                multiply_right = sample_ay;
-            }
-            State::Edge0Second: {
-                multiply_left  = a_to_b_y;
-                multiply_right = sample_ax;
-            }
-            State::Edge1First: {
-                multiply_left  = b_to_c_x;
-                multiply_right = sample_by;
-            }
-            State::Edge1Second: {
-                multiply_left  = b_to_c_y;
-                multiply_right = sample_bx;
-            }
-            State::Edge2First: {
-                multiply_left  = c_to_a_x;
-                multiply_right = sample_cy;
-            }
-            State::Edge2Second: {
-                multiply_left  = c_to_a_y;
-                multiply_right = sample_cx;
-            }
-            default: {}
-        }
-    }
+    // Command setup deliberately time-shares one 25x25 multiplier.  Register
+    // its operands before each product so vertex subtraction and DSP delay do
+    // not occupy the same 100 MHz path.
     let multiply_result: signed logic<50> = multiply_left * multiply_right;
     let cross_result: signed logic<50> = product_first - product_second;
     let edge0_step_x: signed logic<50> = -(a_to_b_y * 50'sd256);
@@ -229,6 +181,12 @@ module triangle_rasterizer (
             row_edge2     = 0;
             product_first = 0;
             product_second = 0;
+            multiply_left = 0;
+            multiply_right = 0;
+            pair_minimum_x = 0;
+            pair_minimum_y = 0;
+            pair_maximum_x = 0;
+            pair_maximum_y = 0;
             bound_minimum_x = 0;
             bound_minimum_y = 0;
             bound_maximum_x = 0;
@@ -254,18 +212,25 @@ module triangle_rasterizer (
                         target_height = cmd_height;
                         color         = cmd_color;
                         error         = 0;
-                        state         = State::AreaFirst;
+                        state         = State::AreaLoad;
                     }
                 }
-                State::AreaFirst: {
+                State::AreaLoad: {
                     if (target_width == 0) || (target_height == 0)
                         || target_width[15] || target_height[15] {
                         error = 1;
                         state = State::Finish;
                     } else {
-                        product_first = multiply_result;
-                        state = State::AreaSecond;
+                        multiply_left  = a_to_b_x;
+                        multiply_right = a_to_c_y;
+                        state = State::AreaFirst;
                     }
+                }
+                State::AreaFirst: {
+                    product_first = multiply_result;
+                    multiply_left  = a_to_b_y;
+                    multiply_right = a_to_c_x;
+                    state = State::AreaSecond;
                 }
                 State::AreaSecond: {
                     product_second = multiply_result;
@@ -281,14 +246,21 @@ module triangle_rasterizer (
                             cx = cmd_x1;
                             cy = cmd_y1;
                         }
-                        state = State::BoundsCapture;
+                        state = State::BoundsPair;
                     }
                 }
+                State::BoundsPair: {
+                    pair_minimum_x = if ax <: bx ? ax : bx;
+                    pair_minimum_y = if ay <: by ? ay : by;
+                    pair_maximum_x = if ax >: bx ? ax : bx;
+                    pair_maximum_y = if ay >: by ? ay : by;
+                    state = State::BoundsCapture;
+                }
                 State::BoundsCapture: {
-                    bound_minimum_x = minimum_x;
-                    bound_minimum_y = minimum_y;
-                    bound_maximum_x = maximum_x;
-                    bound_maximum_y = maximum_y;
+                    bound_minimum_x = if pair_minimum_x <: cx ? pair_minimum_x : cx;
+                    bound_minimum_y = if pair_minimum_y <: cy ? pair_minimum_y : cy;
+                    bound_maximum_x = if pair_maximum_x >: cx ? pair_maximum_x : cx;
+                    bound_maximum_y = if pair_maximum_y >: cy ? pair_maximum_y : cy;
                     state = State::BoundsCheck;
                 }
                 State::BoundsCheck: {
@@ -308,10 +280,17 @@ module triangle_rasterizer (
                             target_width : maximum_x_ceil[23:8];
                         end_y = if maximum_y_ceil >: target_y_fixed ?
                             target_height : maximum_y_ceil[23:8];
-                        state = State::Edge0First;
+                        state = State::Edge0Load;
+                }
+                State::Edge0Load: {
+                    multiply_left  = a_to_b_x;
+                    multiply_right = sample_ay;
+                    state = State::Edge0First;
                 }
                 State::Edge0First: {
                     product_first = multiply_result;
+                    multiply_left  = a_to_b_y;
+                    multiply_right = sample_ax;
                     state = State::Edge0Second;
                 }
                 State::Edge0Second: {
@@ -321,10 +300,17 @@ module triangle_rasterizer (
                 State::Edge0Resolve: {
                     edge0     = cross_result;
                     row_edge0 = cross_result;
-                    state     = State::Edge1First;
+                    state     = State::Edge1Load;
+                }
+                State::Edge1Load: {
+                    multiply_left  = b_to_c_x;
+                    multiply_right = sample_by;
+                    state = State::Edge1First;
                 }
                 State::Edge1First: {
                     product_first = multiply_result;
+                    multiply_left  = b_to_c_y;
+                    multiply_right = sample_bx;
                     state = State::Edge1Second;
                 }
                 State::Edge1Second: {
@@ -334,10 +320,17 @@ module triangle_rasterizer (
                 State::Edge1Resolve: {
                     edge1     = cross_result;
                     row_edge1 = cross_result;
-                    state     = State::Edge2First;
+                    state     = State::Edge2Load;
+                }
+                State::Edge2Load: {
+                    multiply_left  = c_to_a_x;
+                    multiply_right = sample_cy;
+                    state = State::Edge2First;
                 }
                 State::Edge2First: {
                     product_first = multiply_result;
+                    multiply_left  = c_to_a_y;
+                    multiply_right = sample_cx;
                     state = State::Edge2Second;
                 }
                 State::Edge2Second: {
