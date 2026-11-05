@@ -209,7 +209,8 @@ for index in range({moves}):
     x = 40 + (index * 37) % 1080
     y = 60 + (index * 23) % 360
     commands += ['windowmove', '--sync', window, str(x), str(y)]
-run([*env, *commands], timeout=120, capture_output=True)
+if {moves}:
+    run([*env, *commands], timeout=120, capture_output=True)
 run([*env, 'xdotool', 'windowmove', '--sync', window, '80', '100',
      'windowsize', '--sync', window, '900', '600'], timeout=15,
     capture_output=True)
