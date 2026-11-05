@@ -23,11 +23,13 @@ module fragment_writer (
     writes         : output logic<32> ,
     mem_valid      : output logic     ,
     mem_ready      : input  logic     ,
+    mem_write      : output logic     ,
     mem_addr       : output logic<24> ,
     mem_wdata      : output logic<256>,
     mem_wstrb      : output logic<32> ,
     mem_rsp_valid  : input  logic     ,
     mem_rsp_ready  : output logic     ,
+    mem_rsp_data   : input  logic<256>,
     mem_rsp_error  : input  logic     ,
 ) {
     enum State: logic<3> {
@@ -62,7 +64,10 @@ module fragment_writer (
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
     assign mem_valid     = state == State::Issue;
+    assign mem_write     = 1'b1;
     assign mem_rsp_ready = state == State::Wait;
+    // Reserved for the depth-test read/modify/write stage.
+    let _unused_rsp_data: logic = ^mem_rsp_data;
     assign mem_addr      = word_addr;
 
     always_comb {

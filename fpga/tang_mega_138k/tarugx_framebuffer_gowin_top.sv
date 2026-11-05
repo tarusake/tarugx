@@ -324,10 +324,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [31:0] blit_mem_wstrb;
     wire triangle_cmd_valid, triangle_cmd_ready, triangle_engine_done, triangle_engine_error;
     wire [367:0] triangle_mem_command;
-    wire triangle_mem_valid, triangle_mem_ready;
+    wire triangle_mem_valid, triangle_mem_ready, triangle_mem_write;
     wire triangle_mem_rsp_valid, triangle_mem_rsp_ready, triangle_mem_rsp_error;
     wire [23:0] triangle_mem_addr;
-    wire [255:0] triangle_mem_wdata;
+    wire [255:0] triangle_mem_wdata, triangle_mem_rsp_data;
     wire [31:0] triangle_mem_wstrb, triangle_engine_writes;
     reg [31:0] triangle_writes_meta, triangle_writes_sync;
     tarugx_fill_command_cdc u_fill_cdc (
@@ -409,9 +409,11 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .busy(), .done(triangle_engine_done), .error(triangle_engine_error),
         .writes(triangle_engine_writes),
         .mem_valid(triangle_mem_valid), .mem_ready(triangle_mem_ready),
+        .mem_write(triangle_mem_write),
         .mem_addr(triangle_mem_addr), .mem_wdata(triangle_mem_wdata),
         .mem_wstrb(triangle_mem_wstrb), .mem_rsp_valid(triangle_mem_rsp_valid),
-        .mem_rsp_ready(triangle_mem_rsp_ready), .mem_rsp_error(triangle_mem_rsp_error)
+        .mem_rsp_ready(triangle_mem_rsp_ready), .mem_rsp_data(triangle_mem_rsp_data),
+        .mem_rsp_error(triangle_mem_rsp_error)
     );
     always @(posedge tlp_clk or negedge cpu_reset[1]) begin
         if (!cpu_reset[1]) begin
@@ -459,9 +461,11 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .blit_rsp_valid(blit_mem_rsp_valid), .blit_rsp_ready(blit_mem_rsp_ready),
         .blit_rsp_data(blit_mem_rsp_data), .blit_rsp_error(blit_mem_rsp_error),
         .triangle_valid(triangle_mem_valid), .triangle_ready(triangle_mem_ready),
+        .triangle_write(triangle_mem_write),
         .triangle_addr(triangle_mem_addr), .triangle_wdata(triangle_mem_wdata),
         .triangle_wstrb(triangle_mem_wstrb), .triangle_rsp_valid(triangle_mem_rsp_valid),
-        .triangle_rsp_ready(triangle_mem_rsp_ready), .triangle_rsp_error(triangle_mem_rsp_error),
+        .triangle_rsp_ready(triangle_mem_rsp_ready), .triangle_rsp_data(triangle_mem_rsp_data),
+        .triangle_rsp_error(triangle_mem_rsp_error),
 `endif
         .mem_valid(mem_valid),
         .mem_ready(mem_ready),

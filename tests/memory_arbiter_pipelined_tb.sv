@@ -2,10 +2,10 @@
 `timescale 1ns/1ps
 module memory_arbiter_pipelined_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
- logic cpu_valid=1,fill_valid=1,blit_valid=0,triangle_valid=1;
+ logic cpu_valid=1,fill_valid=1,blit_valid=0,triangle_valid=1,triangle_write=1;
  logic cpu_ready,cpu_rsp_valid,cpu_rsp_error,fill_ready,fill_rsp_valid,fill_rsp_error;
  logic blit_ready,blit_rsp_valid,blit_rsp_error;logic [255:0] blit_rsp_data;
- logic triangle_ready,triangle_rsp_valid,triangle_rsp_error;
+ logic triangle_ready,triangle_rsp_valid,triangle_rsp_error;logic [255:0] triangle_rsp_data;
  logic out_valid,out_ready=1,out_write,out_rsp_valid=0,out_rsp_ready,out_rsp_error=0;
  logic [23:0] out_addr;logic [255:0] out_wdata,out_rsp_data=0;logic [31:0] out_wstrb;
  tarugx_render_memory_arbiter dut(
@@ -17,9 +17,10 @@ module memory_arbiter_pipelined_tb;
   .blit_valid,.blit_ready,.blit_write(1'b0),.blit_addr(24'h500),
   .blit_wdata('0),.blit_wstrb('0),.blit_rsp_valid,.blit_rsp_ready(1'b1),
   .blit_rsp_data,.blit_rsp_error,
-  .triangle_valid,.triangle_ready,.triangle_addr(24'h700),
-  .triangle_wdata({8{32'h3d3d3d3d}}),.triangle_wstrb(32'h00030003),
-  .triangle_rsp_valid,.triangle_rsp_ready(1'b1),.triangle_rsp_error,
+  .triangle_valid,.triangle_ready,.triangle_write,.triangle_addr(24'h700),
+  .triangle_wdata({8{32'h3d3d3d3d}}),
+  .triangle_wstrb(triangle_write?32'h00030003:32'b0),
+  .triangle_rsp_valid,.triangle_rsp_ready(1'b1),.triangle_rsp_data,.triangle_rsp_error,
   .out_valid,.out_ready,.out_write,.out_addr,.out_wdata,.out_wstrb,
   .out_rsp_valid,.out_rsp_ready,.out_rsp_data,.out_rsp_error);
  int cpu_requests=0,fill_requests=0,blit_requests=0,triangle_requests=0;
@@ -34,7 +35,15 @@ module memory_arbiter_pipelined_tb;
     assert(dut.write_count==0)else $fatal(1,"read issued before posted writes drained");
     blit_requests++;
    end
-   else begin assert(out_addr==24'h700&&out_write&&out_wstrb==32'h00030003);triangle_requests++;end
+   else begin
+    assert(out_addr==24'h700);
+    if(out_write)begin assert(out_wstrb==32'h00030003);end
+    else begin
+     assert(out_wstrb==0);
+     assert(dut.write_count==0)else $fatal(1,"triangle read issued before posted writes drained");
+    end
+    triangle_requests++;
+   end
    pending++;
    if(pending>max_pending)max_pending=pending;
   end
@@ -44,11 +53,11 @@ module memory_arbiter_pipelined_tb;
   if(cpu_rsp_valid)begin assert(!cpu_rsp_error);cpu_responses++;end
   if(fill_rsp_valid)begin assert(!fill_rsp_error);fill_responses++;end
   if(blit_rsp_valid)begin assert(!blit_rsp_error&&blit_rsp_data==out_rsp_data);blit_responses++;end
-  if(triangle_rsp_valid)begin assert(!triangle_rsp_error);triangle_responses++;end
+  if(triangle_rsp_valid)begin assert(!triangle_rsp_error&&triangle_rsp_data==out_rsp_data);triangle_responses++;end
  end
  initial begin
   repeat(3)@(posedge clk);rst_n=1;
-  wait(max_pending>=4);blit_valid=1;
+  wait(max_pending>=4);blit_valid=1;triangle_write=0;
   wait(cpu_responses>=20&&fill_responses>=20&&blit_responses>=20&&triangle_responses>=20);
   cpu_valid=0;fill_valid=0;blit_valid=0;triangle_valid=0;
   wait(pending==0&&!out_rsp_valid);

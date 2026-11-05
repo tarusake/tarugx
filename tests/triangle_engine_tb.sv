@@ -8,7 +8,7 @@ module triangle_engine_tb;
  logic [31:0] cmd_color=0;logic busy,done,error;logic [31:0] writes;
  logic [31:0] cmd_gradient_r=0,cmd_gradient_g=0,cmd_gradient_b=0;
  logic [31:0] test_gradient_r=0,test_gradient_g=0,test_gradient_b=0;
- logic mem_valid,mem_ready=0;logic [23:0] mem_addr;logic [255:0] mem_wdata;
+ logic mem_valid,mem_ready=0,mem_write;logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;
  logic [31:0] mem_wstrb;logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  byte unsigned memory[0:4095];int requests=0;
  tarugx_triangle_engine dut(.*);

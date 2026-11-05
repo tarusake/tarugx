@@ -25,11 +25,13 @@ module triangle_engine (
     writes       : output logic<32>        ,
     mem_valid    : output logic            ,
     mem_ready    : input  logic            ,
+    mem_write    : output logic            ,
     mem_addr     : output logic<24>        ,
     mem_wdata    : output logic<256>       ,
     mem_wstrb    : output logic<32>        ,
     mem_rsp_valid: input  logic            ,
     mem_rsp_ready: output logic            ,
+    mem_rsp_data : input  logic<256>       ,
     mem_rsp_error: input  logic            ,
 ) {
     enum State: logic<3> {
@@ -126,11 +128,13 @@ module triangle_engine (
         writes,
         mem_valid,
         mem_ready,
+        mem_write,
         mem_addr,
         mem_wdata,
         mem_wstrb,
         mem_rsp_valid,
         mem_rsp_ready,
+        mem_rsp_data,
         mem_rsp_error,
     );
 

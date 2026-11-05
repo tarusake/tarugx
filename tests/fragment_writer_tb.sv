@@ -7,7 +7,7 @@ module fragment_writer_tb;
  logic target_validated=1;
  logic fragment_valid=0,fragment_ready;logic [15:0] fragment_x=0,fragment_y=0;
  logic [31:0] fragment_color=0;logic busy,fault;logic [31:0] writes;
- logic mem_valid,mem_ready=0;logic [23:0] mem_addr;logic [255:0] mem_wdata;
+ logic mem_valid,mem_ready=0,mem_write;logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;
  logic [31:0] mem_wstrb;logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  byte unsigned memory[0:4095];int requests=0;
  tarugx_fragment_writer dut(.*);

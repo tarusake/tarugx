@@ -33,11 +33,13 @@ module render_memory_arbiter (
     blit_rsp_error: output logic     ,
     triangle_valid    : input  logic     ,
     triangle_ready    : output logic     ,
+    triangle_write    : input  logic     ,
     triangle_addr     : input  logic<24> ,
     triangle_wdata    : input  logic<256>,
     triangle_wstrb    : input  logic<32> ,
     triangle_rsp_valid: output logic     ,
     triangle_rsp_ready: input  logic     ,
+    triangle_rsp_data : output logic<256>,
     triangle_rsp_error: output logic     ,
     out_valid     : output logic     ,
     out_ready     : input  logic     ,
@@ -65,8 +67,11 @@ module render_memory_arbiter (
     let cpu_eligible : logic = cpu_valid && (cpu_write || (write_count == 0));
     let fill_eligible: logic = fill_valid;
     let blit_eligible: logic = blit_valid && (blit_write || (write_count == 0));
-    let triangle_eligible: logic = triangle_valid;
-    let read_waiting: logic = (cpu_valid && !cpu_write) || (blit_valid && !blit_write);
+    let triangle_eligible: logic = triangle_valid
+        && (triangle_write || (write_count == 0));
+    let read_waiting: logic = (cpu_valid && !cpu_write)
+        || (blit_valid && !blit_write)
+        || (triangle_valid && !triangle_write);
     let choose_cpu : logic = cpu_eligible && ((preferred == 0)
         || ((preferred == 1) && !fill_eligible && !blit_eligible && !triangle_eligible)
         || ((preferred == 2) && !blit_eligible && !triangle_eligible)
@@ -81,7 +86,7 @@ module render_memory_arbiter (
         || ((preferred == 1) && !fill_eligible));
     let choose_triangle: logic = triangle_eligible && !choose_cpu && !choose_fill && !choose_blit;
     let selected_write: logic = if choose_cpu ? cpu_write
-        : if choose_fill ? 1'b1 : if choose_blit ? blit_write : 1'b1;
+        : if choose_fill ? 1'b1 : if choose_blit ? blit_write : triangle_write;
     let issue_accept: logic = issuing && out_ready;
     // Keep posted writes pipelined, but do not let a following read overtake
     // their actual DDR commit. The response pipeline preserves command order,
@@ -99,6 +104,7 @@ module render_memory_arbiter (
     assign fill_rsp_valid = response_valid && (response_owner == 1);
     assign blit_rsp_valid = response_valid && (response_owner == 2);
     assign triangle_rsp_valid = response_valid && (response_owner == 3);
+    assign triangle_rsp_data = response_data;
     assign cpu_rsp_data   = response_data;
     assign cpu_rsp_error  = response_error;
     assign fill_rsp_error = response_error;
@@ -143,7 +149,7 @@ module render_memory_arbiter (
                 preferred    = if choose_cpu ? 2'd1 : if choose_fill ? 2'd2
                     : if choose_blit ? 2'd3 : 2'd0;
                 out_write    = if choose_cpu ? cpu_write : if choose_fill ? 1'b1
-                    : if choose_blit ? blit_write : 1'b1;
+                    : if choose_blit ? blit_write : triangle_write;
                 out_addr     = if choose_cpu ? cpu_addr : if choose_fill ? fill_addr
                     : if choose_blit ? blit_addr : triangle_addr;
                 out_wdata    = if choose_cpu ? cpu_wdata : if choose_fill ? fill_wdata
