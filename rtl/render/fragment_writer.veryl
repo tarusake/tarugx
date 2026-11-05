@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Convert covered XRGB8888 fragments to masked RGB565 DDR writes.
+///
+/// One request is outstanding at a time.  This deliberately simple contract
+/// provides exact completion/error semantics for the first triangle pipeline;
+/// later span packing can replace it without changing rasterization rules.
+module fragment_writer (
+    clk            : input  clock     ,
+    rst_n          : input  reset     ,
+    clear          : input  logic     ,
+    target_base    : input  logic<32> ,
+    target_stride  : input  logic<32> ,
+    target_width   : input  logic<16> ,
+    target_height  : input  logic<16> ,
+    fragment_valid : input  logic     ,
+    fragment_ready : output logic     ,
+    fragment_x     : input  logic<16> ,
+    fragment_y     : input  logic<16> ,
+    fragment_color : input  logic<32> ,
+    busy           : output logic     ,
+    fault          : output logic     ,
+    writes         : output logic<32> ,
+    mem_valid      : output logic     ,
+    mem_ready      : input  logic     ,
+    mem_addr       : output logic<24> ,
+    mem_wdata      : output logic<256>,
+    mem_wstrb      : output logic<32> ,
+    mem_rsp_valid  : input  logic     ,
+    mem_rsp_ready  : output logic     ,
+    mem_rsp_error  : input  logic     ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Issue,
+        Wait,
+        Fault,
+    }
+    var state: State;
+    var word_addr: logic<24>;
+    var lane: logic<4>;
+    var pixel: logic<16>;
+
+    let row_offset: logic<64> = (fragment_y as 64) * (target_stride as 64);
+    let column_offset: logic<64> = (fragment_x as 64) * 64'd2;
+    let pixel_address: logic<64> = (target_base as 64) + row_offset + column_offset;
+    let target_row_offset: logic<64> =
+        ((target_height as 64) - 64'd1) * (target_stride as 64);
+    let target_row_bytes: logic<64> = (target_width as 64) * 64'd2;
+    let target_end: logic<64> =
+        (target_base as 64) + target_row_offset + target_row_bytes;
+    let target_valid: logic = (target_width != 0) && (target_height != 0)
+        && !target_base[0] && !target_stride[0]
+        && ((target_stride as 64) >= target_row_bytes)
+        && (target_end <= 64'h01000000);
+    let fragment_in_bounds: logic = (fragment_x <: target_width)
+        && (fragment_y <: target_height)
+        && ((pixel_address + 64'd2) <= 64'h01000000);
+    let fragment_ok: logic = target_valid && fragment_in_bounds;
+
+    assign fragment_ready = state == State::Idle;
+    assign busy          = (state == State::Issue) || (state == State::Wait);
+    assign fault         = state == State::Fault;
+    assign mem_valid     = state == State::Issue;
+    assign mem_rsp_ready = state == State::Wait;
+    assign mem_addr      = word_addr;
+
+    always_comb {
+        mem_wdata = 0;
+        mem_wstrb = 0;
+        mem_wdata[(lane as 8) * 8'd16+:16] = pixel;
+        mem_wstrb[(lane as 5) * 5'd2+:2] = 2'b11;
+    }
+
+    always_ff {
+        if_reset {
+            state     = State::Idle;
+            word_addr = 0;
+            lane      = 0;
+            pixel     = 0;
+            writes    = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if fragment_valid {
+                        if fragment_ok {
+                            word_addr = {pixel_address[23:5], 5'b0};
+                            lane      = pixel_address[4:1];
+                            pixel     = {
+                                fragment_color[23:19],
+                                fragment_color[15:10],
+                                fragment_color[7:3]
+                            };
+                            state = State::Issue;
+                        } else {
+                            state = State::Fault;
+                        }
+                    }
+                }
+                State::Issue: {
+                    if mem_ready {
+                        state = State::Wait;
+                    }
+                }
+                State::Wait: {
+                    if mem_rsp_valid {
+                        if mem_rsp_error {
+                            state = State::Fault;
+                        } else {
+                            writes = writes + 32'd1;
+                            state  = State::Idle;
+                        }
+                    }
+                }
+                State::Fault: {
+                    if clear {
+                        state  = State::Idle;
+                        writes = 0;
+                    }
+                }
+                default: {
+                    state = State::Fault;
+                }
+            }
+            if clear && (state != State::Fault) {
+                writes = 0;
+            }
+        }
+    }
+}
