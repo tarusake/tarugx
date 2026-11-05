@@ -194,6 +194,12 @@ EXAのSolidとCopyをFPGA fill/blitへ接続します。2026-11-05のXfce実機�
 約59.8回/秒から約242回/秒へ4.0倍になりました。blitは重なり後方コピーにも256-bit
 バーストを使用し、同サイズの画面内copyは従来の約6.6回/秒から約7.0回/秒へ改善しました。
 ただしshadow方式の約59.7回/秒には届かず、次は行ごとのDDR応答待ちを減らす必要があります。
+実GUIの受入試験には`tools/benchmark_remote_xfce_gui.py`を使います。Xfce Terminalを
+180回移動し、標準modesetting shadowとTaruGX EXAを同じ起動環境で比較します。
+2026-11-05のFlash版実機ではFPGA blit 13件、failure 0で、操作時間は10.87秒から
+4.29秒へ60.6%短縮、Xorg CPU時間は5.38秒から4.14秒へ23.0%減りました。観測したPCIe
+転送量も、shadow DMAの273,147,572 byteから、EXA起動処理を含むBAR書込み
+76,255,908 byteへ72.1%減りました。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
