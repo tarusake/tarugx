@@ -42,6 +42,9 @@ module pcie_memory_pipeline_tb;
  logic [23:0] fill_mem_addr=0;logic [255:0] fill_mem_wdata=0;logic [31:0] fill_mem_wstrb=0;
  logic blit_mem_valid,blit_mem_ready,blit_mem_write,blit_mem_rsp_valid,blit_mem_rsp_ready,blit_mem_rsp_error;
  logic [23:0] blit_mem_addr;logic [255:0] blit_mem_wdata,blit_mem_rsp_data;logic [31:0] blit_mem_wstrb;
+ logic triangle_mem_valid=0,triangle_mem_ready,triangle_mem_rsp_valid,triangle_mem_rsp_ready=1;
+ logic triangle_mem_rsp_error;logic [23:0] triangle_mem_addr=0;
+ logic [255:0] triangle_mem_wdata=0;logic [31:0] triangle_mem_wstrb=0;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
  tarugx_framebuffer_memory_pipeline path(
@@ -57,6 +60,10 @@ module pcie_memory_pipeline_tb;
   .blit_valid(blit_mem_valid),.blit_ready(blit_mem_ready),.blit_write(blit_mem_write),.blit_addr(blit_mem_addr),
   .blit_wdata(blit_mem_wdata),.blit_wstrb(blit_mem_wstrb),.blit_rsp_valid(blit_mem_rsp_valid),
   .blit_rsp_ready(blit_mem_rsp_ready),.blit_rsp_data(blit_mem_rsp_data),.blit_rsp_error(blit_mem_rsp_error),
+  .triangle_valid(triangle_mem_valid),.triangle_ready(triangle_mem_ready),
+  .triangle_addr(triangle_mem_addr),.triangle_wdata(triangle_mem_wdata),
+  .triangle_wstrb(triangle_mem_wstrb),.triangle_rsp_valid(triangle_mem_rsp_valid),
+  .triangle_rsp_ready(triangle_mem_rsp_ready),.triangle_rsp_error(triangle_mem_rsp_error),
   .mem_valid(mem_valid),.mem_ready(mem_ready),.mem_write(mem_write),.mem_addr(mem_addr),
   .mem_wdata(mem_wdata),.mem_wstrb(mem_wstrb),.mem_rsp_valid(mem_rsp_valid),
   .mem_rsp_ready(mem_rsp_ready),.mem_rsp_data(mem_rsp_data),.mem_rsp_error(mem_rsp_error));
