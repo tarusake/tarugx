@@ -75,6 +75,7 @@ module triangle_engine (
     var depth_end_checked: logic<64>;
     var target_shape_ok: logic;
     var depth_shape_ok: logic;
+    var validated: logic;
     var failed: logic;
     var raster_finished: logic;
     var raster_busy: logic;
@@ -144,7 +145,7 @@ module triangle_engine (
         target_stride  : stride,
         target_width   : width,
         target_height  : height,
-        target_validated,
+        target_validated: validated,
         depth_enable,
         depth_write_enable,
         depth_base,
@@ -201,6 +202,7 @@ module triangle_engine (
             depth_end_checked = 0;
             target_shape_ok = 0;
             depth_shape_ok  = 0;
+            validated       = 0;
             failed          = 0;
             raster_finished = 0;
             done            = 0;
@@ -234,6 +236,7 @@ module triangle_engine (
                         failed          = 0;
                         raster_finished = 0;
                         error           = 0;
+                        validated       = 0;
                         state           = State::ValidateCapture;
                     }
                 }
@@ -245,6 +248,7 @@ module triangle_engine (
                     state              = State::ValidateResolve;
                 }
                 State::ValidateResolve: {
+                    validated = target_validated;
                     if target_validated {
                         state = State::Launch;
                     } else {
