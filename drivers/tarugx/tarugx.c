@@ -145,6 +145,8 @@ struct tarugx_vram_object {
 	u32 height;
 	u32 pitch;
 	bool front;
+	bool depth;
+	u32 depth_offset;
 };
 
 struct tarugx_sched_job {
@@ -1118,13 +1120,19 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
 	struct drm_tarugx_vram_create *args = data;
 	struct tarugx_vram_object *object;
-	u64 size;
+	u64 color_size, size;
 	int ret;
 
 	if (!args->width || args->width > tgx->width || !args->height ||
 	    args->height > tgx->height ||
-	    args->flags & ~DRM_TARUGX_VRAM_FRONT || args->pad)
+	    args->flags & ~(DRM_TARUGX_VRAM_FRONT |
+			    DRM_TARUGX_VRAM_DEPTH) || args->depth_offset)
 		return -EINVAL;
+	if (args->flags & DRM_TARUGX_VRAM_DEPTH) {
+		if (!tgx->depth_available || tgx->cpp != 2 ||
+		    args->flags & DRM_TARUGX_VRAM_FRONT)
+			return -EOPNOTSUPP;
+	}
 	if (args->flags & DRM_TARUGX_VRAM_FRONT) {
 		if (!drm_is_current_master(file))
 			return -EACCES;
@@ -1133,7 +1141,13 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 			return -EINVAL;
 	}
 	args->pitch = args->width * tgx->cpp;
-	size = PAGE_ALIGN((u64)args->pitch * args->height);
+	color_size = PAGE_ALIGN((u64)args->pitch * args->height);
+	size = color_size;
+	if (args->flags & DRM_TARUGX_VRAM_DEPTH) {
+		if (color_size > U32_MAX || color_size > U64_MAX / 2)
+			return -EOVERFLOW;
+		size = color_size * 2;
+	}
 	if (size > tgx->vram_gem_bytes)
 		return -ENOSPC;
 	object = kzalloc(sizeof(*object), GFP_KERNEL);
@@ -1143,6 +1157,8 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	object->height = args->height;
 	object->pitch = args->pitch;
 	object->front = args->flags & DRM_TARUGX_VRAM_FRONT;
+	object->depth = args->flags & DRM_TARUGX_VRAM_DEPTH;
+	object->depth_offset = object->depth ? (u32)color_size : 0;
 	object->base.funcs = &tgx_vram_object_funcs;
 	ret = drm_gem_object_init(drm, &object->base, size);
 	if (ret) {
@@ -1172,6 +1188,7 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	if (ret)
 		goto out_put;
 	args->size = size;
+	args->depth_offset = object->depth_offset;
 	args->mmap_offset = drm_vma_node_offset_addr(&object->base.vma_node);
 out_put:
 	drm_gem_object_put(&object->base);

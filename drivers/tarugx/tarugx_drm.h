@@ -93,7 +93,7 @@ struct drm_tarugx_vram_create {
 	__u32 flags;
 	__u32 handle;
 	__u32 pitch;
-	__u32 pad;
+	__u32 depth_offset; /* returned byte offset of Z16 plane, or zero */
 	__u64 size;
 	__u64 mmap_offset;
 };
@@ -102,6 +102,9 @@ struct drm_tarugx_vram_create {
  * for the DRM master so a display server can combine CPU fallback through the
  * mmap offset with FPGA fill/blit on the same RGB565 front buffer. */
 #define DRM_TARUGX_VRAM_FRONT (1U << 0)
+/* Allocate a same-size Z16 plane after the RGB565 color plane.  Both planes
+ * share one GEM reservation object so rendering dependencies remain atomic. */
+#define DRM_TARUGX_VRAM_DEPTH (1U << 1)
 
 struct drm_tarugx_submit_gem {
 	__u32 handle;
