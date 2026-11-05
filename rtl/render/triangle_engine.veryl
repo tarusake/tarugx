@@ -31,6 +31,8 @@ module triangle_engine (
 ) {
     enum State: logic<3> {
         Idle,
+        ValidateCapture,
+        ValidateResolve,
         Launch,
         Run,
         Finish,
@@ -47,6 +49,8 @@ module triangle_engine (
     var x2: signed logic<24>;
     var y2: signed logic<24>;
     var color: logic<32>;
+    var target_end_checked: logic<64>;
+    var target_shape_ok: logic;
     var failed: logic;
     var raster_finished: logic;
     var raster_busy: logic;
@@ -65,9 +69,8 @@ module triangle_engine (
     let target_row_bytes: logic<64> = (width as 64) * 64'd2;
     let target_end: logic<64> = (base as 64)
         + (((height as 64) - 64'd1) * (stride as 64)) + target_row_bytes;
-    let target_valid: logic = (width != 0) && (height != 0)
-        && !base[0] && !stride[0] && ((stride as 64) >= target_row_bytes)
-        && (target_end <= 64'h01000000);
+    let target_shape_valid: logic = (width != 0) && (height != 0)
+        && !base[0] && !stride[0] && ((stride as 64) >= target_row_bytes);
 
     inst raster: triangle_rasterizer (
         clk,
@@ -120,7 +123,7 @@ module triangle_engine (
     );
 
     assign cmd_ready = state == State::Idle;
-    assign busy = (state == State::Launch) || (state == State::Run);
+    assign busy = (state != State::Idle) && (state != State::Finish);
 
     always_ff {
         if_reset {
@@ -136,6 +139,8 @@ module triangle_engine (
             x2              = 0;
             y2              = 0;
             color           = 0;
+            target_end_checked = 0;
+            target_shape_ok = 0;
             failed          = 0;
             raster_finished = 0;
             done            = 0;
@@ -159,16 +164,25 @@ module triangle_engine (
                         failed          = 0;
                         raster_finished = 0;
                         error           = 0;
-                        state           = State::Launch;
+                        state           = State::ValidateCapture;
                     }
                 }
-                State::Launch: {
-                    if target_valid {
-                        state = State::Run;
+                State::ValidateCapture: {
+                    target_end_checked = target_end;
+                    target_shape_ok    = target_shape_valid;
+                    state              = State::ValidateResolve;
+                }
+                State::ValidateResolve: {
+                    if target_shape_ok
+                        && (target_end_checked <= 64'h01000000) {
+                        state = State::Launch;
                     } else {
                         failed = 1;
                         state  = State::Finish;
                     }
+                }
+                State::Launch: {
+                    state = State::Run;
                 }
                 State::Run: {
                     if raster_done {

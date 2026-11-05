@@ -91,6 +91,15 @@ module triangle_rasterizer (
     var bound_minimum_y: signed logic<24>;
     var bound_maximum_x: signed logic<24>;
     var bound_maximum_y: signed logic<24>;
+    var edge0_step_x: signed logic<50>;
+    var edge1_step_x: signed logic<50>;
+    var edge2_step_x: signed logic<50>;
+    var edge0_step_y: signed logic<50>;
+    var edge1_step_y: signed logic<50>;
+    var edge2_step_y: signed logic<50>;
+    var edge0_inclusive: logic;
+    var edge1_inclusive: logic;
+    var edge2_inclusive: logic;
 
     let ab_x: signed logic<25> = {ax[23], ax} - {bx[23], bx};
     let ab_y: signed logic<25> = {ay[23], ay} - {by[23], by};
@@ -132,17 +141,17 @@ module triangle_rasterizer (
     // not occupy the same 100 MHz path.
     let multiply_result: signed logic<50> = multiply_left * multiply_right;
     let cross_result: signed logic<50> = product_first - product_second;
-    let edge0_step_x: signed logic<50> = -(a_to_b_y * 50'sd256);
-    let edge1_step_x: signed logic<50> = -(b_to_c_y * 50'sd256);
-    let edge2_step_x: signed logic<50> = -(c_to_a_y * 50'sd256);
-    let edge0_step_y: signed logic<50> = a_to_b_x * 50'sd256;
-    let edge1_step_y: signed logic<50> = b_to_c_x * 50'sd256;
-    let edge2_step_y: signed logic<50> = c_to_a_x * 50'sd256;
-    let edge0_inclusive: logic = (a_to_b_y <: 0)
+    let edge0_step_x_calc: signed logic<50> = -(a_to_b_y * 50'sd256);
+    let edge1_step_x_calc: signed logic<50> = -(b_to_c_y * 50'sd256);
+    let edge2_step_x_calc: signed logic<50> = -(c_to_a_y * 50'sd256);
+    let edge0_step_y_calc: signed logic<50> = a_to_b_x * 50'sd256;
+    let edge1_step_y_calc: signed logic<50> = b_to_c_x * 50'sd256;
+    let edge2_step_y_calc: signed logic<50> = c_to_a_x * 50'sd256;
+    let edge0_inclusive_calc: logic = (a_to_b_y <: 0)
         || ((a_to_b_y == 0) && (a_to_b_x >: 0));
-    let edge1_inclusive: logic = (b_to_c_y <: 0)
+    let edge1_inclusive_calc: logic = (b_to_c_y <: 0)
         || ((b_to_c_y == 0) && (b_to_c_x >: 0));
-    let edge2_inclusive: logic = (c_to_a_y <: 0)
+    let edge2_inclusive_calc: logic = (c_to_a_y <: 0)
         || ((c_to_a_y == 0) && (c_to_a_x >: 0));
     let covered: logic = ((edge0 >: 0) || ((edge0 == 0) && edge0_inclusive))
         && ((edge1 >: 0) || ((edge1 == 0) && edge1_inclusive))
@@ -191,6 +200,15 @@ module triangle_rasterizer (
             bound_minimum_y = 0;
             bound_maximum_x = 0;
             bound_maximum_y = 0;
+            edge0_step_x = 0;
+            edge1_step_x = 0;
+            edge2_step_x = 0;
+            edge0_step_y = 0;
+            edge1_step_y = 0;
+            edge2_step_y = 0;
+            edge0_inclusive = 0;
+            edge1_inclusive = 0;
+            edge2_inclusive = 0;
             done          = 0;
             error         = 0;
         } else if abort {
@@ -254,6 +272,15 @@ module triangle_rasterizer (
                     pair_minimum_y = if ay <: by ? ay : by;
                     pair_maximum_x = if ax >: bx ? ax : bx;
                     pair_maximum_y = if ay >: by ? ay : by;
+                    edge0_step_x = edge0_step_x_calc;
+                    edge1_step_x = edge1_step_x_calc;
+                    edge2_step_x = edge2_step_x_calc;
+                    edge0_step_y = edge0_step_y_calc;
+                    edge1_step_y = edge1_step_y_calc;
+                    edge2_step_y = edge2_step_y_calc;
+                    edge0_inclusive = edge0_inclusive_calc;
+                    edge1_inclusive = edge1_inclusive_calc;
+                    edge2_inclusive = edge2_inclusive_calc;
                     state = State::BoundsCapture;
                 }
                 State::BoundsCapture: {
