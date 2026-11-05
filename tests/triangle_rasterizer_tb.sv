@@ -6,11 +6,15 @@ module triangle_rasterizer_tb;
  logic signed [23:0] cmd_x0=0,cmd_y0=0,cmd_x1=0,cmd_y1=0,cmd_x2=0,cmd_y2=0;
  logic [15:0] cmd_width=0,cmd_height=0;logic [31:0] cmd_color=0;
  logic [31:0] cmd_gradient_r=0,cmd_gradient_g=0,cmd_gradient_b=0;
+ logic [15:0] cmd_depth=0;
+ logic signed [23:0] cmd_gradient_z_x=0,cmd_gradient_z_y=0;
  logic busy,done,error,fragment_valid,fragment_ready=0;
- logic [15:0] fragment_x,fragment_y;logic [31:0] fragment_color;
+ logic [15:0] fragment_x,fragment_y,fragment_depth;logic [31:0] fragment_color;
  bit expected[0:255],seen[0:255];int active_width,active_height,fragments;
  logic [31:0] test_color=32'h12ab34cd;
  logic [31:0] test_gradient_r=0,test_gradient_g=0,test_gradient_b=0;
+ logic [15:0] test_depth=16'h4321;
+ logic signed [23:0] test_gradient_z_x=0,test_gradient_z_y=0;
  tarugx_triangle_rasterizer dut(.*);
 
  function automatic [7:0] expected_channel(
@@ -30,6 +34,16 @@ module triangle_rasterizer_tb;
    expected_channel(test_color[23:16],test_gradient_r,x,y),
    expected_channel(test_color[15:8],test_gradient_g,x,y),
    expected_channel(test_color[7:0],test_gradient_b,x,y)};
+ endfunction
+ function automatic [15:0] expected_depth(
+  input logic [15:0] x,y);
+  longint signed value;
+  value=(longint'(test_depth)<<<8)
+   +longint'($signed(test_gradient_z_x))*x
+   +longint'($signed(test_gradient_z_y))*y;
+  if(value<0)expected_depth=0;
+  else if(value>=16776960)expected_depth=16'hffff;
+  else expected_depth=16'(value>>>8);
  endfunction
 
  function automatic longint signed edge_fn(
@@ -60,7 +74,8 @@ module triangle_rasterizer_tb;
  task automatic command(
   input integer signed x0,y0,x1,y1,x2,y2,input int width,height,
   input bit expect_error=0);
-  int cycles=0;logic [15:0] held_x,held_y;logic [31:0] held_color;bit holding=0;
+  int cycles=0;logic [15:0] held_x,held_y,held_depth;
+  logic [31:0] held_color;bit holding=0;
   build_expected(x0,y0,x1,y1,x2,y2,width,height);
   active_width=width;active_height=height;fragments=0;
   @(negedge clk);assert(cmd_ready)else $fatal(1,"command not ready");
@@ -68,13 +83,17 @@ module triangle_rasterizer_tb;
   cmd_x2=24'(x2);cmd_y2=24'(y2);cmd_width=16'(width);cmd_height=16'(height);
   cmd_color=test_color;cmd_gradient_r=test_gradient_r;
   cmd_gradient_g=test_gradient_g;cmd_gradient_b=test_gradient_b;
+  cmd_depth=test_depth;cmd_gradient_z_x=test_gradient_z_x;
+  cmd_gradient_z_y=test_gradient_z_y;
   cmd_valid=1;tick();@(negedge clk);cmd_valid=0;
   while(!done)begin
    fragment_ready=(cycles%3)!=0;
    if(fragment_valid&&!fragment_ready)begin
-    if(holding)assert(fragment_x==held_x&&fragment_y==held_y&&fragment_color==held_color)
+    if(holding)assert(fragment_x==held_x&&fragment_y==held_y
+     &&fragment_color==held_color&&fragment_depth==held_depth)
      else $fatal(1,"fragment changed under backpressure");
-    held_x=fragment_x;held_y=fragment_y;held_color=fragment_color;holding=1;
+    held_x=fragment_x;held_y=fragment_y;held_color=fragment_color;
+    held_depth=fragment_depth;holding=1;
    end else if(fragment_valid&&fragment_ready)begin
     holding=0;
     assert(int'(fragment_x)<active_width && int'(fragment_y)<active_height)
@@ -82,6 +101,9 @@ module triangle_rasterizer_tb;
     assert(fragment_color==expected_color(fragment_x,fragment_y))
      else $fatal(1,"color mismatch %0d,%0d expected=%08x got=%08x",
       fragment_x,fragment_y,expected_color(fragment_x,fragment_y),fragment_color);
+    assert(fragment_depth==expected_depth(fragment_x,fragment_y))
+     else $fatal(1,"depth mismatch %0d,%0d expected=%04x got=%04x",
+      fragment_x,fragment_y,expected_depth(fragment_x,fragment_y),fragment_depth);
     assert(expected[int'(fragment_y)*active_width+int'(fragment_x)])
      else $fatal(1,"unexpected fragment %0d,%0d",fragment_x,fragment_y);
     assert(!seen[int'(fragment_y)*active_width+int'(fragment_x)])
@@ -108,6 +130,13 @@ module triangle_rasterizer_tb;
   command(0,0,4*256,0,0,4*256,4,4);
   test_color=32'h12ab34cd;
   test_gradient_r=0;test_gradient_g=0;test_gradient_b=0;
+  test_depth=16'd100;test_gradient_z_x=24'sd256;test_gradient_z_y=24'sd512;
+  command(0,0,4*256,0,0,4*256,4,4);
+  test_depth=16'hfffe;test_gradient_z_x=24'sd512;test_gradient_z_y=0;
+  command(0,0,4*256,0,0,4*256,4,4);
+  test_depth=16'd1;test_gradient_z_x=-24'sd512;test_gradient_z_y=0;
+  command(0,0,4*256,0,0,4*256,4,4);
+  test_depth=16'h4321;test_gradient_z_x=0;test_gradient_z_y=0;
   command(0,0,0,4*256,4*256,0,4,4);
   command(-4*256,-4*256,6*256,0,0,6*256,4,4);
   command(320,320,1856,512,512,1664,8,8);
@@ -117,7 +146,7 @@ module triangle_rasterizer_tb;
   cmd_width=8;cmd_height=8;cmd_valid=1;tick();@(negedge clk);cmd_valid=0;
   while(!fragment_valid)tick();fragment_ready=0;tick();@(negedge clk);rst_n=0;tick();
   assert(cmd_ready&&!busy&&!done&&!fragment_valid)else $fatal(1,"reset failed");
-  $display("Triangle rasterizer: winding, top-left coverage, clipping, subpixels, stalls and reset PASS");
+  $display("Triangle rasterizer: coverage, color/depth interpolation, clipping, stalls and reset PASS");
   $finish;
  end
  initial begin #1000000;$fatal(1,"timeout");end

@@ -69,6 +69,7 @@ module triangle_engine (
     var fragment_x: logic<16>;
     var fragment_y: logic<16>;
     var fragment_color: logic<32>;
+    var fragment_depth: logic<16>;
     var writer_busy: logic;
     var writer_fault: logic;
     let raster_launch: logic = state == State::Launch;
@@ -100,6 +101,9 @@ module triangle_engine (
         cmd_gradient_r: gradient_r,
         cmd_gradient_g: gradient_g,
         cmd_gradient_b: gradient_b,
+        cmd_depth      : 16'b0,
+        cmd_gradient_z_x: 24'sb0,
+        cmd_gradient_z_y: 24'sb0,
         busy          : raster_busy,
         done          : raster_done,
         error         : raster_error,
@@ -108,6 +112,7 @@ module triangle_engine (
         fragment_x,
         fragment_y,
         fragment_color,
+        fragment_depth,
     );
     inst writer: fragment_writer (
         clk,
@@ -127,7 +132,7 @@ module triangle_engine (
         fragment_x,
         fragment_y,
         fragment_color,
-        fragment_depth : 16'b0,
+        fragment_depth,
         busy           : writer_busy,
         fault          : writer_fault,
         writes,

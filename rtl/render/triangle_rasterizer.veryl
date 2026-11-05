@@ -24,6 +24,10 @@ module triangle_rasterizer (
     cmd_gradient_r : input  logic<32>        ,
     cmd_gradient_g : input  logic<32>        ,
     cmd_gradient_b : input  logic<32>        ,
+    // Z16 is evaluated at the same first sample.  Gradients are signed 16.8.
+    cmd_depth      : input  logic<16>        ,
+    cmd_gradient_z_x: input signed logic<24>,
+    cmd_gradient_z_y: input signed logic<24>,
     busy           : output logic            ,
     done           : output logic            ,
     error          : output logic            ,
@@ -32,6 +36,7 @@ module triangle_rasterizer (
     fragment_x     : output logic<16>        ,
     fragment_y     : output logic<16>        ,
     fragment_color : output logic<32>        ,
+    fragment_depth : output logic<16>        ,
 ) {
     enum State: logic<5> {
         Idle,
@@ -84,6 +89,11 @@ module triangle_rasterizer (
     var current_r: signed logic<24>;
     var current_g: signed logic<24>;
     var current_b: signed logic<24>;
+    var depth: logic<16>;
+    var gradient_z_x: signed logic<24>;
+    var gradient_z_y: signed logic<24>;
+    var row_z: signed logic<32>;
+    var current_z: signed logic<32>;
     var start_x: logic<16>;
     var start_y: logic<16>;
     var end_x  : logic<16>;
@@ -194,8 +204,24 @@ module triangle_rasterizer (
             value[15], value[15], value[15], value[15], value};
     }
 
+    function extend_depth_gradient (value: input signed logic<24>) -> signed logic<32> {
+        return {value[23], value[23], value[23], value[23],
+            value[23], value[23], value[23], value[23], value};
+    }
+
+    function clamp_depth (value: input signed logic<32>) -> logic<16> {
+        if value <: 0 {
+            return 0;
+        } else if value >: 32'sd16776960 {
+            return 16'hffff;
+        } else {
+            return value[23:8];
+        }
+    }
+
     assign fragment_color = {color[31:24], clamp_color(current_r),
         clamp_color(current_g), clamp_color(current_b)};
+    assign fragment_depth = clamp_depth(current_z);
 
     always_ff {
         if_reset {
@@ -221,6 +247,11 @@ module triangle_rasterizer (
             current_r      = 0;
             current_g      = 0;
             current_b      = 0;
+            depth          = 0;
+            gradient_z_x   = 0;
+            gradient_z_y   = 0;
+            row_z          = 0;
+            current_z      = 0;
             start_x       = 0;
             start_y       = 0;
             end_x         = 0;
@@ -280,6 +311,9 @@ module triangle_rasterizer (
                         gradient_g_y  = cmd_gradient_g[31:16];
                         gradient_b_x  = cmd_gradient_b[15:0];
                         gradient_b_y  = cmd_gradient_b[31:16];
+                        depth         = cmd_depth;
+                        gradient_z_x  = cmd_gradient_z_x;
+                        gradient_z_y  = cmd_gradient_z_y;
                         error         = 0;
                         state         = State::AreaLoad;
                     }
@@ -364,6 +398,8 @@ module triangle_rasterizer (
                         current_r = {9'b0, color[23:16], 7'b0};
                         current_g = {9'b0, color[15:8], 7'b0};
                         current_b = {9'b0, color[7:0], 7'b0};
+                        row_z = {8'b0, depth, 8'b0};
+                        current_z = {8'b0, depth, 8'b0};
                         state = State::Edge0Load;
                 }
                 State::Edge0Load: {
@@ -453,6 +489,7 @@ module triangle_rasterizer (
                     current_r = current_r + extend_gradient(gradient_r_x);
                     current_g = current_g + extend_gradient(gradient_g_x);
                     current_b = current_b + extend_gradient(gradient_b_x);
+                    current_z = current_z + extend_depth_gradient(gradient_z_x);
                     state = State::Evaluate;
                 }
                 State::AdvanceRow: {
@@ -470,6 +507,8 @@ module triangle_rasterizer (
                     current_r = row_r + extend_gradient(gradient_r_y);
                     current_g = row_g + extend_gradient(gradient_g_y);
                     current_b = row_b + extend_gradient(gradient_b_y);
+                    row_z = row_z + extend_depth_gradient(gradient_z_y);
+                    current_z = row_z + extend_depth_gradient(gradient_z_y);
                     state = State::Evaluate;
                 }
                 State::Finish: {
