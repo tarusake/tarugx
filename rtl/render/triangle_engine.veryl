@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Solid-triangle pipeline joining coverage generation to RGB565 DDR writes.
+module triangle_engine (
+    clk          : input  clock            ,
+    rst_n        : input  reset            ,
+    cmd_valid    : input  logic            ,
+    cmd_ready    : output logic            ,
+    cmd_base     : input  logic<32>        ,
+    cmd_stride   : input  logic<32>        ,
+    cmd_width    : input  logic<16>        ,
+    cmd_height   : input  logic<16>        ,
+    cmd_x0       : input  signed logic<24> ,
+    cmd_y0       : input  signed logic<24> ,
+    cmd_x1       : input  signed logic<24> ,
+    cmd_y1       : input  signed logic<24> ,
+    cmd_x2       : input  signed logic<24> ,
+    cmd_y2       : input  signed logic<24> ,
+    cmd_color    : input  logic<32>        ,
+    busy         : output logic            ,
+    done         : output logic            ,
+    error        : output logic            ,
+    writes       : output logic<32>        ,
+    mem_valid    : output logic            ,
+    mem_ready    : input  logic            ,
+    mem_addr     : output logic<24>        ,
+    mem_wdata    : output logic<256>       ,
+    mem_wstrb    : output logic<32>        ,
+    mem_rsp_valid: input  logic            ,
+    mem_rsp_ready: output logic            ,
+    mem_rsp_error: input  logic            ,
+) {
+    enum State: logic<3> {
+        Idle,
+        Launch,
+        Run,
+        Finish,
+    }
+    var state: State;
+    var base: logic<32>;
+    var stride: logic<32>;
+    var width: logic<16>;
+    var height: logic<16>;
+    var x0: signed logic<24>;
+    var y0: signed logic<24>;
+    var x1: signed logic<24>;
+    var y1: signed logic<24>;
+    var x2: signed logic<24>;
+    var y2: signed logic<24>;
+    var color: logic<32>;
+    var failed: logic;
+    var raster_finished: logic;
+    var raster_busy: logic;
+    var raster_done: logic;
+    var raster_error: logic;
+    var fragment_valid: logic;
+    var fragment_ready: logic;
+    var fragment_x: logic<16>;
+    var fragment_y: logic<16>;
+    var fragment_color: logic<32>;
+    var writer_busy: logic;
+    var writer_fault: logic;
+    let raster_launch: logic = state == State::Launch;
+    let raster_abort: logic = (state == State::Run) && writer_fault;
+    let writer_clear: logic = state == State::Launch;
+    let target_row_bytes: logic<64> = (width as 64) * 64'd2;
+    let target_end: logic<64> = (base as 64)
+        + (((height as 64) - 64'd1) * (stride as 64)) + target_row_bytes;
+    let target_valid: logic = (width != 0) && (height != 0)
+        && !base[0] && !stride[0] && ((stride as 64) >= target_row_bytes)
+        && (target_end <= 64'h01000000);
+
+    inst raster: triangle_rasterizer (
+        clk,
+        rst_n,
+        abort         : raster_abort,
+        cmd_valid     : raster_launch,
+        cmd_ready     : _,
+        cmd_x0        : x0,
+        cmd_y0        : y0,
+        cmd_x1        : x1,
+        cmd_y1        : y1,
+        cmd_x2        : x2,
+        cmd_y2        : y2,
+        cmd_width     : width,
+        cmd_height    : height,
+        cmd_color     : color,
+        busy          : raster_busy,
+        done          : raster_done,
+        error         : raster_error,
+        fragment_valid,
+        fragment_ready,
+        fragment_x,
+        fragment_y,
+        fragment_color,
+    );
+    inst writer: fragment_writer (
+        clk,
+        rst_n,
+        clear          : writer_clear,
+        target_base    : base,
+        target_stride  : stride,
+        target_width   : width,
+        target_height  : height,
+        fragment_valid,
+        fragment_ready,
+        fragment_x,
+        fragment_y,
+        fragment_color,
+        busy           : writer_busy,
+        fault          : writer_fault,
+        writes,
+        mem_valid,
+        mem_ready,
+        mem_addr,
+        mem_wdata,
+        mem_wstrb,
+        mem_rsp_valid,
+        mem_rsp_ready,
+        mem_rsp_error,
+    );
+
+    assign cmd_ready = state == State::Idle;
+    assign busy = (state == State::Launch) || (state == State::Run);
+
+    always_ff {
+        if_reset {
+            state           = State::Idle;
+            base            = 0;
+            stride          = 0;
+            width           = 0;
+            height          = 0;
+            x0              = 0;
+            y0              = 0;
+            x1              = 0;
+            y1              = 0;
+            x2              = 0;
+            y2              = 0;
+            color           = 0;
+            failed          = 0;
+            raster_finished = 0;
+            done            = 0;
+            error           = 0;
+        } else {
+            done = 0;
+            case state {
+                State::Idle: {
+                    if cmd_valid {
+                        base            = cmd_base;
+                        stride          = cmd_stride;
+                        width           = cmd_width;
+                        height          = cmd_height;
+                        x0              = cmd_x0;
+                        y0              = cmd_y0;
+                        x1              = cmd_x1;
+                        y1              = cmd_y1;
+                        x2              = cmd_x2;
+                        y2              = cmd_y2;
+                        color           = cmd_color;
+                        failed          = 0;
+                        raster_finished = 0;
+                        error           = 0;
+                        state           = State::Launch;
+                    }
+                }
+                State::Launch: {
+                    if target_valid {
+                        state = State::Run;
+                    } else {
+                        failed = 1;
+                        state  = State::Finish;
+                    }
+                }
+                State::Run: {
+                    if raster_done {
+                        raster_finished = 1;
+                    }
+                    if raster_error || writer_fault {
+                        failed = 1;
+                        state  = State::Finish;
+                    } else if (raster_finished || raster_done)
+                        && !writer_busy && !fragment_valid {
+                        state = State::Finish;
+                    }
+                }
+                State::Finish: {
+                    done  = 1;
+                    error = failed;
+                    state = State::Idle;
+                }
+                default: {
+                    failed = 1;
+                    state  = State::Finish;
+                }
+            }
+        }
+    }
+}

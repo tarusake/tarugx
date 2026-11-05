@@ -7,6 +7,7 @@
 module triangle_rasterizer (
     clk            : input  clock            ,
     rst_n          : input  reset            ,
+    abort          : input  logic            ,
     cmd_valid      : input  logic            ,
     cmd_ready      : output logic            ,
     cmd_x0         : input  signed logic<24> ,
@@ -167,6 +168,10 @@ module triangle_rasterizer (
             row_edge2     = 0;
             done          = 0;
             error         = 0;
+        } else if abort {
+            state = State::Idle;
+            done  = 0;
+            error = 0;
         } else {
             done = 0;
             case state {

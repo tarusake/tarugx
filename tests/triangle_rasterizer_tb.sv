@@ -2,7 +2,7 @@
 `timescale 1ns/1ps
 module triangle_rasterizer_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
- logic cmd_valid=0,cmd_ready;
+ logic abort=0,cmd_valid=0,cmd_ready;
  logic signed [23:0] cmd_x0=0,cmd_y0=0,cmd_x1=0,cmd_y1=0,cmd_x2=0,cmd_y2=0;
  logic [15:0] cmd_width=0,cmd_height=0;logic [31:0] cmd_color=0;
  logic busy,done,error,fragment_valid,fragment_ready=0;
