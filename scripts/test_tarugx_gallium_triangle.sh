@@ -26,5 +26,9 @@ if grep -qx 'path=fpga-batch' <<<"$result"; then
     grep -qx 'bottom_left=f800' <<<"$result"
     grep -qx 'bottom_right=07e0' <<<"$result"
 elif ! grep -qx 'path=fpga-gradient' <<<"$result"; then
-    grep -qx 'center=f800' <<<"$result"
+    if grep -Eq '^path=fpga-cull-(front|back-cw)$' <<<"$result"; then
+        grep -qx 'center=001f' <<<"$result"
+    else
+        grep -qx 'center=f800' <<<"$result"
+    fi
 fi

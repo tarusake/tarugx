@@ -290,6 +290,29 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
 }
 
 static bool
+tarugx_triangle_culled(const struct tarugx_context_state *state,
+                       const struct tarugx_winsys_triangle *triangle)
+{
+    const struct pipe_rasterizer_state *rasterizer =
+        state->softpipe->rasterizer;
+    int64_t x10 = (int64_t)triangle->x1 - triangle->x0;
+    int64_t y10 = (int64_t)triangle->y1 - triangle->y0;
+    int64_t x20 = (int64_t)triangle->x2 - triangle->x0;
+    int64_t y20 = (int64_t)triangle->y2 - triangle->y0;
+    int64_t area = x10 * y20 - x20 * y10;
+    bool front_facing;
+
+    /* Degenerate triangles cover no samples and need no FPGA command. */
+    if (!area)
+        return true;
+    /* vbuf vertices are already in framebuffer coordinates, whose Y axis is
+     * inverted relative to OpenGL window coordinates. */
+    front_facing = (area < 0) == rasterizer->front_ccw;
+    return rasterizer->cull_face &
+           (front_facing ? PIPE_FACE_FRONT : PIPE_FACE_BACK);
+}
+
+static bool
 tarugx_draw_vertices(struct tarugx_context_state *state,
                      const uint16_t *indices, unsigned start, unsigned count)
 {
@@ -297,6 +320,7 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     struct tarugx_winsys_surface surface;
     struct tarugx_winsys_triangle *triangles;
     unsigned triangle_count;
+    unsigned prepared_count = 0;
     unsigned stride;
     unsigned i;
 
@@ -321,14 +345,16 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
                                      vertices + a * stride,
                                      vertices + b * stride,
                                      vertices + c * stride,
-                                     &triangles[i / 3])) {
+                                     &triangles[prepared_count])) {
             free(triangles);
             return false;
         }
+        if (!tarugx_triangle_culled(state, &triangles[prepared_count]))
+            prepared_count++;
     }
-    for (i = 0; i < triangle_count; i += TARUGX_MAX_BATCH_TRIANGLES) {
+    for (i = 0; i < prepared_count; i += TARUGX_MAX_BATCH_TRIANGLES) {
         unsigned batch_count = MIN2(TARUGX_MAX_BATCH_TRIANGLES,
-                                    triangle_count - i);
+                                    prepared_count - i);
 
         if (!tarugx_winsys_submit_triangles(&state->winsys, &surface,
                                             triangles + i, batch_count) ||

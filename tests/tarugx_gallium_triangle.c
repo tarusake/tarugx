@@ -148,6 +148,8 @@ main(int argc, char **argv)
     int batch = 0;
     int indexed = 0;
     int gradient = 0;
+    int cull_mode = 0;
+    int front_face_cw = 0;
     GLsizei vertex_count;
     int position_location;
     int color_location;
@@ -156,7 +158,9 @@ main(int argc, char **argv)
 
     if (argc < 2 || argc > 4) {
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
-                        "[--software|--batch|--indexed|--gradient]\n",
+                        "[--software|--batch|--indexed|--gradient|"
+                        "--cull-back|--cull-front|--cull-back-cw|"
+                        "--cull-front-cw]\n",
                 argv[0]);
         return 2;
     }
@@ -179,6 +183,16 @@ main(int argc, char **argv)
             indexed = 1;
         } else if (!strcmp(argv[3], "--gradient")) {
             gradient = 1;
+        } else if (!strcmp(argv[3], "--cull-back")) {
+            cull_mode = GL_BACK;
+        } else if (!strcmp(argv[3], "--cull-front")) {
+            cull_mode = GL_FRONT;
+        } else if (!strcmp(argv[3], "--cull-back-cw")) {
+            cull_mode = GL_BACK;
+            front_face_cw = 1;
+        } else if (!strcmp(argv[3], "--cull-front-cw")) {
+            cull_mode = GL_FRONT;
+            front_face_cw = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -235,6 +249,11 @@ main(int argc, char **argv)
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_DITHER);
+    if (cull_mode) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(cull_mode);
+        glFrontFace(front_face_cw ? GL_CW : GL_CCW);
+    }
     glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
@@ -282,7 +301,13 @@ main(int argc, char **argv)
            stride, software_fallback ? "softpipe" :
                    (batch ? "fpga-batch" :
                     (indexed ? "fpga-indexed" :
-                     (gradient ? "fpga-gradient" : "fpga"))), iterations,
+                     (gradient ? "fpga-gradient" :
+                      (cull_mode == GL_BACK ?
+                       (front_face_cw ? "fpga-cull-back-cw" :
+                        "fpga-cull-back") :
+                       (cull_mode == GL_FRONT ?
+                        (front_face_cw ? "fpga-cull-front-cw" :
+                         "fpga-cull-front") : "fpga"))))), iterations,
            iterations * (batch ? 4 : 1), draw_ms);
     if (batch)
         printf("top_left=%04x\ntop_right=%04x\n"
@@ -299,7 +324,10 @@ main(int argc, char **argv)
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) < 7 ||
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
         (!batch && !gradient &&
+         ((cull_mode == GL_FRONT) == front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
+        (cull_mode && ((cull_mode == GL_FRONT) != front_face_cw) &&
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f) ||
         (batch &&
          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f ||
           pixels[198 * (stride / 2) + 480] != 0xffe0 ||
