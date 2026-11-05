@@ -206,6 +206,12 @@ EXAのSolidとCopyをFPGA fill/blitへ接続します。2026-11-05のXfce実機�
 4.29秒へ60.6%短縮、Xorg CPU時間は5.38秒から4.14秒へ23.0%減りました。観測したPCIe
 転送量も、shadow DMAの273,147,572 byteから、EXA起動処理を含むBAR書込み
 76,255,908 byteへ72.1%減りました。
+標準Wayland経路は`tools/test_remote_wayland.py`で検証できます。Xorgを一時停止して
+WestonのDRM backendをatomic KMS・Pixman rendererで起動し、`weston-simple-egl`の
+OpenGL ESアニメーションを実行します。2026-11-05の1080p60実機では約27.6fps、
+EGLクライアントCPU約3.4%、DMA／page flip各166回、全failure／timeout 0でした。
+テスト終了時は成功・失敗にかかわらずXorgデスクトップを自動復帰します。現時点の
+OpenGL ESはMesaのsoftware rendererであり、TaruGX固有の3D Mesa driverは未実装です。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
