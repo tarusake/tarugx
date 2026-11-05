@@ -95,6 +95,7 @@ main(int argc, char **argv)
         1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
     };
+    static const GLushort indices[] = {0, 1, 2};
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
     struct drm_mode_map_dumb map_request = {0};
     struct gbm_surface *gbm_surface = NULL;
@@ -120,6 +121,7 @@ main(int argc, char **argv)
     unsigned i;
     int software_fallback = 0;
     int batch = 0;
+    int indexed = 0;
     GLsizei vertex_count;
     int position_location;
     int color_location;
@@ -128,7 +130,7 @@ main(int argc, char **argv)
 
     if (argc < 2 || argc > 4) {
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
-                        "[--software|--batch]\n",
+                        "[--software|--batch|--indexed]\n",
                 argv[0]);
         return 2;
     }
@@ -147,6 +149,8 @@ main(int argc, char **argv)
             software_fallback = 1;
         } else if (!strcmp(argv[3], "--batch")) {
             batch = 1;
+        } else if (!strcmp(argv[3], "--indexed")) {
+            indexed = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -217,7 +221,10 @@ main(int argc, char **argv)
     vertex_count = batch ? 12 : 3;
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
     for (i = 0; i < iterations; i++) {
-        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+        if (indexed)
+            glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, indices);
+        else
+            glDrawArrays(GL_TRIANGLES, 0, vertex_count);
         glFinish();
     }
     clock_gettime(CLOCK_MONOTONIC, &draw_end);
@@ -243,7 +250,8 @@ main(int argc, char **argv)
            glGetString(GL_RENDERER),
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
            stride, software_fallback ? "softpipe" :
-                   (batch ? "fpga-batch" : "fpga"), iterations,
+                   (batch ? "fpga-batch" :
+                    (indexed ? "fpga-indexed" : "fpga")), iterations,
            iterations * (batch ? 4 : 1), draw_ms);
     if (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800 ||
         pixels[0] != 0x001f) {
