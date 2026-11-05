@@ -95,6 +95,7 @@ struct tarugx {
 	bool render_available;
 	bool triangle_available;
 	bool triangle_interpolation_available;
+	bool depth_available;
 	u32 gpu_version;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
@@ -209,6 +210,7 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_GPU_VERSION_RGB565 0x00010003
 #define TGX_GPU_VERSION_TRIANGLE 0x00010004
 #define TGX_GPU_VERSION_TRIANGLE_INTERPOLATION 0x00010005
+#define TGX_GPU_VERSION_Z16 0x00010006
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -243,6 +245,10 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_REG_TRIANGLE_GRADIENT_R 0x134
 #define TGX_REG_TRIANGLE_GRADIENT_G 0x138
 #define TGX_REG_TRIANGLE_GRADIENT_B 0x13c
+#define TGX_REG_TRIANGLE_DEPTH_BASE 0x140
+#define TGX_REG_TRIANGLE_DEPTH_CONFIG 0x144
+#define TGX_REG_TRIANGLE_GRADIENT_Z_X 0x148
+#define TGX_REG_TRIANGLE_GRADIENT_Z_Y 0x14c
 #define TGX_QUEUE_LEVEL GENMASK(2, 0)
 #define TGX_QUEUE_READY BIT(3)
 #define TGX_QUEUE_ACTIVE BIT(4)
@@ -587,6 +593,15 @@ static void tgx_program_render(struct tarugx *tgx,
 		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_G);
 		writel(command->gradient_b,
 		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_B);
+		/* Every legacy triangle explicitly disables Z16.  This prevents
+		 * depth state from a future extended submission leaking into an
+		 * ordinary command that uses the same hardware register file. */
+		if (tgx->depth_available) {
+			writel(0, tgx->regs + TGX_REG_TRIANGLE_DEPTH_BASE);
+			writel(0, tgx->regs + TGX_REG_TRIANGLE_DEPTH_CONFIG);
+			writel(0, tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_X);
+			writel(0, tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_Y);
+		}
 	}
 }
 
@@ -1695,6 +1710,8 @@ static int tgx_ioctl_get_param(struct drm_device *drm, void *data,
 			args->value |= DRM_TARUGX_CAP_TRIANGLE;
 		if (tgx->triangle_interpolation_available)
 			args->value |= DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION;
+		if (tgx->depth_available)
+			args->value |= DRM_TARUGX_CAP_Z16;
 		return 0;
 	default:
 		return -EINVAL;
@@ -3098,6 +3115,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->triangle_available = gpu_version >= TGX_GPU_VERSION_TRIANGLE;
 	tgx->triangle_interpolation_available =
 		gpu_version >= TGX_GPU_VERSION_TRIANGLE_INTERPOLATION;
+	tgx->depth_available = gpu_version >= TGX_GPU_VERSION_Z16;
 	dev_info(&pdev->dev,
 		 "GPU version %u.%u, %ux%u, 32-bit active FB base %s\n",
 		 gpu_version >> 16, gpu_version & 0xffff,

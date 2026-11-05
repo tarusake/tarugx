@@ -167,6 +167,7 @@ struct drm_tarugx_copy_gem {
 
 #define DRM_TARUGX_CAP_TRIANGLE (1ULL << 0)
 #define DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION (1ULL << 1)
+#define DRM_TARUGX_CAP_Z16 (1ULL << 2)
 
 struct drm_tarugx_get_param {
 	__u32 param;
