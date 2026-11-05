@@ -50,7 +50,10 @@ module tlp_rx_buffer #(
             out_eop       = in_eop;
             out_data      = in_data;
             out_bar       = in_bar;
-            out_error     = in_error;
+            // Every downstream consumer treats RX error as a packet-level
+            // boolean.  Collapse the lane vector here so one registered bit,
+            // rather than eight long routes, crosses the application fabric.
+            out_error     = {7'b0, |in_error};
             out_tag_match = in_tag == TAG_MATCH;
         }
     }

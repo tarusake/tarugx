@@ -59,6 +59,10 @@ module fill_engine #(
     var multiplier : logic<16>;
     var multiply_step: logic<5>;
     var end_address: logic<64>;
+    // Decouple the external request handshake from the encoded state bits.
+    // This prevents the Issue-state decode from becoming a high-fanout path
+    // through both memory arbiters into the DDR command register enables.
+    var request_valid: logic;
     let slots      : logic<5>  = (PIXELS_PER_BEAT as 5) - (lane as 5);
     let pixels     : logic<5>  = if remaining <: (slots as 16) ? (remaining as 5) : slots;
     let next_row   : logic<32> = row_addr + stride;
@@ -68,7 +72,7 @@ module fill_engine #(
         && ((stride as 64) >= row_bytes);
     assign cmd_ready     = state == State::Idle;
     assign busy          = state != State::Idle;
-    assign mem_valid     = state == State::Issue;
+    assign mem_valid     = request_valid;
     assign mem_rsp_ready = state == State::Wait;
     assign mem_addr      = word_addr;
 
@@ -105,6 +109,7 @@ module fill_engine #(
             multiplier = 0;
             multiply_step = 0;
             end_address = 0;
+            request_valid = 0;
             done      = 0;
             error     = 0;
         } else {
@@ -118,6 +123,7 @@ module fill_engine #(
                         rows_left = cmd_height;
                         color     = cmd_color;
                         error     = 0;
+                        request_valid = 0;
                         state     = State::Validate;
                     }
                 }
@@ -155,6 +161,7 @@ module fill_engine #(
                         word_addr = {row_addr[23:5], 5'b0};
                         remaining = width;
                         lane      = if PIXEL_BYTES == 2 ? row_addr[4:1] : {1'b0, row_addr[4:2]};
+                        request_valid = 1;
                         state     = State::Issue;
                     } else {
                         error = 1;
@@ -164,6 +171,7 @@ module fill_engine #(
                 }
                 State::Issue: {
                     if mem_ready {
+                        request_valid = 0;
                         state = State::Wait;
                     }
                 }
@@ -177,6 +185,7 @@ module fill_engine #(
                             remaining = remaining - (pixels as 16);
                             word_addr = word_addr + 24'd32;
                             lane      = 0;
+                            request_valid = 1;
                             state     = State::Issue;
                         } else {
                             state = State::RowCheck;
@@ -192,6 +201,7 @@ module fill_engine #(
                     remaining = width;
                     rows_left = rows_left - 16'd1;
                     lane      = if PIXEL_BYTES == 2 ? next_row[4:1] : {1'b0, next_row[4:2]};
+                    request_valid = 1;
                     state     = State::Issue;
                 }
                 State::Finish: {
@@ -202,6 +212,7 @@ module fill_engine #(
                 default: {
                     error = 1;
                     done  = 1;
+                    request_valid = 0;
                     state = State::Idle;
                 }
             }
