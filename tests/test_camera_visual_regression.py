@@ -56,6 +56,10 @@ class CameraVisualRegressionTest(unittest.TestCase):
         )
         self.assertTrue(result.passed)
 
+    def test_mean_luma_distinguishes_black_frame(self):
+        self.assertEqual(CAMERA.mean_luma(self.frame(4, 3, (0, 0, 0))), 0)
+        self.assertGreater(CAMERA.mean_luma(self.frame(4, 3, (80, 100, 120))), 8)
+
     def test_ppm_round_trip(self):
         pixels = self.frame(4, 3, (1, 2, 3))
         with tempfile.TemporaryDirectory() as directory:

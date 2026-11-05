@@ -147,15 +147,32 @@ def compare_files(baseline: Path, observed: Path, top_mask: int) -> Metrics:
     return compare_pixels(width, height, first, second, masks)
 
 
+def mean_luma(pixels: bytes) -> float:
+    if not pixels:
+        return 0.0
+    total = 0
+    for offset in range(0, len(pixels), 3):
+        total += (54 * pixels[offset] + 183 * pixels[offset + 1]
+                  + 19 * pixels[offset + 2]) >> 8
+    return total / (len(pixels) // 3)
+
+
 def capture(device: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "v4l2", "-i", str(device), "-frames:v", "1",
-         "-pix_fmt", "rgb24", str(destination)],
-        check=True,
-        timeout=30,
-    )
+    for attempt in range(3):
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "v4l2", "-i", str(device),
+             "-vf", "select=gte(n\\,30)", "-frames:v", "1",
+             "-pix_fmt", "rgb24", str(destination)],
+            check=True,
+            timeout=30,
+        )
+        _, _, pixels = read_ppm(destination)
+        if mean_luma(pixels) >= 8.0:
+            return
+        time.sleep(1)
+    raise RuntimeError(f"capture stayed black after 3 attempts: {device}")
 
 
 def remote_workload(moves: int) -> dict[str, object]:
