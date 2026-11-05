@@ -1,0 +1,130 @@
+diff --git a/meson.build b/meson.build
+index 5973298..ac1e294 100644
+--- a/meson.build
++++ b/meson.build
+@@ -161,7 +161,8 @@ with_gallium_r300 = gallium_drivers.contains('r300')
+ with_gallium_r600 = gallium_drivers.contains('r600')
+ with_gallium_nouveau = gallium_drivers.contains('nouveau')
+ with_gallium_freedreno = gallium_drivers.contains('freedreno')
+-with_gallium_softpipe = gallium_drivers.contains('swrast')
++with_gallium_tarugx = gallium_drivers.contains('tarugx')
++with_gallium_softpipe = gallium_drivers.contains('swrast') or with_gallium_tarugx
+ with_gallium_vc4 = gallium_drivers.contains('vc4')
+ with_gallium_v3d = gallium_drivers.contains('v3d')
+ with_gallium_panfrost = gallium_drivers.contains('panfrost')
+diff --git a/meson_options.txt b/meson_options.txt
+index 55dc677..dc78ec8 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -73,7 +73,7 @@ option(
+   choices : [
+     'auto', 'kmsro', 'radeonsi', 'r300', 'r600', 'nouveau', 'freedreno',
+     'swrast', 'v3d', 'vc4', 'etnaviv', 'tegra', 'i915', 'svga', 'virgl',
+-    'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi', 'crocus'
++    'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi', 'crocus', 'tarugx'
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+                 'all drivers applicable to the target OS/architecture ' +
+diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+index b27858a..52f0761 100644
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+@@ -71,6 +71,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
+    &i915_driver_descriptor,
+    &iris_driver_descriptor,
+    &crocus_driver_descriptor,
++   &tarugx_driver_descriptor,
+    &nouveau_driver_descriptor,
+    &r300_driver_descriptor,
+    &r600_driver_descriptor,
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+index 323832e..15e16dc 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -133,6 +133,20 @@ DRM_DRIVER_DESCRIPTOR(crocus, crocus_driconf, ARRAY_SIZE(crocus_driconf))
+ DRM_DRIVER_DESCRIPTOR_STUB(crocus)
+ #endif
+ 
++#ifdef GALLIUM_TARUGX
++#include "tarugx/tarugx_screen.h"
++
++static struct pipe_screen *
++pipe_tarugx_create_screen(int fd, const struct pipe_screen_config *config)
++{
++   struct pipe_screen *screen = tarugx_screen_create(fd, config);
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++DRM_DRIVER_DESCRIPTOR(tarugx, NULL, 0)
++#else
++DRM_DRIVER_DESCRIPTOR_STUB(tarugx)
++#endif
++
+ #ifdef GALLIUM_NOUVEAU
+ #include "nouveau/drm/nouveau_drm_public.h"
+ 
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+index 89c0a42..9c8f922 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+@@ -7,6 +7,7 @@ struct pipe_screen_config;
+ extern const struct drm_driver_descriptor i915_driver_descriptor;
+ extern const struct drm_driver_descriptor iris_driver_descriptor;
+ extern const struct drm_driver_descriptor crocus_driver_descriptor;
++extern const struct drm_driver_descriptor tarugx_driver_descriptor;
+ extern const struct drm_driver_descriptor nouveau_driver_descriptor;
+ extern const struct drm_driver_descriptor r300_driver_descriptor;
+ extern const struct drm_driver_descriptor r600_driver_descriptor;
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 7b77da1..af8fc94 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -53,6 +53,11 @@ if with_gallium_softpipe
+ else
+   driver_swrast = declare_dependency()
+ endif
++if with_gallium_tarugx
++  subdir('drivers/tarugx')
++else
++  driver_tarugx = declare_dependency()
++endif
+ if with_gallium_asahi
+   subdir('winsys/asahi/drm')
+   subdir('drivers/asahi')
+diff --git a/src/gallium/targets/dri/meson.build b/src/gallium/targets/dri/meson.build
+index fbec1da..2610abb 100644
+--- a/src/gallium/targets/dri/meson.build
++++ b/src/gallium/targets/dri/meson.build
+@@ -58,7 +58,7 @@ libgallium_dri = shared_library(
+     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
+     driver_tegra, driver_i915, driver_svga, driver_virgl,
+     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
+-    driver_asahi, driver_crocus
++    driver_asahi, driver_crocus, driver_tarugx
+   ],
+   # Will be deleted during installation, see install_megadrivers.py
+   install : true,
+@@ -115,7 +115,8 @@ foreach d : [[with_gallium_kmsro, [
+              [with_gallium_lima, 'lima_dri.so'],
+              [with_gallium_zink, 'zink_dri.so'],
+              [with_gallium_d3d12, 'd3d12_dri.so'],
+-             [with_gallium_asahi, 'asahi_dri.so']]
++             [with_gallium_asahi, 'asahi_dri.so'],
++             [with_gallium_tarugx, 'tarugx_dri.so']]
+   if d[0]
+     gallium_dri_drivers += d[1]
+   endif
+diff --git a/src/gallium/targets/dri/target.c b/src/gallium/targets/dri/target.c
+index d506869..270e84d 100644
+--- a/src/gallium/targets/dri/target.c
++++ b/src/gallium/targets/dri/target.c
+@@ -43,6 +43,10 @@ DEFINE_LOADER_DRM_ENTRYPOINT(iris)
+ DEFINE_LOADER_DRM_ENTRYPOINT(crocus)
+ #endif
+ 
++#if defined(GALLIUM_TARUGX)
++DEFINE_LOADER_DRM_ENTRYPOINT(tarugx)
++#endif
++
+ #if defined(GALLIUM_NOUVEAU)
+ DEFINE_LOADER_DRM_ENTRYPOINT(nouveau)
+ #endif
