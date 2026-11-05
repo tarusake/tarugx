@@ -59,7 +59,17 @@ struct drm_tarugx_command {
 		};
 	};
 	__u32 color;
-	__u32 pad[3];
+	union {
+		__u32 pad[3];
+		/* Triangle-only signed 9.7 gradients: d/dx in bits 15:0,
+		 * d/dy in bits 31:16.  Color is evaluated at the first
+		 * clipped bounding-box sample. */
+		struct {
+			__u32 gradient_r;
+			__u32 gradient_g;
+			__u32 gradient_b;
+		};
+	};
 };
 
 struct drm_tarugx_submit {

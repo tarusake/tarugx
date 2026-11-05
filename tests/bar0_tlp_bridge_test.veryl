@@ -53,7 +53,7 @@ module bar0_tlp_bridge_end_to_end {
     var fill_start     : logic     ;
     var blit_command   : logic<160>;
     var blit_start     : logic     ;
-    var queue_command  : logic<306>;
+    var queue_command  : logic<402>;
     var queue_submit   : logic     ;
     var queue_clear_error: logic   ;
     var dma_host_address: logic<64>;

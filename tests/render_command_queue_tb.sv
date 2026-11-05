@@ -2,14 +2,14 @@
 `timescale 1ns/1ps
 module render_command_queue_tb;
  logic clk=0,rst_n=0;always #5 clk=~clk;
- logic enqueue_valid=0,enqueue_ready;logic [305:0] enqueue_command=0;
- logic dispatch_valid,dispatch_ready=0;logic [305:0] dispatch_command;
+ logic enqueue_valid=0,enqueue_ready;logic [401:0] enqueue_command=0;
+ logic dispatch_valid,dispatch_ready=0;logic [401:0] dispatch_command;
  logic completion_valid=0,completion_error=0,clear_error=0;logic [2:0] level;logic active;
  logic [31:0] completed_fence,error_fence;logic error_sticky;
  tarugx_render_command_queue dut(.*);
  task tick;@(posedge clk);#1;endtask
- function automatic logic [305:0] command(input int opcode,input int fence,input int payload);
-  return {272'(payload),32'(fence),2'(opcode)};
+ function automatic logic [401:0] command(input int opcode,input int fence,input int payload);
+  return {368'(payload),32'(fence),2'(opcode)};
  endfunction
  task enqueue(input int opcode,input int fence,input int payload);
   @(negedge clk);assert(enqueue_ready)else $fatal(1,"queue not ready");
@@ -27,7 +27,7 @@ module render_command_queue_tb;
   @(negedge clk);completion_valid=0;completion_error=0;
   assert(!active)else $fatal(1,"completion did not retire active command");
  endtask
- logic [305:0] held;
+ logic [401:0] held;
  initial begin
   repeat(3)tick();@(negedge clk);rst_n=1;
   // Fill all waiting slots and verify backpressure plus a stable stalled head.

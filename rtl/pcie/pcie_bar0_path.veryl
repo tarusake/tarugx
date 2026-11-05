@@ -50,9 +50,9 @@ module pcie_bar0_path (
     fill_start     : output logic     ,
     blit_command   : output logic<160>,
     blit_start     : output logic     ,
-    triangle_command: output logic<272>,
+    triangle_command: output logic<368>,
     triangle_start : output logic     ,
-    queue_command  : output logic<306>,
+    queue_command  : output logic<402>,
     queue_submit   : output logic     ,
     queue_clear_error: output logic   ,
 ) {

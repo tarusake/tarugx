@@ -39,9 +39,9 @@ module tarugx_top (
     var fill_start   : logic     ;
     var blit_command : logic<160>;
     var blit_start   : logic     ;
-    var triangle_command: logic<272>;
+    var triangle_command: logic<368>;
     var triangle_start  : logic     ;
-    var queue_command: logic<306>;
+    var queue_command: logic<402>;
     var queue_submit : logic     ;
     var queue_clear_error: logic ;
 

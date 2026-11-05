@@ -94,6 +94,7 @@ struct tarugx {
 	bool dma_available;
 	bool render_available;
 	bool triangle_available;
+	bool triangle_interpolation_available;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
 	bool physical_pages_synced;
@@ -206,6 +207,7 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_GPU_VERSION_1080P60 0x00010002
 #define TGX_GPU_VERSION_RGB565 0x00010003
 #define TGX_GPU_VERSION_TRIANGLE 0x00010004
+#define TGX_GPU_VERSION_TRIANGLE_INTERPOLATION 0x00010005
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -237,6 +239,9 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_REG_TRIANGLE_X2 0x11c
 #define TGX_REG_TRIANGLE_Y2 0x120
 #define TGX_REG_TRIANGLE_COLOR 0x124
+#define TGX_REG_TRIANGLE_GRADIENT_R 0x134
+#define TGX_REG_TRIANGLE_GRADIENT_G 0x138
+#define TGX_REG_TRIANGLE_GRADIENT_B 0x13c
 #define TGX_QUEUE_LEVEL GENMASK(2, 0)
 #define TGX_QUEUE_READY BIT(3)
 #define TGX_QUEUE_ACTIVE BIT(4)
@@ -506,16 +511,18 @@ static bool tgx_command_valid(const struct tarugx *tgx,
 	const s32 coord_min = -0x800000;
 	const s32 coord_max = 0x7fffff;
 
-	if (command->flags || command->pad[0] || command->pad[1] ||
-	    command->pad[2])
+	if (command->flags)
 		return false;
 	if (command->opcode == DRM_TARUGX_OP_FILL)
 		return !command->src_x && !command->src_y &&
+			!command->gradient_r && !command->gradient_g &&
+			!command->gradient_b &&
 			tgx_rect_valid(command->dst_x, command->dst_y,
 				       command->width, command->height,
 				       width, height);
 	if (command->opcode == DRM_TARUGX_OP_BLIT)
-		return !command->color &&
+		return !command->color && !command->gradient_r &&
+			!command->gradient_g && !command->gradient_b &&
 			tgx_rect_valid(command->src_x, command->src_y,
 				       command->width, command->height,
 				       width, height) &&
@@ -524,6 +531,9 @@ static bool tgx_command_valid(const struct tarugx *tgx,
 				       width, height);
 	if (command->opcode == DRM_TARUGX_OP_TRIANGLE)
 		return tgx->triangle_available &&
+			(tgx->triangle_interpolation_available ||
+			 (!command->gradient_r && !command->gradient_g &&
+			  !command->gradient_b)) &&
 			command->x0 >= coord_min && command->x0 <= coord_max &&
 			command->y0 >= coord_min && command->y0 <= coord_max &&
 			command->x1 >= coord_min && command->x1 <= coord_max &&
@@ -570,6 +580,12 @@ static void tgx_program_render(struct tarugx *tgx,
 		writel((u32)command->x2, tgx->regs + TGX_REG_TRIANGLE_X2);
 		writel((u32)command->y2, tgx->regs + TGX_REG_TRIANGLE_Y2);
 		writel(command->color, tgx->regs + TGX_REG_TRIANGLE_COLOR);
+		writel(command->gradient_r,
+		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_R);
+		writel(command->gradient_g,
+		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_G);
+		writel(command->gradient_b,
+		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_B);
 	}
 }
 
@@ -3050,6 +3066,8 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->active_fb_base_available =
 		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
 	tgx->triangle_available = gpu_version >= TGX_GPU_VERSION_TRIANGLE;
+	tgx->triangle_interpolation_available =
+		gpu_version >= TGX_GPU_VERSION_TRIANGLE_INTERPOLATION;
 	dev_info(&pdev->dev,
 		 "GPU version %u.%u, %ux%u, 32-bit active FB base %s\n",
 		 gpu_version >> 16, gpu_version & 0xffff,
