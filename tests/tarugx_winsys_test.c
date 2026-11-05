@@ -81,9 +81,15 @@ main(int argc, char **argv)
             fputs("TaruGX Z16 triangle submit failed\n", stderr);
             goto out_surface;
         }
+        if (!tarugx_winsys_submit_color_depth_clear(
+                &winsys, &surface, 0x00112233, UINT16_MAX) ||
+            !tarugx_winsys_wait(&winsys, INT64_MAX)) {
+            fputs("TaruGX color/Z16 clear submit failed\n", stderr);
+            goto out_surface;
+        }
     }
     printf("TaruGX Mesa winsys PASS: gpu=%u.%u caps=0x%016llx; "
-           "VRAM resource, fill/color/Z triangle submit and syncobj fence\n",
+           "VRAM resource, fill/color/Z triangle, color/Z clear and fence\n",
            winsys.gpu_version >> 16, winsys.gpu_version & 0xffff,
            (unsigned long long)winsys.caps);
     result = 0;

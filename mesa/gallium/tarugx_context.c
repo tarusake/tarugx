@@ -16,6 +16,7 @@
 #include "pipe/p_screen.h"
 #include "softpipe/sp_context.h"
 
+#include "tarugx_drm.h"
 #include "tarugx_winsys.h"
 
 #define TARUGX_MAX_SCREENS 8
@@ -83,8 +84,7 @@ tarugx_target_surface(struct tarugx_context_state *state,
     struct pipe_surface *target;
     struct winsys_handle handle = { .type = WINSYS_HANDLE_TYPE_KMS };
 
-    if (framebuffer->nr_cbufs != 1 || !framebuffer->cbufs[0] ||
-        framebuffer->zsbuf)
+    if (framebuffer->nr_cbufs != 1 || !framebuffer->cbufs[0])
         return false;
     target = framebuffer->cbufs[0];
     if (target->format != PIPE_FORMAT_B5G6R5_UNORM ||
@@ -93,18 +93,18 @@ tarugx_target_surface(struct tarugx_context_state *state,
             state->context->screen, state->context, target->texture,
             &handle, PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
         return false;
-    *surface = (struct tarugx_winsys_surface) {
-        .handle = handle.handle,
-        .width = target->width,
-        .height = target->height,
-        .pitch = handle.stride,
-        .size = (uint64_t)handle.stride * target->height,
-    };
-    return handle.stride == target->width * 2;
+    if (!tarugx_winsys_surface_query(&state->winsys, handle.handle,
+                                     surface))
+        return false;
+    return surface->width == target->width &&
+           surface->height == target->height &&
+           surface->pitch == handle.stride &&
+           handle.stride == target->width * 2;
 }
 
 static bool
-tarugx_draw_state_supported(struct tarugx_context_state *state)
+tarugx_draw_state_supported(struct tarugx_context_state *state,
+                            const struct tarugx_winsys_surface *surface)
 {
     const struct softpipe_context *softpipe = state->softpipe;
     const struct pipe_rasterizer_state *rasterizer = softpipe->rasterizer;
@@ -120,10 +120,31 @@ tarugx_draw_state_supported(struct tarugx_context_state *state)
            !blend->logicop_enable && !blend->dither &&
            !blend->rt[0].blend_enable &&
            blend->rt[0].colormask == PIPE_MASK_RGBA &&
-           !depth->depth_enabled && !depth->stencil[0].enabled &&
+           (!depth->depth_enabled ||
+            (surface->depth && softpipe->framebuffer.zsbuf &&
+             softpipe->framebuffer.zsbuf->format == PIPE_FORMAT_Z16_UNORM &&
+             softpipe->framebuffer.zsbuf->width == surface->width &&
+             softpipe->framebuffer.zsbuf->height == surface->height)) &&
+           !depth->stencil[0].enabled &&
            !depth->alpha_enabled && softpipe->vertex_info.num_attribs == 2 &&
            softpipe->vertex_info.attrib[0].emit == EMIT_4F &&
            softpipe->vertex_info.attrib[1].emit == EMIT_4F;
+}
+
+static bool
+tarugx_depth_func(unsigned pipe_func, uint32_t *hardware_func)
+{
+    switch (pipe_func) {
+    case PIPE_FUNC_NEVER:    *hardware_func = 0; return true;
+    case PIPE_FUNC_LESS:     *hardware_func = 1; return true;
+    case PIPE_FUNC_EQUAL:    *hardware_func = 2; return true;
+    case PIPE_FUNC_LEQUAL:   *hardware_func = 3; return true;
+    case PIPE_FUNC_GREATER:  *hardware_func = 4; return true;
+    case PIPE_FUNC_NOTEQUAL: *hardware_func = 5; return true;
+    case PIPE_FUNC_GEQUAL:   *hardware_func = 6; return true;
+    case PIPE_FUNC_ALWAYS:   *hardware_func = 7; return true;
+    default: return false;
+    }
 }
 
 static bool
@@ -185,6 +206,21 @@ tarugx_pack_gradient(double dx, double dy, uint32_t *packed)
 }
 
 static bool
+tarugx_pack_depth_gradient(double value, int32_t *packed)
+{
+    long fixed;
+
+    if (!isfinite(value) || value < -32768.0 ||
+        value > 8388607.0 / 256.0)
+        return false;
+    fixed = lrint(value * 256.0);
+    if (fixed < -8388608L || fixed > 8388607L)
+        return false;
+    *packed = (int32_t)fixed;
+    return true;
+}
+
+static bool
 tarugx_interpolated_channel(const float *v0, const float *v1,
                             const float *v2, unsigned channel,
                             double sample_x, double sample_y,
@@ -231,6 +267,10 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
     double determinant;
     uint32_t base[3];
     uint32_t gradient[3];
+    const struct pipe_depth_stencil_alpha_state *depth_state =
+        state->softpipe->depth_stencil;
+    bool depth_enabled = depth_state->depth_enabled;
+    uint32_t depth_func = 0;
     unsigned channel;
 
     for (channel = 0; channel < 3; channel++)
@@ -254,12 +294,17 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
         .y2 = y2,
         .color = tarugx_rgb888(v0 + 4),
     };
-    if (flat)
+    if (flat && !depth_enabled)
         return true;
-    if (!tarugx_winsys_supports_triangle_interpolation(&state->winsys) ||
-        !isfinite(v0[3]) || !isfinite(v1[3]) || !isfinite(v2[3]) ||
-        fabsf(v0[3] - v1[3]) > 0.00001f ||
-        fabsf(v0[3] - v2[3]) > 0.00001f)
+    if ((!flat &&
+         (!tarugx_winsys_supports_triangle_interpolation(&state->winsys) ||
+          !isfinite(v0[3]) || !isfinite(v1[3]) || !isfinite(v2[3]) ||
+          fabsf(v0[3] - v1[3]) > 0.00001f ||
+          fabsf(v0[3] - v2[3]) > 0.00001f)) ||
+        (depth_enabled &&
+         (!surface->depth ||
+          !tarugx_winsys_supports_depth(&state->winsys) ||
+          !tarugx_depth_func(depth_state->depth_func, &depth_func))))
         return false;
 
     /* Fit colors against the same 16.8 vertex coordinates sent to hardware,
@@ -271,24 +316,53 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
     if (sample_x >= surface->width || sample_y >= surface->height)
         return false;
     v0 = (const float[8]) { x0 / 256.0f, y0 / 256.0f,
-                            0.0f, v0[3], v0[4], v0[5], v0[6], v0[7] };
+                            v0[2], v0[3], v0[4], v0[5], v0[6], v0[7] };
     v1 = (const float[8]) { x1 / 256.0f, y1 / 256.0f,
-                            0.0f, v1[3], v1[4], v1[5], v1[6], v1[7] };
+                            v1[2], v1[3], v1[4], v1[5], v1[6], v1[7] };
     v2 = (const float[8]) { x2 / 256.0f, y2 / 256.0f,
-                            0.0f, v2[3], v2[4], v2[5], v2[6], v2[7] };
+                            v2[2], v2[3], v2[4], v2[5], v2[6], v2[7] };
     determinant = ((double)v1[0] - v0[0]) * ((double)v2[1] - v0[1]) -
                   ((double)v2[0] - v0[0]) * ((double)v1[1] - v0[1]);
     if (!isfinite(determinant) || fabs(determinant) < 1.0 / 65536.0)
         return false;
-    for (channel = 0; channel < 3; channel++)
-        if (!tarugx_interpolated_channel(v0, v1, v2, channel,
-                                         sample_x, sample_y, determinant,
-                                         &base[channel], &gradient[channel]))
+    if (!flat) {
+        for (channel = 0; channel < 3; channel++)
+            if (!tarugx_interpolated_channel(v0, v1, v2, channel,
+                                             sample_x, sample_y, determinant,
+                                             &base[channel], &gradient[channel]))
+                return false;
+        triangle->color = base[0] << 16 | base[1] << 8 | base[2];
+        triangle->gradient_r = gradient[0];
+        triangle->gradient_g = gradient[1];
+        triangle->gradient_b = gradient[2];
+    }
+    if (depth_enabled) {
+        double z0 = v0[2] * 65535.0;
+        double z1 = v1[2] * 65535.0;
+        double z2 = v2[2] * 65535.0;
+        double dx = ((z1 - z0) * (v2[1] - v0[1]) -
+                     (z2 - z0) * (v1[1] - v0[1])) / determinant;
+        double dy = ((v1[0] - v0[0]) * (z2 - z0) -
+                     (v2[0] - v0[0]) * (z1 - z0)) / determinant;
+        double value = z0 + dx * (sample_x - v0[0]) +
+                       dy * (sample_y - v0[1]);
+        long rounded;
+
+        if (!isfinite(z0) || !isfinite(z1) || !isfinite(z2) ||
+            z0 < 0.0 || z0 > 65535.0 || z1 < 0.0 || z1 > 65535.0 ||
+            z2 < 0.0 || z2 > 65535.0 || !isfinite(value) ||
+            value < 0.0 || value > 65535.0 ||
+            !tarugx_pack_depth_gradient(dx, &triangle->gradient_z_x) ||
+            !tarugx_pack_depth_gradient(dy, &triangle->gradient_z_y))
             return false;
-    triangle->color = base[0] << 16 | base[1] << 8 | base[2];
-    triangle->gradient_r = gradient[0];
-    triangle->gradient_g = gradient[1];
-    triangle->gradient_b = gradient[2];
+        rounded = lrint(value);
+        if (rounded < 0 || rounded > UINT16_MAX)
+            return false;
+        triangle->depth = (uint16_t)rounded;
+        triangle->depth_flags = DRM_TARUGX_DEPTH_ENABLE |
+            (depth_state->depth_writemask ? DRM_TARUGX_DEPTH_WRITE : 0) |
+            (depth_func << DRM_TARUGX_DEPTH_FUNC_SHIFT);
+    }
     return true;
 }
 
@@ -406,8 +480,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     unsigned i;
 
     if (state->primitive != MESA_PRIM_TRIANGLES || count % 3 ||
-        !tarugx_draw_state_supported(state) ||
-        !tarugx_target_surface(state, &surface))
+        !tarugx_target_surface(state, &surface) ||
+        !tarugx_draw_state_supported(state, &surface))
         return false;
     vertices = state->backend->map_vertices(state->backend);
     stride = state->softpipe->vertex_info.size;
@@ -516,10 +590,24 @@ tarugx_clear(struct pipe_context *context, unsigned buffers,
     struct tarugx_context_state *state = tarugx_find_context(context, NULL);
     struct tarugx_winsys_surface surface;
 
-    if (state && buffers == PIPE_CLEAR_COLOR0 && !scissor && color &&
+    if (state && !scissor && color &&
         tarugx_target_surface(state, &surface)) {
-        if (tarugx_winsys_submit_fill(&state->winsys, &surface,
-                                      tarugx_rgb888(color->f)) &&
+        bool submitted = false;
+
+        if (buffers == (PIPE_CLEAR_COLOR0 | PIPE_CLEAR_DEPTH) &&
+            surface.depth && state->softpipe->framebuffer.zsbuf &&
+            state->softpipe->framebuffer.zsbuf->format ==
+                PIPE_FORMAT_Z16_UNORM &&
+            state->softpipe->framebuffer.zsbuf->width == surface.width &&
+            state->softpipe->framebuffer.zsbuf->height == surface.height &&
+            isfinite(depth) && depth >= 0.0 && depth <= 1.0)
+            submitted = tarugx_winsys_submit_color_depth_clear(
+                &state->winsys, &surface, tarugx_rgb888(color->f),
+                (uint16_t)lrint(depth * UINT16_MAX));
+        else if (buffers == PIPE_CLEAR_COLOR0)
+            submitted = tarugx_winsys_submit_fill(
+                &state->winsys, &surface, tarugx_rgb888(color->f));
+        if (submitted &&
             tarugx_winsys_wait(&state->winsys, INT64_MAX))
             return;
     }
