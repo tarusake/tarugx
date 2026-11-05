@@ -5,7 +5,7 @@ module render_queue_dispatcher (
     rst_n                : input  reset     ,
     dispatch_valid       : input  logic     ,
     dispatch_ready       : output logic     ,
-    dispatch_command     : input  logic<402>,
+    dispatch_command     : input  logic<530>,
     legacy_fill_start    : input  logic     ,
     legacy_blit_start    : input  logic     ,
     legacy_triangle_start: input  logic     ,
@@ -23,7 +23,7 @@ module render_queue_dispatcher (
     blit_start           : output logic     ,
     blit_command         : output logic<160>,
     triangle_start       : output logic     ,
-    triangle_command     : output logic<368>,
+    triangle_command     : output logic<496>,
     completion_valid     : output logic     ,
     completion_error     : output logic     ,
 ) {
@@ -50,7 +50,7 @@ module render_queue_dispatcher (
     assign triangle_start   = (running_opcode == 0) && triangle_admit;
     assign fill_command     = dispatch_command[161:34];
     assign blit_command     = dispatch_command[193:34];
-    assign triangle_command = dispatch_command[401:34];
+    assign triangle_command = dispatch_command[529:34];
     assign completion_valid = ((running_opcode == STATE_FILL) && fill_done)
         || ((running_opcode == STATE_BLIT) && blit_done)
         || ((running_opcode == STATE_TRIANGLE) && triangle_done)

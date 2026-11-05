@@ -161,10 +161,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire fill_start, fill_busy, fill_done, fill_error;
     wire [159:0] blit_command;
     wire blit_start, blit_busy, blit_done, blit_error;
-    wire [367:0] triangle_command;
+    wire [495:0] triangle_command;
     wire triangle_start, triangle_busy, triangle_done, triangle_error;
     wire [31:0] triangle_writes;
-    wire [401:0] queue_command;
+    wire [529:0] queue_command;
     wire queue_submit, queue_ready, queue_active, queue_error, queue_clear_error;
     wire render_irq_event;
     wire [2:0] queue_level;
@@ -195,7 +195,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
 `endif
     tarugx_tarugx_framebuffer_top #(
 `ifdef TARUGX_VIDEO_1080P
-        .GPU_VERSION(32'h0001_0005)
+        .GPU_VERSION(32'h0001_0006)
 `else
         .GPU_VERSION(32'h0001_0001)
 `endif
@@ -278,12 +278,12 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire scan_rsp_error;
 `ifdef TARUGX_PIPELINED_MEMORY
     wire queue_dispatch_valid, queue_dispatch_ready, queue_completion_valid, queue_completion_error;
-    wire [401:0] queue_dispatch_command;
+    wire [529:0] queue_dispatch_command;
     wire queued_fill_start, queued_blit_start, queued_triangle_start;
     wire fill_cdc_ready, blit_cdc_ready, triangle_cdc_ready;
     wire [127:0] queued_fill_command;
     wire [159:0] queued_blit_command;
-    wire [367:0] queued_triangle_command;
+    wire [495:0] queued_triangle_command;
     tarugx_render_command_queue u_render_queue (
         .clk(tlp_clk), .rst_n(cpu_reset[1]),
         .enqueue_valid(queue_submit), .enqueue_ready(queue_ready), .enqueue_command(queue_command),
@@ -323,7 +323,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [255:0] blit_mem_wdata, blit_mem_rsp_data;
     wire [31:0] blit_mem_wstrb;
     wire triangle_cmd_valid, triangle_cmd_ready, triangle_engine_done, triangle_engine_error;
-    wire [367:0] triangle_mem_command;
+    wire [495:0] triangle_mem_command;
     wire triangle_mem_valid, triangle_mem_ready, triangle_mem_write;
     wire triangle_mem_rsp_valid, triangle_mem_rsp_ready, triangle_mem_rsp_error;
     wire [23:0] triangle_mem_addr;
@@ -384,7 +384,7 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_valid(blit_mem_rsp_valid), .mem_rsp_ready(blit_mem_rsp_ready),
         .mem_rsp_data(blit_mem_rsp_data), .mem_rsp_error(blit_mem_rsp_error)
     );
-    tarugx_render_command_cdc #(.WIDTH(368)) u_triangle_cdc (
+    tarugx_render_command_cdc #(.WIDTH(496)) u_triangle_cdc (
         .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
         .src_valid(triangle_start || queued_triangle_start), .src_ready(triangle_cdc_ready),
         .src_command(triangle_start ? triangle_command : queued_triangle_command),
@@ -406,13 +406,13 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .cmd_gradient_r(triangle_mem_command[303:272]),
         .cmd_gradient_g(triangle_mem_command[335:304]),
         .cmd_gradient_b(triangle_mem_command[367:336]),
-        .cmd_depth_enable(1'b0),
-        .cmd_depth_write_enable(1'b0),
-        .cmd_depth_base(32'b0),
-        .cmd_depth_func(3'd7),
-        .cmd_depth(16'b0),
-        .cmd_gradient_z_x(24'sb0),
-        .cmd_gradient_z_y(24'sb0),
+        .cmd_depth_enable(triangle_mem_command[416]),
+        .cmd_depth_write_enable(triangle_mem_command[417]),
+        .cmd_depth_base(triangle_mem_command[399:368]),
+        .cmd_depth_func(triangle_mem_command[420:418]),
+        .cmd_depth(triangle_mem_command[415:400]),
+        .cmd_gradient_z_x(triangle_mem_command[455:432]),
+        .cmd_gradient_z_y(triangle_mem_command[487:464]),
         .busy(), .done(triangle_engine_done), .error(triangle_engine_error),
         .writes(triangle_engine_writes),
         .mem_valid(triangle_mem_valid), .mem_ready(triangle_mem_ready),

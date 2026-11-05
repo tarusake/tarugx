@@ -12,20 +12,20 @@ module pcie_memory_pipeline_tb;
  logic fill_busy,fill_done,fill_error,fill_start;logic [127:0] fill_command;
  logic blit_busy,blit_done,blit_error,blit_start;logic [159:0] blit_command;
  logic triangle_busy,triangle_done,triangle_error,triangle_start;
- logic [31:0] triangle_writes;logic [367:0] triangle_command;
+ logic [31:0] triangle_writes;logic [495:0] triangle_command;
  logic queue_ready,queue_active,queue_error,queue_submit,queue_clear_error;
  logic [2:0] queue_level;logic [31:0] queue_completed,queue_error_fence;
- logic [401:0] queue_command;
+ logic [529:0] queue_command;
  logic [31:0] display_ctrl,display_color,display_mode,fb_base,fb_stride;
  logic fb_req_valid,fb_req_ready,fb_req_write,fb_rsp_valid,fb_rsp_ready,fb_rsp_error;
  logic [31:0] fb_req_addr,fb_rsp_rdata;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  tarugx_pcie_gpu_path pcie(.*);
  logic queue_dispatch_valid,queue_dispatch_ready,queue_completion_valid,queue_completion_error;
- logic [401:0] queue_dispatch_command;
+ logic [529:0] queue_dispatch_command;
  logic queued_fill_start,queued_blit_start,queued_triangle_start;
  logic fill_cdc_ready,blit_cdc_ready,triangle_cdc_ready;
  logic [127:0] queued_fill_command;logic [159:0] queued_blit_command;
- logic [367:0] queued_triangle_command;
+ logic [495:0] queued_triangle_command;
  tarugx_render_command_queue render_queue(
   .clk(clk),.rst_n(rst),.enqueue_valid(queue_submit),.enqueue_ready(queue_ready),.enqueue_command(queue_command),
   .dispatch_valid(queue_dispatch_valid),.dispatch_ready(queue_dispatch_ready),.dispatch_command(queue_dispatch_command),
@@ -109,8 +109,8 @@ module pcie_memory_pipeline_tb;
   .mem_rsp_valid(blit_mem_rsp_valid),.mem_rsp_ready(blit_mem_rsp_ready),
   .mem_rsp_data(blit_mem_rsp_data),.mem_rsp_error(blit_mem_rsp_error));
  logic triangle_cmd_valid,triangle_cmd_ready,triangle_engine_done,triangle_engine_error;
- logic [367:0] triangle_mem_command;
- tarugx_render_command_cdc #(.WIDTH(368)) triangle_cdc(
+ logic [495:0] triangle_mem_command;
+ tarugx_render_command_cdc #(.WIDTH(496)) triangle_cdc(
   .src_clk(clk),.src_rst_n(rst),.src_valid(triangle_start||queued_triangle_start),
   .src_ready(triangle_cdc_ready),
   .src_command(triangle_start?triangle_command:queued_triangle_command),
@@ -129,9 +129,13 @@ module pcie_memory_pipeline_tb;
   .cmd_gradient_r(triangle_mem_command[303:272]),
   .cmd_gradient_g(triangle_mem_command[335:304]),
   .cmd_gradient_b(triangle_mem_command[367:336]),
-  .cmd_depth_enable(1'b0),.cmd_depth_write_enable(1'b0),
-  .cmd_depth_base(32'b0),.cmd_depth_func(3'd7),.cmd_depth(16'b0),
-  .cmd_gradient_z_x(24'sb0),.cmd_gradient_z_y(24'sb0),
+  .cmd_depth_enable(triangle_mem_command[416]),
+  .cmd_depth_write_enable(triangle_mem_command[417]),
+  .cmd_depth_base(triangle_mem_command[399:368]),
+  .cmd_depth_func(triangle_mem_command[420:418]),
+  .cmd_depth(triangle_mem_command[415:400]),
+  .cmd_gradient_z_x(triangle_mem_command[455:432]),
+  .cmd_gradient_z_y(triangle_mem_command[487:464]),
   .busy(),.done(triangle_engine_done),
   .error(triangle_engine_error),.writes(triangle_writes),.mem_valid(triangle_mem_valid),
   .mem_ready(triangle_mem_ready),.mem_write(triangle_mem_write),.mem_addr(triangle_mem_addr),.mem_wdata(triangle_mem_wdata),
@@ -305,8 +309,39 @@ module pcie_memory_pipeline_tb;
   assert({memory[4673],memory[4672]}==16'h0206)else $fatal(1,"gradient pixel 0,2");
   assert({memory[4615],memory[4614]}==16'h5a5a)else $fatal(1,"gradient outside pixel");
   send(0,0,'h802000ac,0,15);completion(102);
+  // Depth registers are part of the same queued triangle snapshot.  Initialize
+  // Z16 to 2000, submit LESS+write with an affine 1000+10x+20y plane, and
+  // verify both the passing RGB565 fragments and updated depth values.
+  for(int y=0;y<4;y++)for(int x=0;x<4;x++) begin
+   int a=6144+y*32+x*2;
+   memory[a]=8'hd0;memory[a+1]=8'h07;
+  end
+  send(1,0,'h80200100,5120,15);
+  send(1,0,'h80200124,'h0000ff00,15);
+  send(1,0,'h80200134,0,15);
+  send(1,0,'h80200138,0,15);
+  send(1,0,'h8020013c,0,15);
+  send(1,0,'h80200140,6144,15);
+  send(1,0,'h80200144,'h000703e8,15);
+  send(1,0,'h80200148,'h00000a00,15);
+  send(1,0,'h8020014c,'h00001400,15);
+  send(1,0,'h802000a0,103,15);
+  send(1,0,'h802000a4,3,15);
+  wait(queue_completed==103);tick();
+  assert(!queue_error&&!queue_active&&queue_level==0&&triangle_writes==6)
+   else $fatal(1,"queued depth triangle completion state");
+  for(int y=0;y<4;y++)for(int x=0;x<4;x++) begin
+   int color_a=5120+y*32+x*2;int depth_a=6144+y*32+x*2;
+   bit covered=(x+y)<3;
+   assert({memory[color_a+1],memory[color_a]}==(covered?16'h07e0:16'h5a5a))
+    else $fatal(1,"depth-tested color x=%0d y=%0d",x,y);
+   assert({memory[depth_a+1],memory[depth_a]}==
+    (covered?16'(1000+10*x+20*y):16'd2000))
+    else $fatal(1,"depth update x=%0d y=%0d",x,y);
+  end
+  send(0,0,'h802000ac,0,15);completion(103);
   assert(scan_reads>128 && !framing_error && !malformed && !unsupported) else $fatal(1,"fairness/error");
-  $display("PCIe + CDC + shared DDR: fill, blit, flat/gradient triangle PASS");$finish;
+  $display("PCIe + CDC + shared DDR: fill, blit, color/Z triangle PASS");$finish;
  end
  initial begin #2000000;$fatal(1,"timeout");end
 endmodule
