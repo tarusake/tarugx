@@ -183,6 +183,7 @@ int main(int argc, char **argv)
     volatile uint32_t *vram_map;
     volatile uint16_t *vram_pixels;
     uint16_t *upload_pixels;
+    uint16_t overlap_snapshot[64 * 32];
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
     uint32_t timeline_syncobj = 0;
@@ -422,6 +423,94 @@ int main(int argc, char **argv)
         goto out_other;
     }
     puts("VRAM cross-GEM blit PASS: offscreen source copied to front buffer");
+
+    /* The screen blit ABI must provide memmove semantics when source and
+     * destination rectangles refer to overlapping pixels in the front GEM. */
+    for (uint32_t y = 0; y < 40; y++)
+        for (uint32_t x = 0; x < 72; x++)
+            vram_pixels[(200 + y) * 1920 + 400 + x] =
+                (uint16_t)(0x2000 + y * 72 + x);
+    for (uint32_t y = 0; y < 32; y++)
+        for (uint32_t x = 0; x < 64; x++)
+            overlap_snapshot[y * 64 + x] =
+                vram_pixels[(200 + y) * 1920 + 400 + x];
+    __sync_synchronize();
+    {
+        struct drm_tarugx_submit_gem overlap = {
+            .handle = front_vram.handle,
+            .count = 1,
+            .commands = {{
+                .opcode = DRM_TARUGX_OP_BLIT,
+                .src_x = 400, .src_y = 200,
+                .dst_x = 404, .dst_y = 200,
+                .width = 64, .height = 32,
+            }},
+        };
+
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &overlap)) {
+            perror("horizontal overlapping DRM_IOCTL_TARUGX_SUBMIT_GEM");
+            munmap(upload_pixels, upload_source.size);
+            close_handle(fd, upload_source.handle);
+            munmap((void *)vram_map, front_vram.size);
+            close_handle(fd, front_vram.handle);
+            goto out_other;
+        }
+    }
+    for (uint32_t y = 0; y < 32; y++)
+        for (uint32_t x = 0; x < 64; x++)
+            if (vram_pixels[(200 + y) * 1920 + 404 + x] !=
+                overlap_snapshot[y * 64 + x]) {
+                fprintf(stderr, "horizontal overlap mismatch at %u,%u\n", x, y);
+                munmap(upload_pixels, upload_source.size);
+                close_handle(fd, upload_source.handle);
+                munmap((void *)vram_map, front_vram.size);
+                close_handle(fd, front_vram.handle);
+                goto out_other;
+            }
+
+    for (uint32_t y = 0; y < 40; y++)
+        for (uint32_t x = 0; x < 72; x++)
+            vram_pixels[(200 + y) * 1920 + 400 + x] =
+                (uint16_t)(0x5000 + y * 72 + x);
+    for (uint32_t y = 0; y < 32; y++)
+        for (uint32_t x = 0; x < 64; x++)
+            overlap_snapshot[y * 64 + x] =
+                vram_pixels[(200 + y) * 1920 + 400 + x];
+    __sync_synchronize();
+    {
+        struct drm_tarugx_submit_gem overlap = {
+            .handle = front_vram.handle,
+            .count = 1,
+            .commands = {{
+                .opcode = DRM_TARUGX_OP_BLIT,
+                .src_x = 400, .src_y = 200,
+                .dst_x = 400, .dst_y = 204,
+                .width = 64, .height = 32,
+            }},
+        };
+
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &overlap)) {
+            perror("vertical overlapping DRM_IOCTL_TARUGX_SUBMIT_GEM");
+            munmap(upload_pixels, upload_source.size);
+            close_handle(fd, upload_source.handle);
+            munmap((void *)vram_map, front_vram.size);
+            close_handle(fd, front_vram.handle);
+            goto out_other;
+        }
+    }
+    for (uint32_t y = 0; y < 32; y++)
+        for (uint32_t x = 0; x < 64; x++)
+            if (vram_pixels[(204 + y) * 1920 + 400 + x] !=
+                overlap_snapshot[y * 64 + x]) {
+                fprintf(stderr, "vertical overlap mismatch at %u,%u\n", x, y);
+                munmap(upload_pixels, upload_source.size);
+                close_handle(fd, upload_source.handle);
+                munmap((void *)vram_map, front_vram.size);
+                close_handle(fd, front_vram.handle);
+                goto out_other;
+            }
+    puts("VRAM overlapping blit PASS: horizontal and vertical memmove semantics");
+
     munmap(upload_pixels, upload_source.size);
     if (close_handle(fd, upload_source.handle)) {
         perror("close partial-DMA source GEM");
