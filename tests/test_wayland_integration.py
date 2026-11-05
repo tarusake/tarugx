@@ -17,6 +17,8 @@ class RemoteWaylandTest(unittest.TestCase):
         self.assertIn("DRM: supports atomic modesetting", program)
         self.assertIn("1920x1080@60.0", program)
         self.assertIn("weston-simple-egl", program)
+        self.assertIn("EGL vendor string: Mesa Project", program)
+        self.assertIn("tarugx_dri_available", program)
         self.assertIn("delta['flip_timeouts'] == 0", program)
         self.assertIn("delta['dma_upload_failures'] == 0", program)
 

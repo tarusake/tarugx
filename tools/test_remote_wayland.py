@@ -86,6 +86,16 @@ try:
     assert 'DRM: supports atomic modesetting' in log, log[-6000:]
     assert "Output 'HDMI-A-1' enabled" in log, log[-6000:]
     assert '1920x1080@60.0' in log, log[-6000:]
+    stage = 'identify Mesa renderer'
+    egl = subprocess.run(['eglinfo', '-B'], env=environment,
+                         capture_output=True, text=True, timeout=30)
+    egl_report = egl.stdout + egl.stderr
+    # eglinfo probes every platform and returns failure when the unrelated
+    # X11/device probes fail; the active Wayland platform remains valid.
+    assert 'EGL vendor string: Mesa Project' in egl_report, egl_report[-6000:]
+    tarugx_dri_available = any(Path(directory, 'tarugx_dri.so').exists()
+                               for directory in
+                               ('/usr/lib/x86_64-linux-gnu/dri', '/usr/lib/dri'))
     stage = 'run EGL animation'
     before = counters()
     client = subprocess.Popen(['weston-simple-egl'], env=environment,
@@ -111,7 +121,9 @@ try:
     assert delta['render_failures'] == 0, delta
     result = {'result': 'wayland_egl_pass', 'fps': fps,
               'client_cpu_percent_one_core': cpu_seconds * 100.0 / elapsed,
-              'delta': delta, 'weston_log': log[-4000:]}
+              'tarugx_dri_available': tarugx_dri_available,
+              'delta': delta, 'mesa_report': egl_report[-6000:],
+              'weston_log': log[-4000:]}
 except Exception as error:
     result = {'result': 'wayland_egl_failed', 'stage': stage,
               'error_type': type(error).__name__, 'error': str(error),
