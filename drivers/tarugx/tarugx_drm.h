@@ -160,6 +160,20 @@ struct drm_tarugx_copy_gem {
 	__u32 pad[3];
 };
 
+/* Read-only device information used to choose a supported command subset
+ * before rendering starts.  Unknown parameters return -EINVAL. */
+#define DRM_TARUGX_PARAM_GPU_VERSION 1
+#define DRM_TARUGX_PARAM_CAPS 2
+
+#define DRM_TARUGX_CAP_TRIANGLE (1ULL << 0)
+#define DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION (1ULL << 1)
+
+struct drm_tarugx_get_param {
+	__u32 param;
+	__u32 pad;
+	__u64 value;
+};
+
 #define DRM_TARUGX_FILL 0x00
 #define DRM_TARUGX_BLIT 0x01
 #define DRM_TARUGX_SUBMIT 0x02
@@ -169,6 +183,7 @@ struct drm_tarugx_copy_gem {
 #define DRM_TARUGX_SUBMIT_GEM2 0x06
 #define DRM_TARUGX_UPLOAD_GEM 0x07
 #define DRM_TARUGX_COPY_GEM 0x08
+#define DRM_TARUGX_GET_PARAM 0x09
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -193,5 +208,8 @@ struct drm_tarugx_copy_gem {
 #define DRM_IOCTL_TARUGX_COPY_GEM \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_TARUGX_COPY_GEM, \
 		struct drm_tarugx_copy_gem)
+#define DRM_IOCTL_TARUGX_GET_PARAM \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_GET_PARAM, \
+		 struct drm_tarugx_get_param)
 
 #endif

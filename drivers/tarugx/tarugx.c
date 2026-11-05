@@ -95,6 +95,7 @@ struct tarugx {
 	bool render_available;
 	bool triangle_available;
 	bool triangle_interpolation_available;
+	u32 gpu_version;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
 	bool physical_pages_synced;
@@ -1674,6 +1675,32 @@ out:
 	return ret;
 }
 
+static int tgx_ioctl_get_param(struct drm_device *drm, void *data,
+			       struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_get_param *args = data;
+
+	(void)file;
+	if (args->pad)
+		return -EINVAL;
+
+	switch (args->param) {
+	case DRM_TARUGX_PARAM_GPU_VERSION:
+		args->value = tgx->gpu_version;
+		return 0;
+	case DRM_TARUGX_PARAM_CAPS:
+		args->value = 0;
+		if (tgx->triangle_available)
+			args->value |= DRM_TARUGX_CAP_TRIANGLE;
+		if (tgx->triangle_interpolation_available)
+			args->value |= DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 {
 	u32 offset;
@@ -2890,6 +2917,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_COPY_GEM, tgx_ioctl_copy_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_GET_PARAM, tgx_ioctl_get_param,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
 static struct drm_gem_object *
@@ -2945,7 +2974,7 @@ static const struct drm_driver tgx_driver = {
 	.name = "tarugx",
 	.desc = "TaruGX/100 CPU framebuffer",
 	.date = "20261104",
-	.major = 0, .minor = 17,
+	.major = 0, .minor = 18,
 };
 
 static void tgx_vram_mm_takedown(struct drm_device *drm, void *data)
@@ -3058,6 +3087,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (readl(tgx->regs) != 0x54475055)
 		return -ENODEV;
 	gpu_version = readl(tgx->regs + TGX_REG_GPU_VERSION);
+	tgx->gpu_version = gpu_version;
 	tgx_configure_memory_and_mode(tgx, gpu_version);
 	formats = tgx->format == DRM_FORMAT_RGB565 ?
 		rgb565_formats : xrgb8888_formats;
