@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -100,14 +101,38 @@ main(int argc, char **argv)
     uint32_t handle;
     uint32_t stride;
     size_t size;
+    struct timespec draw_start;
+    struct timespec draw_end;
+    double draw_ms;
+    unsigned iterations = 1;
+    unsigned i;
+    int software_fallback = 0;
     int position_location;
     int color_location;
     int fd = -1;
     int result = 1;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s /dev/dri/cardN\n", argv[0]);
+    if (argc < 2 || argc > 4) {
+        fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] [--software]\n",
+                argv[0]);
         return 2;
+    }
+    if (argc >= 3) {
+        char *end = NULL;
+        unsigned long value = strtoul(argv[2], &end, 10);
+
+        if (!end || *end || !value || value > 1000) {
+            fputs("iterations must be between 1 and 1000\n", stderr);
+            return 2;
+        }
+        iterations = (unsigned)value;
+    }
+    if (argc == 4) {
+        if (strcmp(argv[3], "--software")) {
+            fputs("unknown mode\n", stderr);
+            return 2;
+        }
+        software_fallback = 1;
     }
     fd = open(argv[1], O_RDWR | O_CLOEXEC);
     if (fd < 0 || drmSetMaster(fd)) {
@@ -167,8 +192,18 @@ main(int argc, char **argv)
     glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0, colors);
     glEnableVertexAttribArray(position_location);
     glEnableVertexAttribArray(color_location);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
+    if (software_fallback) {
+        glScissor(0, 0, WIDTH, HEIGHT);
+        glEnable(GL_SCISSOR_TEST);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &draw_start);
+    for (i = 0; i < iterations; i++) {
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+    }
+    clock_gettime(CLOCK_MONOTONIC, &draw_end);
+    draw_ms = (draw_end.tv_sec - draw_start.tv_sec) * 1000.0 +
+              (draw_end.tv_nsec - draw_start.tv_nsec) / 1000000.0;
     if (glGetError() != GL_NO_ERROR || !eglSwapBuffers(display, surface))
         goto out;
     buffer = gbm_surface_lock_front_buffer(gbm_surface);
@@ -184,10 +219,12 @@ main(int argc, char **argv)
                   map_request.offset);
     if (pixels == MAP_FAILED)
         goto out;
-    printf("renderer=%s\ncenter=%04x\ncorner=%04x\nstride=%u\n",
+    printf("renderer=%s\ncenter=%04x\ncorner=%04x\nstride=%u\n"
+           "path=%s\ndraws=%u\ndraw_ms=%.3f\n",
            glGetString(GL_RENDERER),
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
-           stride);
+           stride, software_fallback ? "softpipe" : "fpga", iterations,
+           draw_ms);
     if (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800 ||
         pixels[0] != 0x001f) {
         fputs("RGB565 readback mismatch\n", stderr);
