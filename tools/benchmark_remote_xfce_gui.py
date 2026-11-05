@@ -142,7 +142,10 @@ try:
     assert exa['delta']['render_failures'] == 0, exa
     assert exa['delta']['bytes_uploaded'] == 0, exa
     assert int(exa['xorg_acceleration_fields']['async_submits']) > 0, exa
+    assert int(exa['xorg_acceleration_fields']['async_waits']) < \
+        int(exa['xorg_acceleration_fields']['async_submits']), exa
     assert int(exa['xorg_acceleration_fields']['async_wait_failures']) == 0, exa
+    assert int(exa['xorg_acceleration_fields']['queue_full_waits']) == 0, exa
     assert int(exa['xorg_acceleration_fields']['submit_failures']) == 0, exa
     assert exa['xorg_cpu_seconds'] < shadow['xorg_cpu_seconds'], (shadow, exa)
     assert exa['pcie_bytes_observed'] < shadow['pcie_bytes_observed'], \

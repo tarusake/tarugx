@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,8 +72,11 @@ typedef struct {
     uint64_t async_submits;
     uint64_t async_waits;
     uint64_t async_wait_failures;
+    uint64_t queue_full_waits;
     uint64_t submit_failures;
-    uint32_t pending_fence;
+    uint32_t render_syncobj;
+    uint64_t render_point;
+    uint64_t pending_point;
     int last_submit_errno;
 } TaruGXRec, *TaruGXPtr;
 
@@ -83,21 +87,19 @@ static void tarugx_destroy_front(TaruGXPtr tgx);
 
 static int tarugx_wait_pending(TaruGXPtr tgx)
 {
-    struct drm_tarugx_wait wait;
+    uint64_t point;
 
-    if (!tgx->pending_fence)
+    if (!tgx->pending_point)
         return 0;
-    wait = (struct drm_tarugx_wait) {
-        .fence = tgx->pending_fence,
-        .timeout_ms = 1000,
-    };
+    point = tgx->pending_point;
     tgx->async_waits++;
-    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_WAIT, &wait)) {
+    if (drmSyncobjTimelineWait(tgx->fd, &tgx->render_syncobj, &point, 1,
+                               INT64_MAX, 0, NULL)) {
         tgx->async_wait_failures++;
         tgx->last_submit_errno = errno;
         return -1;
     }
-    tgx->pending_fence = 0;
+    tgx->pending_point = 0;
     return 0;
 }
 
@@ -114,21 +116,25 @@ static Bool tarugx_pixmap_is_front(PixmapPtr pixmap)
 
 static int tarugx_submit(TaruGXPtr tgx, struct drm_tarugx_command *command)
 {
-    struct drm_tarugx_submit_gem submit = {
+    struct drm_tarugx_submit_gem2 submit = {
         .handle = tgx->handle,
         .count = 1,
         .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .out_syncobj = tgx->render_syncobj,
+        .out_point = tgx->render_point + 1,
     };
 
-    if (tarugx_wait_pending(tgx))
-        return -1;
     submit.commands[0] = *command;
-    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
+    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &submit) &&
+        (errno != EBUSY || (++tgx->queue_full_waits,
+                           tarugx_wait_pending(tgx)) ||
+         ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &submit))) {
         tgx->submit_failures++;
         tgx->last_submit_errno = errno;
         return -1;
     }
-    tgx->pending_fence = submit.fence;
+    tgx->render_point = submit.out_point;
+    tgx->pending_point = submit.out_point;
     tgx->async_submits++;
     return 0;
 }
@@ -137,21 +143,25 @@ static int tarugx_submit_batch(TaruGXPtr tgx,
                                struct drm_tarugx_command *commands,
                                uint32_t count)
 {
-    struct drm_tarugx_submit_gem submit = {
+    struct drm_tarugx_submit_gem2 submit = {
         .handle = tgx->handle,
         .count = count,
         .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .out_syncobj = tgx->render_syncobj,
+        .out_point = tgx->render_point + 1,
     };
 
-    if (tarugx_wait_pending(tgx))
-        return -1;
     memcpy(submit.commands, commands, count * sizeof(*commands));
-    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
+    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &submit) &&
+        (errno != EBUSY || (++tgx->queue_full_waits,
+                           tarugx_wait_pending(tgx)) ||
+         ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &submit))) {
         tgx->submit_failures++;
         tgx->last_submit_errno = errno;
         return -1;
     }
-    tgx->pending_fence = submit.fence;
+    tgx->render_point = submit.out_point;
+    tgx->pending_point = submit.out_point;
     tgx->async_submits++;
     return 0;
 }
@@ -582,6 +592,11 @@ static Bool tarugx_create_front(ScrnInfoPtr scrn)
                    strerror(errno));
         return FALSE;
     }
+    if (drmSyncobjCreate(tgx->fd, 0, &tgx->render_syncobj)) {
+        xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+                   "render syncobj creation failed: %s\n", strerror(errno));
+        return FALSE;
+    }
     if (!tarugx_find_output(tgx)) {
         xf86DrvMsg(scrn->scrnIndex, X_ERROR, "1080p DRM output not found\n");
         return FALSE;
@@ -644,6 +659,10 @@ static void tarugx_destroy_front(TaruGXPtr tgx)
     struct drm_gem_close close = { .handle = tgx->handle };
 
     (void)tarugx_wait_pending(tgx);
+    if (tgx->render_syncobj) {
+        drmSyncobjDestroy(tgx->fd, tgx->render_syncobj);
+        tgx->render_syncobj = 0;
+    }
     if (tgx->saved_crtc) {
         drmModeSetCrtc(tgx->fd, tgx->saved_crtc->crtc_id,
                        tgx->saved_crtc->buffer_id,
@@ -755,7 +774,7 @@ static Bool tarugx_close_screen(ScreenPtr screen)
                "EXA totals: solid=%llu copy=%llu upload=%llu fallback=%llu "
                "access_scans=%llu dirty_pages=%llu bar_bytes=%llu "
                "async_submits=%llu async_waits=%llu async_wait_failures=%llu "
-               "submit_failures=%llu last_errno=%d\n",
+               "queue_full_waits=%llu submit_failures=%llu last_errno=%d\n",
                (unsigned long long)tgx->solid_count,
                (unsigned long long)tgx->copy_count,
                (unsigned long long)tgx->upload_count,
@@ -766,6 +785,7 @@ static Bool tarugx_close_screen(ScreenPtr screen)
                (unsigned long long)tgx->async_submits,
                (unsigned long long)tgx->async_waits,
                (unsigned long long)tgx->async_wait_failures,
+               (unsigned long long)tgx->queue_full_waits,
                (unsigned long long)tgx->submit_failures,
                tgx->last_submit_errno);
     if (tgx->exa)
