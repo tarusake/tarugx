@@ -73,6 +73,8 @@ struct tarugx {
 	atomic64_t blit_sync_failures;
 	atomic64_t dma_uploads;
 	atomic64_t dma_upload_failures;
+	atomic64_t partial_dma_uploads;
+	atomic64_t partial_dma_bytes;
 	atomic64_t render_commands;
 	atomic64_t render_failures;
 	atomic64_t render_queue_peak;
@@ -160,6 +162,10 @@ struct tarugx_host_object {
 	struct drm_gem_object base;
 	void *vaddr;
 	dma_addr_t dma_addr;
+	u32 width;
+	u32 height;
+	u32 pitch;
+	u32 cpp;
 };
 
 struct tarugx_prime_object {
@@ -1384,6 +1390,121 @@ out:
 	return ret;
 }
 
+static int tgx_ioctl_upload_gem(struct drm_device *drm, void *data,
+				struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_upload_gem *args = data;
+	struct tarugx_host_object *source;
+	struct tarugx_vram_object *destination;
+	struct drm_gem_object *source_gem = NULL, *destination_gem = NULL;
+	u32 source_offset, destination_offset, row_bytes, row;
+	long waited;
+	int idx, ret = 0;
+
+	if (args->flags || memchr_inv(args->pad, 0, sizeof(args->pad)) ||
+	    !args->width || !args->height || (args->source_x & 1) ||
+	    (args->destination_x & 1) || (args->width & 1))
+		return -EINVAL;
+	source_gem = drm_gem_object_lookup(file, args->source_handle);
+	if (!source_gem)
+		return -ENOENT;
+	destination_gem = drm_gem_object_lookup(file,
+						args->destination_handle);
+	if (!destination_gem) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (source_gem->funcs != &tgx_host_object_funcs ||
+	    destination_gem->funcs != &tgx_vram_object_funcs) {
+		ret = -EINVAL;
+		goto out;
+	}
+	source = container_of(source_gem, struct tarugx_host_object, base);
+	destination = container_of(destination_gem,
+				   struct tarugx_vram_object, base);
+	if (source->cpp != tgx->cpp || args->source_x >= source->width ||
+	    args->source_y >= source->height ||
+	    args->destination_x >= destination->width ||
+	    args->destination_y >= destination->height ||
+	    args->width > source->width - args->source_x ||
+	    args->height > source->height - args->source_y ||
+	    args->width > destination->width - args->destination_x ||
+	    args->height > destination->height - args->destination_y) {
+		ret = -EINVAL;
+		goto out;
+	}
+	row_bytes = args->width * tgx->cpp;
+	source_offset = args->source_y * source->pitch +
+			args->source_x * source->cpp;
+	destination_offset = destination->node.start +
+			     args->destination_y * destination->pitch +
+			     args->destination_x * tgx->cpp;
+	if ((source_offset | destination_offset | row_bytes) & 3) {
+		ret = -EINVAL;
+		goto out;
+	}
+	waited = dma_resv_wait_timeout(destination_gem->resv,
+				       DMA_RESV_USAGE_WRITE, true,
+				       msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS));
+	if (waited <= 0) {
+		ret = waited ? (int)waited : -ETIMEDOUT;
+		goto out;
+	}
+	if (!tgx->dma_available) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (!drm_dev_enter(drm, &idx)) {
+		ret = -ENODEV;
+		goto out;
+	}
+	mutex_lock(&tgx->render_submit_lock);
+	mutex_lock(&tgx->render_lock);
+	if (tgx->render_async_valid) {
+		ret = tgx_reap_async(tgx, TGX_RENDER_TIMEOUT_MS);
+		if (ret)
+			goto out_unlock_render;
+	}
+	mutex_lock(&tgx->dma_lock);
+	dma_wmb();
+	if (!args->source_x && !args->destination_x &&
+	    row_bytes == source->pitch && row_bytes == destination->pitch) {
+		ret = tgx_dma_transfer(tgx, source->dma_addr + source_offset,
+				       destination_offset,
+				       row_bytes * args->height,
+				       TGX_1080P_DMA_TIMEOUT_US);
+	} else {
+		for (row = 0; row < args->height; row++) {
+			ret = tgx_dma_transfer(tgx,
+					source->dma_addr + source_offset +
+					row * source->pitch,
+					destination_offset +
+					row * destination->pitch,
+					row_bytes, TGX_DMA_TIMEOUT_US);
+			if (ret)
+				break;
+		}
+	}
+	mutex_unlock(&tgx->dma_lock);
+	if (ret) {
+		atomic64_inc(&tgx->dma_upload_failures);
+	} else {
+		atomic64_inc(&tgx->dma_uploads);
+		atomic64_inc(&tgx->partial_dma_uploads);
+		atomic64_add((u64)row_bytes * args->height,
+			     &tgx->partial_dma_bytes);
+	}
+out_unlock_render:
+	mutex_unlock(&tgx->render_lock);
+	mutex_unlock(&tgx->render_submit_lock);
+	drm_dev_exit(idx);
+out:
+	drm_gem_object_put(destination_gem);
+	drm_gem_object_put(source_gem);
+	return ret;
+}
+
 static void tgx_cpu_copy_frame(struct tarugx *tgx, u32 source, u32 target)
 {
 	u32 offset;
@@ -1495,6 +1616,17 @@ static ssize_t dma_upload_failures_show(struct device *dev,
 			  atomic64_read(&tgx->dma_upload_failures));
 }
 static DEVICE_ATTR_RO(dma_upload_failures);
+
+static ssize_t partial_dma_profile_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct tarugx *tgx = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "uploads=%lld bytes=%lld\n",
+			  atomic64_read(&tgx->partial_dma_uploads),
+			  atomic64_read(&tgx->partial_dma_bytes));
+}
+static DEVICE_ATTR_RO(partial_dma_profile);
 
 static ssize_t dma_profile_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -1701,6 +1833,7 @@ static struct attribute *tgx_attrs[] = {
 	&dev_attr_blit_sync_failures.attr,
 	&dev_attr_dma_uploads.attr,
 	&dev_attr_dma_upload_failures.attr,
+	&dev_attr_partial_dma_profile.attr,
 	&dev_attr_dma_profile.attr,
 	&dev_attr_dma_error_code.attr,
 	&dev_attr_render_commands.attr,
@@ -1972,6 +2105,10 @@ static int tgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 	if (!object)
 		return -ENOMEM;
 	object->base.funcs = &tgx_host_object_funcs;
+	object->width = args->width;
+	object->height = args->height;
+	object->pitch = pitch;
+	object->cpp = args->bpp / 8;
 	ret = drm_gem_object_init(drm, &object->base, size);
 	if (ret) {
 		kfree(object);
@@ -2572,6 +2709,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM, tgx_ioctl_submit_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM2, tgx_ioctl_submit_gem2,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_UPLOAD_GEM, tgx_ioctl_upload_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 

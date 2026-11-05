@@ -115,6 +115,12 @@ DMA対応FPGAでは、既定の全面更新にcoherent staging bufferからPCIe 
 `dma_uploads`と`dma_upload_failures`で成功・失敗回数を確認でき、DMAが失敗した場合は
 従来の64-bit BAR2書込みへフォールバックします。部分更新は損傷矩形だけをBAR2へ
 転送するため、不要な全画面DMAは行いません。
+`DRM_IOCTL_TARUGX_UPLOAD_GEM`は、16bppのDMA-coherent host dumb GEMから
+VRAM GEMへ、4byte整列したRGB565部分矩形を転送します。source/destination handleの型、
+座標、pitch、範囲はkernelで検証し、全幅転送は複数行をまとめ、部分幅は行単位でDMA
+します。render queue、KMS、DMAとは同じロック順で直列化します。実行回数とbyte数は
+`partial_dma_profile`で確認できます。2026-11-05の実機試験では32×16矩形の全画素
+読戻し、非整列幅と誤handle型の拒否、既存DRM全回帰を確認しました。
 
 2D fill/blitは`drivers/tarugx/tarugx_drm.h`のprivate DRM ioctlから利用できます。
 画面座標を対象にするfill/blit/submitはprimary nodeのDRM masterだけに許可します。

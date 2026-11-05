@@ -28,6 +28,8 @@ _Static_assert(sizeof(struct drm_tarugx_submit_gem2) == 232,
                "submit GEM2 ABI size changed");
 _Static_assert(offsetof(struct drm_tarugx_submit_gem2, commands) == 40,
                "submit GEM2 command offset changed");
+_Static_assert(sizeof(struct drm_tarugx_upload_gem) == 48,
+               "upload GEM ABI size changed");
 
 static int close_handle(int fd, uint32_t handle)
 {
@@ -93,6 +95,15 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_vram_create foreign_front = {
         .width = 1920, .height = 1080, .flags = DRM_TARUGX_VRAM_FRONT,
+    };
+    struct drm_mode_create_dumb upload_source = {
+        .width = 64, .height = 32, .bpp = 16,
+    };
+    struct drm_mode_map_dumb upload_map_args;
+    struct drm_tarugx_upload_gem upload = {
+        .source_x = 4, .source_y = 2,
+        .destination_x = 100, .destination_y = 80,
+        .width = 32, .height = 16,
     };
     struct drm_tarugx_vram_create other_vram = { .width = 32, .height = 32 };
     struct drm_tarugx_vram_create too_large = {
@@ -160,6 +171,8 @@ int main(int argc, char **argv)
     struct drm_tarugx_submit_gem2 invalid_dependency;
     struct drm_tarugx_submit_gem2 overflow_batch;
     volatile uint32_t *vram_map;
+    volatile uint16_t *vram_pixels;
+    uint16_t *upload_pixels;
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
     uint32_t timeline_syncobj = 0;
@@ -229,6 +242,103 @@ int main(int argc, char **argv)
         close_handle(fd, front_vram.handle);
         goto out_other;
     }
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &upload_source)) {
+        perror("create partial-DMA source GEM");
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    upload_map_args = (struct drm_mode_map_dumb) {
+        .handle = upload_source.handle,
+    };
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &upload_map_args)) {
+        perror("map partial-DMA source GEM");
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    upload_pixels = mmap(NULL, upload_source.size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, (off_t)upload_map_args.offset);
+    if (upload_pixels == MAP_FAILED) {
+        perror("mmap partial-DMA source GEM");
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    for (uint32_t y = 0; y < upload_source.height; y++)
+        for (uint32_t x = 0; x < upload_source.width; x++)
+            upload_pixels[y * (upload_source.pitch / 2) + x] =
+                (uint16_t)(0x4000 + y * upload_source.width + x);
+    vram_pixels = (volatile uint16_t *)vram_map;
+    for (uint32_t y = 0; y < upload.height; y++)
+        for (uint32_t x = 0; x < upload.width; x++)
+            vram_pixels[(upload.destination_y + y) * 1920 +
+                        upload.destination_x + x] = 0;
+    __sync_synchronize();
+    upload.source_handle = upload_source.handle;
+    upload.destination_handle = front_vram.handle;
+    if (ioctl(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &upload)) {
+        perror("DRM_IOCTL_TARUGX_UPLOAD_GEM");
+        munmap(upload_pixels, upload_source.size);
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    for (uint32_t y = 0; y < upload.height; y++) {
+        for (uint32_t x = 0; x < upload.width; x++) {
+            uint16_t expected = (uint16_t)(0x4000 +
+                (upload.source_y + y) * upload_source.width +
+                upload.source_x + x);
+            uint16_t observed = vram_pixels[
+                (upload.destination_y + y) * 1920 +
+                upload.destination_x + x];
+
+            if (observed != expected) {
+                fprintf(stderr,
+                        "partial DMA mismatch at %u,%u: %#x != %#x\n",
+                        x, y, observed, expected);
+                munmap(upload_pixels, upload_source.size);
+                close_handle(fd, upload_source.handle);
+                munmap((void *)vram_map, front_vram.size);
+                close_handle(fd, front_vram.handle);
+                goto out_other;
+            }
+        }
+    }
+    {
+        struct drm_tarugx_upload_gem invalid_upload = upload;
+
+        invalid_upload.width = 31;
+        if (expect_errno(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM,
+                         &invalid_upload, EINVAL)) {
+            munmap(upload_pixels, upload_source.size);
+            close_handle(fd, upload_source.handle);
+            munmap((void *)vram_map, front_vram.size);
+            close_handle(fd, front_vram.handle);
+            goto out_other;
+        }
+        invalid_upload = upload;
+        invalid_upload.destination_handle = upload_source.handle;
+        if (expect_errno(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM,
+                         &invalid_upload, EINVAL)) {
+            munmap(upload_pixels, upload_source.size);
+            close_handle(fd, upload_source.handle);
+            munmap((void *)vram_map, front_vram.size);
+            close_handle(fd, front_vram.handle);
+            goto out_other;
+        }
+    }
+    munmap(upload_pixels, upload_source.size);
+    if (close_handle(fd, upload_source.handle)) {
+        perror("close partial-DMA source GEM");
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    puts("VRAM partial DMA PASS: aligned host GEM rectangle and validation");
     munmap((void *)vram_map, front_vram.size);
     if (close_handle(fd, front_vram.handle)) {
         perror("close front-buffer VRAM GEM");
