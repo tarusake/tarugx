@@ -212,6 +212,11 @@ OpenGL ESアニメーションを実行します。2026-11-05の1080p60実機で
 EGLクライアントCPU約3.4%、DMA／page flip各166回、全failure／timeout 0でした。
 テスト終了時は成功・失敗にかかわらずXorgデスクトップを自動復帰します。現時点の
 OpenGL ESはMesaのsoftware rendererであり、TaruGX固有の3D Mesa driverは未実装です。
+`tools/install_remote_mesa_shim.py`はMesaの標準`kms_swrast` entry pointをTaruGX名で
+公開する小さなDRI shimを実機へ導入します。これによりMesa loaderはTaruGX DRM上で
+OpenGL ES 3.2／llvmpipeのGL renderer初期化まで到達します。WestonのGL compositorは
+現在GBM front bufferのlockで`EGL_BAD_ALLOC`となるため、通常のWayland回帰は引き続き
+Pixman compositor上でEGLクライアントを動かします。
 ドライバー0.7以降は非同期`DRM_IOCTL_TARUGX_SUBMIT_GEM`の`out_syncobj`へ任意のbinary
 syncobj handleを指定できます。ドライバーは標準`dma_fence`を設定し、最終コマンドの
 完了MSIでsignalします。queue errorやdevice removalではerror付きでsignalします。
