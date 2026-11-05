@@ -21,6 +21,8 @@
 #include <fb.h>
 #include <micmap.h>
 #include <mipointer.h>
+#include <regionstr.h>
+#include <windowstr.h>
 #include <exa.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -57,11 +59,15 @@ typedef struct {
     drmModeCrtcPtr saved_crtc;
     ExaDriverPtr exa;
     CloseScreenProcPtr close_screen;
+    CopyWindowProcPtr copy_window;
     Pixel solid_color;
     uint64_t solid_count;
     uint64_t copy_count;
     uint64_t upload_count;
     uint64_t fallback_count;
+    uint64_t access_scan_count;
+    uint64_t access_dirty_pages;
+    uint64_t bar_bytes_written;
     uint64_t submit_failures;
     int last_submit_errno;
 } TaruGXRec, *TaruGXPtr;
@@ -90,6 +96,24 @@ static int tarugx_submit(TaruGXPtr tgx, struct drm_tarugx_command *command)
     };
 
     submit.commands[0] = *command;
+    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
+        tgx->submit_failures++;
+        tgx->last_submit_errno = errno;
+        return -1;
+    }
+    return 0;
+}
+
+static int tarugx_submit_batch(TaruGXPtr tgx,
+                               struct drm_tarugx_command *commands,
+                               uint32_t count)
+{
+    struct drm_tarugx_submit_gem submit = {
+        .handle = tgx->handle,
+        .count = count,
+    };
+
+    memcpy(submit.commands, commands, count * sizeof(*commands));
     if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
         tgx->submit_failures++;
         tgx->last_submit_errno = errno;
@@ -232,6 +256,93 @@ static void tarugx_done_copy(PixmapPtr pixmap)
     (void)pixmap;
 }
 
+static void tarugx_copy_window(WindowPtr window, DDXPointRec old_origin,
+                               RegionPtr source_region)
+{
+    ScreenPtr screen = window->drawable.pScreen;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    TaruGXPtr tgx = TARUGXPTR(scrn);
+    struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
+    RegionRec destination;
+    BoxPtr boxes;
+    int order[DRM_TARUGX_MAX_COMMANDS];
+    int dx = old_origin.x - window->drawable.x;
+    int dy = old_origin.y - window->drawable.y;
+    int count;
+
+    RegionNull(&destination);
+    RegionCopy(&destination, source_region);
+    RegionTranslate(&destination, -dx, -dy);
+    RegionIntersect(&destination, &destination, &window->borderClip);
+    count = RegionNumRects(&destination);
+    boxes = RegionRects(&destination);
+    if (count <= 0 || count > DRM_TARUGX_MAX_COMMANDS)
+        goto fallback;
+
+    for (int index = 0; index < count; index++) {
+        int position = index;
+
+        order[index] = index;
+        while (position > 0) {
+            BoxPtr current = &boxes[order[position]];
+            BoxPtr previous = &boxes[order[position - 1]];
+            Bool before;
+
+            if (current->y1 != previous->y1)
+                before = dy < 0 ? current->y1 > previous->y1 :
+                                  current->y1 < previous->y1;
+            else
+                before = dx < 0 ? current->x1 > previous->x1 :
+                                  current->x1 < previous->x1;
+            if (!before)
+                break;
+            order[position] = order[position - 1];
+            order[position - 1] = index;
+            position--;
+        }
+    }
+
+    for (int output = 0; output < count; output++) {
+        BoxPtr box = &boxes[order[output]];
+        int width = box->x2 - box->x1;
+        int height = box->y2 - box->y1;
+        int source_x = box->x1 + dx;
+        int source_y = box->y1 + dy;
+
+        if (width <= 0 || height <= 0 || box->x1 < 0 || box->y1 < 0 ||
+            box->x2 > TARUGX_WIDTH || box->y2 > TARUGX_HEIGHT ||
+            source_x < 0 || source_y < 0 ||
+            source_x + width > TARUGX_WIDTH ||
+            source_y + height > TARUGX_HEIGHT)
+            goto fallback;
+        commands[output] = (struct drm_tarugx_command) {
+            .opcode = DRM_TARUGX_OP_BLIT,
+            .src_x = source_x,
+            .src_y = source_y,
+            .dst_x = box->x1,
+            .dst_y = box->y1,
+            .width = width,
+            .height = height,
+        };
+    }
+    if (tarugx_submit_batch(tgx, commands, count))
+        goto fallback;
+    for (int command = 0; command < count; command++) {
+        struct drm_tarugx_command *copy = &commands[command];
+
+        tarugx_shadow_copy(tgx, copy->src_x, copy->src_y,
+                           copy->dst_x, copy->dst_y,
+                           copy->width, copy->height);
+    }
+    tgx->copy_count += count;
+    RegionUninit(&destination);
+    return;
+
+fallback:
+    RegionUninit(&destination);
+    tgx->copy_window(window, old_origin, source_region);
+}
+
 static Bool tarugx_prepare_access(PixmapPtr pixmap, int index)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(pixmap->drawable.pScreen);
@@ -258,23 +369,55 @@ static void tarugx_finish_access(PixmapPtr pixmap, int index)
     ScrnInfoPtr scrn = xf86ScreenToScrn(pixmap->drawable.pScreen);
     TaruGXPtr tgx = TARUGXPTR(scrn);
 
-    (void)index;
     __sync_synchronize();
     if (exaDrawableIsOffscreen(&pixmap->drawable) &&
-        tarugx_pixmap_is_front(pixmap)) {
+        tarugx_pixmap_is_front(pixmap) &&
+        (index == EXA_PREPARE_DEST || index == EXA_PREPARE_AUX_DEST)) {
         volatile uint32_t *vram = (volatile uint32_t *)tgx->map;
         uint32_t *shadow = (uint32_t *)tgx->shadow;
         uint32_t *synced = (uint32_t *)tgx->shadow_synced;
-        size_t words = TARUGX_FRAME_BYTES / sizeof(uint32_t);
+        const size_t page_bytes = 4096;
 
-        for (size_t word = 0; word < words; word++) {
-            if (shadow[word] != synced[word]) {
-                vram[word] = shadow[word];
-                synced[word] = shadow[word];
+        tgx->access_scan_count++;
+        for (size_t offset = 0; offset < TARUGX_FRAME_BYTES;
+             offset += page_bytes) {
+            size_t bytes = TARUGX_FRAME_BYTES - offset;
+            size_t first_word = offset / sizeof(uint32_t);
+            size_t words;
+
+            if (bytes > page_bytes)
+                bytes = page_bytes;
+            if (!memcmp(tgx->shadow + offset,
+                        tgx->shadow_synced + offset, bytes))
+                continue;
+            tgx->access_dirty_pages++;
+            words = bytes / sizeof(uint32_t);
+            for (size_t word = 0; word < words;) {
+                size_t index = first_word + word;
+
+                if (!(index & 1) && word + 1 < words &&
+                    shadow[index] != synced[index] &&
+                    shadow[index + 1] != synced[index + 1]) {
+                    uint64_t pixels;
+
+                    memcpy(&pixels, &shadow[index], sizeof(pixels));
+                    *(volatile uint64_t *)&vram[index] = pixels;
+                    synced[index] = shadow[index];
+                    synced[index + 1] = shadow[index + 1];
+                    tgx->bar_bytes_written += sizeof(pixels);
+                    word += 2;
+                    continue;
+                }
+                if (shadow[index] != synced[index]) {
+                    vram[index] = shadow[index];
+                    synced[index] = shadow[index];
+                    tgx->bar_bytes_written += sizeof(*vram);
+                }
+                word++;
             }
         }
         __sync_synchronize();
-        (void)vram[words - 1];
+        (void)vram[TARUGX_FRAME_BYTES / sizeof(uint32_t) - 1];
     }
 }
 
@@ -303,18 +446,22 @@ static Bool tarugx_upload_to_screen(PixmapPtr destination, int x, int y,
              (y + row) * destination_pitch + x * 2);
         int column = 0;
 
-        if (((uintptr_t)dst & 3) && width) {
+        while (((uintptr_t)&dst[column] & 7) && column < width) {
             uint16_t pixel;
-            memcpy(&pixel, src, sizeof(pixel));
-            dst[column++] = pixel;
+
+            memcpy(&pixel, src + column * 2, sizeof(pixel));
+            dst[column] = pixel;
+            column++;
         }
-        for (; column + 1 < width; column += 2) {
-            uint32_t pixels;
+        for (; column + 3 < width; column += 4) {
+            uint64_t pixels;
+
             memcpy(&pixels, src + column * 2, sizeof(pixels));
-            *(volatile uint32_t *)&dst[column] = pixels;
+            *(volatile uint64_t *)&dst[column] = pixels;
         }
-        if (column < width) {
+        for (; column < width; column++) {
             uint16_t pixel;
+
             memcpy(&pixel, src + column * 2, sizeof(pixel));
             dst[column] = pixel;
         }
@@ -328,6 +475,7 @@ static Bool tarugx_upload_to_screen(PixmapPtr destination, int x, int y,
         }
     }
     __sync_synchronize();
+    tgx->bar_bytes_written += (uint64_t)width * height * 2;
     tgx->upload_count++;
     return TRUE;
 }
@@ -546,6 +694,8 @@ static Bool tarugx_screen_init(ScreenPtr screen, int argc, char **argv)
     tgx->exa->UploadToScreen = tarugx_upload_to_screen;
     if (!exaDriverInit(screen, tgx->exa))
         return FALSE;
+    tgx->copy_window = screen->CopyWindow;
+    screen->CopyWindow = tarugx_copy_window;
     tgx->close_screen = screen->CloseScreen;
     screen->CloseScreen = tarugx_close_screen;
     scrn->vtSema = TRUE;
@@ -562,13 +712,19 @@ static Bool tarugx_close_screen(ScreenPtr screen)
 
     xf86DrvMsg(scrn->scrnIndex, X_INFO,
                "EXA totals: solid=%llu copy=%llu upload=%llu fallback=%llu "
+               "access_scans=%llu dirty_pages=%llu bar_bytes=%llu "
                "submit_failures=%llu last_errno=%d\n",
                (unsigned long long)tgx->solid_count,
                (unsigned long long)tgx->copy_count,
                (unsigned long long)tgx->upload_count,
                (unsigned long long)tgx->fallback_count,
+               (unsigned long long)tgx->access_scan_count,
+               (unsigned long long)tgx->access_dirty_pages,
+               (unsigned long long)tgx->bar_bytes_written,
                (unsigned long long)tgx->submit_failures,
                tgx->last_submit_errno);
+    if (tgx->exa)
+        screen->CopyWindow = tgx->copy_window;
     if (tgx->exa)
         exaDriverFini(screen);
     tgx->exa = NULL;
