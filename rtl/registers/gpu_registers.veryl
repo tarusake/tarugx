@@ -55,7 +55,7 @@ module gpu_registers #(
     blit_start     : output logic     ,
     triangle_command: output logic<272>,
     triangle_start : output logic     ,
-    queue_command  : output logic<194>,
+    queue_command  : output logic<306>,
     queue_submit   : output logic     ,
     queue_clear_error: output logic   ,
     dma_host_address: output logic<64>,
@@ -236,7 +236,7 @@ module gpu_registers #(
             triangle_done_sticky = 1'b0;
             triangle_error_sticky = 1'b0;
             queue_fence       = 32'b0;
-            queue_command     = 194'b0;
+            queue_command     = 306'b0;
             queue_pending     = 1'b0;
             queue_overflow    = 1'b0;
             queue_clear_error = 1'b0;
@@ -309,8 +309,10 @@ module gpu_registers #(
                     14'h0029: if req_wstrb[0] && (req_wdata[1:0] != 0) {
                         if !queue_pending || queue_ready {
                             queue_command = if req_wdata[1:0] == 2'd1
-                                ? {32'b0, fill_command, queue_fence, 2'd1}
-                                : {blit_command, queue_fence, req_wdata[1:0]};
+                                ? {144'b0, fill_command, queue_fence, 2'd1}
+                                : if req_wdata[1:0] == 2'd2
+                                ? {112'b0, blit_command, queue_fence, 2'd2}
+                                : {triangle_command, queue_fence, req_wdata[1:0]};
                             queue_pending = 1'b1;
                         } else {
                             queue_overflow = 1'b1;

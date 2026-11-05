@@ -6,7 +6,7 @@
 /// may be active while four more wait, allowing software to submit work
 /// without waiting for each render operation to finish.
 module render_command_queue #(
-    param WIDTH: u32 = 194,
+    param WIDTH: u32 = 306,
 ) (
     clk             : input  clock       ,
     rst_n           : input  reset       ,

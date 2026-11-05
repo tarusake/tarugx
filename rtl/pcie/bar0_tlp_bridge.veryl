@@ -64,7 +64,7 @@ module bar0_tlp_bridge #(
     blit_start     : output logic     ,
     triangle_command: output logic<272>,
     triangle_start : output logic     ,
-    queue_command  : output logic<194>,
+    queue_command  : output logic<306>,
     queue_submit   : output logic     ,
     queue_clear_error: output logic   ,
     dma_host_address: output logic<64>,

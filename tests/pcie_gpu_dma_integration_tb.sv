@@ -25,7 +25,7 @@ module pcie_gpu_dma_integration_tb;
   logic queue_submit, queue_clear_error;
   logic [2:0] queue_level = 0;
   logic [31:0] queue_completed = 0, queue_error_fence = 0;
-  logic [193:0] queue_command;
+  logic [305:0] queue_command;
   logic [31:0] display_ctrl, display_color, display_mode, fb_base, fb_stride;
   logic [31:0] active_fb_base = 0;
   logic fb_req_valid, fb_req_ready = 0, fb_req_write;

@@ -16,7 +16,7 @@ module pcie_gpu_path_tb;
  logic [31:0] triangle_writes=0;logic [271:0] triangle_command;
  logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;
  logic [2:0] queue_level=0;logic [31:0] queue_completed=0,queue_error_fence=0;
- logic [193:0] queue_command;
+ logic [305:0] queue_command;
  logic [31:0] display_ctrl,display_color,display_mode,fb_base,fb_stride;
  logic fb_req_valid,fb_req_ready=0,fb_req_write,fb_rsp_valid=0,fb_rsp_ready,fb_rsp_error=0;
  logic [31:0] fb_req_addr,fb_rsp_rdata=0; logic [255:0] fb_req_wdata; logic [31:0] fb_req_wstrb;
