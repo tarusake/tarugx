@@ -28,17 +28,23 @@ module triangle_rasterizer (
     fragment_y     : output logic<16>        ,
     fragment_color : output logic<32>        ,
 ) {
-    enum State: logic<4> {
+    enum State: logic<5> {
         Idle,
         AreaFirst,
         AreaSecond,
-        Bounds,
+        AreaResolve,
+        BoundsCapture,
+        BoundsCheck,
+        BoundsClip,
         Edge0First,
         Edge0Second,
+        Edge0Resolve,
         Edge1First,
         Edge1Second,
+        Edge1Resolve,
         Edge2First,
         Edge2Second,
+        Edge2Resolve,
         Evaluate,
         Present,
         Advance,
@@ -67,6 +73,11 @@ module triangle_rasterizer (
     var row_edge1: signed logic<50>;
     var row_edge2: signed logic<50>;
     var product_first: signed logic<50>;
+    var product_second: signed logic<50>;
+    var bound_minimum_x: signed logic<24>;
+    var bound_minimum_y: signed logic<24>;
+    var bound_maximum_x: signed logic<24>;
+    var bound_maximum_y: signed logic<24>;
 
     let ab_x: signed logic<25> = {ax[23], ax} - {bx[23], bx};
     let ab_y: signed logic<25> = {ay[23], ay} - {by[23], by};
@@ -97,10 +108,12 @@ module triangle_rasterizer (
         if by >: maximum_y { maximum_y = by; }
         if cy >: maximum_y { maximum_y = cy; }
     }
-    let maximum_x_ceil: signed logic<25> = {maximum_x[23], maximum_x} + 25'sd255;
-    let maximum_y_ceil: signed logic<25> = {maximum_y[23], maximum_y} + 25'sd255;
-    let minimum_x_extended: signed logic<25> = {minimum_x[23], minimum_x};
-    let minimum_y_extended: signed logic<25> = {minimum_y[23], minimum_y};
+    let maximum_x_ceil: signed logic<25> =
+        {bound_maximum_x[23], bound_maximum_x} + 25'sd255;
+    let maximum_y_ceil: signed logic<25> =
+        {bound_maximum_y[23], bound_maximum_y} + 25'sd255;
+    let minimum_x_extended: signed logic<25> = {bound_minimum_x[23], bound_minimum_x};
+    let minimum_y_extended: signed logic<25> = {bound_minimum_y[23], bound_minimum_y};
     let target_x_fixed: signed logic<25> = {1'b0, target_width, 8'b0};
     let target_y_fixed: signed logic<25> = {1'b0, target_height, 8'b0};
 
@@ -164,7 +177,7 @@ module triangle_rasterizer (
         }
     }
     let multiply_result: signed logic<50> = multiply_left * multiply_right;
-    let cross_result: signed logic<50> = product_first - multiply_result;
+    let cross_result: signed logic<50> = product_first - product_second;
     let edge0_step_x: signed logic<50> = -(a_to_b_y * 50'sd256);
     let edge1_step_x: signed logic<50> = -(b_to_c_y * 50'sd256);
     let edge2_step_x: signed logic<50> = -(c_to_a_y * 50'sd256);
@@ -213,6 +226,11 @@ module triangle_rasterizer (
             row_edge1     = 0;
             row_edge2     = 0;
             product_first = 0;
+            product_second = 0;
+            bound_minimum_x = 0;
+            bound_minimum_y = 0;
+            bound_maximum_x = 0;
+            bound_maximum_y = 0;
             done          = 0;
             error         = 0;
         } else if abort {
@@ -248,6 +266,10 @@ module triangle_rasterizer (
                     }
                 }
                 State::AreaSecond: {
+                    product_second = multiply_result;
+                    state = State::AreaResolve;
+                }
+                State::AreaResolve: {
                     if cross_result == 0 {
                         state = State::Finish;
                     } else {
@@ -257,50 +279,70 @@ module triangle_rasterizer (
                             cx = cmd_x1;
                             cy = cmd_y1;
                         }
-                        state = State::Bounds;
+                        state = State::BoundsCapture;
                     }
                 }
-                State::Bounds: {
-                    if (maximum_x <= 0)
-                        || (maximum_y <= 0)
+                State::BoundsCapture: {
+                    bound_minimum_x = minimum_x;
+                    bound_minimum_y = minimum_y;
+                    bound_maximum_x = maximum_x;
+                    bound_maximum_y = maximum_y;
+                    state = State::BoundsCheck;
+                }
+                State::BoundsCheck: {
+                    if (bound_maximum_x <= 0)
+                        || (bound_maximum_y <= 0)
                         || (minimum_x_extended >= target_x_fixed)
                         || (minimum_y_extended >= target_y_fixed) {
                         state = State::Finish;
                     } else {
-                        start_x = if minimum_x <: 0 ? 0 : minimum_x[23:8];
-                        start_y = if minimum_y <: 0 ? 0 : minimum_y[23:8];
+                        state = State::BoundsClip;
+                    }
+                }
+                State::BoundsClip: {
+                        start_x = if bound_minimum_x <: 0 ? 0 : bound_minimum_x[23:8];
+                        start_y = if bound_minimum_y <: 0 ? 0 : bound_minimum_y[23:8];
                         end_x = if maximum_x_ceil >: target_x_fixed ?
                             target_width : maximum_x_ceil[23:8];
                         end_y = if maximum_y_ceil >: target_y_fixed ?
                             target_height : maximum_y_ceil[23:8];
                         state = State::Edge0First;
-                    }
                 }
                 State::Edge0First: {
                     product_first = multiply_result;
                     state = State::Edge0Second;
                 }
                 State::Edge0Second: {
-                    edge0         = cross_result;
-                    row_edge0     = cross_result;
-                    product_first = multiply_result;
-                    state         = State::Edge1First;
+                    product_second = multiply_result;
+                    state = State::Edge0Resolve;
+                }
+                State::Edge0Resolve: {
+                    edge0     = cross_result;
+                    row_edge0 = cross_result;
+                    state     = State::Edge1First;
                 }
                 State::Edge1First: {
                     product_first = multiply_result;
                     state = State::Edge1Second;
                 }
                 State::Edge1Second: {
-                    edge1         = cross_result;
-                    row_edge1     = cross_result;
-                    product_first = multiply_result;
-                    state         = State::Edge2First;
+                    product_second = multiply_result;
+                    state = State::Edge1Resolve;
+                }
+                State::Edge1Resolve: {
+                    edge1     = cross_result;
+                    row_edge1 = cross_result;
+                    state     = State::Edge2First;
                 }
                 State::Edge2First: {
                     product_first = multiply_result;
                     state = State::Edge2Second;
                 }
                 State::Edge2Second: {
+                    product_second = multiply_result;
+                    state = State::Edge2Resolve;
+                }
+                State::Edge2Resolve: {
                     current_x = start_x;
                     current_y = start_y;
                     edge2     = cross_result;
