@@ -161,6 +161,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire fill_start, fill_busy, fill_done, fill_error;
     wire [159:0] blit_command;
     wire blit_start, blit_busy, blit_done, blit_error;
+    wire [271:0] triangle_command;
+    wire triangle_start, triangle_busy, triangle_done, triangle_error;
+    wire [31:0] triangle_writes;
     wire [193:0] queue_command;
     wire queue_submit, queue_ready, queue_active, queue_error, queue_clear_error;
     wire render_irq_event;
@@ -217,6 +220,9 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .fill_command(fill_command), .fill_start(fill_start),
         .blit_busy(blit_busy), .blit_done(blit_done), .blit_error(blit_error),
         .blit_command(blit_command), .blit_start(blit_start),
+        .triangle_busy(triangle_busy), .triangle_done(triangle_done),
+        .triangle_error(triangle_error), .triangle_writes(triangle_writes),
+        .triangle_command(triangle_command), .triangle_start(triangle_start),
         .queue_ready(queue_ready), .queue_level(queue_level), .queue_active(queue_active),
         .queue_completed(queue_completed), .queue_error(queue_error),
         .queue_error_fence(queue_error_fence), .queue_command(queue_command),
@@ -310,6 +316,14 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     wire [23:0] blit_mem_addr;
     wire [255:0] blit_mem_wdata, blit_mem_rsp_data;
     wire [31:0] blit_mem_wstrb;
+    wire triangle_cmd_valid, triangle_cmd_ready, triangle_engine_done, triangle_engine_error;
+    wire [271:0] triangle_mem_command;
+    wire triangle_mem_valid, triangle_mem_ready;
+    wire triangle_mem_rsp_valid, triangle_mem_rsp_ready, triangle_mem_rsp_error;
+    wire [23:0] triangle_mem_addr;
+    wire [255:0] triangle_mem_wdata;
+    wire [31:0] triangle_mem_wstrb, triangle_engine_writes;
+    reg [31:0] triangle_writes_meta, triangle_writes_sync;
     tarugx_fill_command_cdc u_fill_cdc (
         .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
         .src_valid(fill_start || queued_fill_start), .src_ready(fill_cdc_ready),
@@ -364,11 +378,48 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .mem_rsp_valid(blit_mem_rsp_valid), .mem_rsp_ready(blit_mem_rsp_ready),
         .mem_rsp_data(blit_mem_rsp_data), .mem_rsp_error(blit_mem_rsp_error)
     );
+    tarugx_render_command_cdc #(.WIDTH(272)) u_triangle_cdc (
+        .src_clk(tlp_clk), .src_rst_n(cpu_reset[1]),
+        .src_valid(triangle_start), .src_ready(), .src_command(triangle_command),
+        .src_busy(triangle_busy), .src_done(triangle_done), .src_error(triangle_error),
+        .dst_clk(ui_clk), .dst_rst_n(mem_reset[1]),
+        .dst_valid(triangle_cmd_valid), .dst_ready(triangle_cmd_ready),
+        .dst_command(triangle_mem_command),
+        .dst_done(triangle_engine_done), .dst_error(triangle_engine_error)
+    );
+    tarugx_triangle_engine u_triangle_engine (
+        .clk(ui_clk), .rst_n(mem_reset[1]),
+        .cmd_valid(triangle_cmd_valid), .cmd_ready(triangle_cmd_ready),
+        .cmd_base(triangle_mem_command[31:0]), .cmd_stride(triangle_mem_command[63:32]),
+        .cmd_width(triangle_mem_command[79:64]), .cmd_height(triangle_mem_command[95:80]),
+        .cmd_x0(triangle_mem_command[119:96]), .cmd_y0(triangle_mem_command[143:120]),
+        .cmd_x1(triangle_mem_command[167:144]), .cmd_y1(triangle_mem_command[191:168]),
+        .cmd_x2(triangle_mem_command[215:192]), .cmd_y2(triangle_mem_command[239:216]),
+        .cmd_color(triangle_mem_command[271:240]),
+        .busy(), .done(triangle_engine_done), .error(triangle_engine_error),
+        .writes(triangle_engine_writes),
+        .mem_valid(triangle_mem_valid), .mem_ready(triangle_mem_ready),
+        .mem_addr(triangle_mem_addr), .mem_wdata(triangle_mem_wdata),
+        .mem_wstrb(triangle_mem_wstrb), .mem_rsp_valid(triangle_mem_rsp_valid),
+        .mem_rsp_ready(triangle_mem_rsp_ready), .mem_rsp_error(triangle_mem_rsp_error)
+    );
+    always @(posedge tlp_clk or negedge cpu_reset[1]) begin
+        if (!cpu_reset[1]) begin
+            triangle_writes_meta <= 32'b0;
+            triangle_writes_sync <= 32'b0;
+        end else begin
+            triangle_writes_meta <= triangle_engine_writes;
+            triangle_writes_sync <= triangle_writes_meta;
+        end
+    end
+    assign triangle_writes = triangle_writes_sync;
     localparam PIPELINED_MEMORY=1;
     tarugx_framebuffer_memory_pipeline u_memory_path (
 `else
     assign fill_busy=1'b0, fill_done=fill_start, fill_error=fill_start;
     assign blit_busy=1'b0, blit_done=blit_start, blit_error=blit_start;
+    assign triangle_busy=1'b0, triangle_done=triangle_start, triangle_error=triangle_start;
+    assign triangle_writes=32'b0;
     assign queue_ready=1'b0, queue_level=3'b0, queue_active=1'b0;
     assign queue_completed=32'b0, queue_error=1'b0, queue_error_fence=32'b0;
     assign render_irq_event=1'b0;
@@ -397,6 +448,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .blit_addr(blit_mem_addr), .blit_wdata(blit_mem_wdata), .blit_wstrb(blit_mem_wstrb),
         .blit_rsp_valid(blit_mem_rsp_valid), .blit_rsp_ready(blit_mem_rsp_ready),
         .blit_rsp_data(blit_mem_rsp_data), .blit_rsp_error(blit_mem_rsp_error),
+        .triangle_valid(triangle_mem_valid), .triangle_ready(triangle_mem_ready),
+        .triangle_addr(triangle_mem_addr), .triangle_wdata(triangle_mem_wdata),
+        .triangle_wstrb(triangle_mem_wstrb), .triangle_rsp_valid(triangle_mem_rsp_valid),
+        .triangle_rsp_ready(triangle_mem_rsp_ready), .triangle_rsp_error(triangle_mem_rsp_error),
 `endif
         .mem_valid(mem_valid),
         .mem_ready(mem_ready),

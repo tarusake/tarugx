@@ -39,6 +39,8 @@ module tarugx_top (
     var fill_start   : logic     ;
     var blit_command : logic<160>;
     var blit_start   : logic     ;
+    var triangle_command: logic<272>;
+    var triangle_start  : logic     ;
     var queue_command: logic<194>;
     var queue_submit : logic     ;
     var queue_clear_error: logic ;
@@ -72,6 +74,10 @@ module tarugx_top (
         blit_busy      : 1'b0     ,
         blit_done      : 1'b0     ,
         blit_error     : 1'b0     ,
+        triangle_busy  : 1'b0     ,
+        triangle_done  : 1'b0     ,
+        triangle_error : 1'b0     ,
+        triangle_writes: 32'b0    ,
         queue_ready    : 1'b0     ,
         queue_level    : 3'b0     ,
         queue_active   : 1'b0     ,
@@ -89,6 +95,8 @@ module tarugx_top (
         fill_start                ,
         blit_command              ,
         blit_start                ,
+        triangle_command          ,
+        triangle_start            ,
         queue_command             ,
         queue_submit              ,
         queue_clear_error         ,

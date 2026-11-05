@@ -11,6 +11,8 @@ module pcie_memory_pipeline_tb;
  logic active_buffer=0,vblank_toggle=0;logic [31:0] active_fb_base=0;logic [1:0] irq_enable;
  logic fill_busy,fill_done,fill_error,fill_start;logic [127:0] fill_command;
  logic blit_busy,blit_done,blit_error,blit_start;logic [159:0] blit_command;
+ logic triangle_busy,triangle_done,triangle_error,triangle_start;
+ logic [31:0] triangle_writes;logic [271:0] triangle_command;
  logic queue_ready,queue_active,queue_error,queue_submit,queue_clear_error;
  logic [2:0] queue_level;logic [31:0] queue_completed,queue_error_fence;
  logic [193:0] queue_command;
@@ -42,9 +44,9 @@ module pcie_memory_pipeline_tb;
  logic [23:0] fill_mem_addr=0;logic [255:0] fill_mem_wdata=0;logic [31:0] fill_mem_wstrb=0;
  logic blit_mem_valid,blit_mem_ready,blit_mem_write,blit_mem_rsp_valid,blit_mem_rsp_ready,blit_mem_rsp_error;
  logic [23:0] blit_mem_addr;logic [255:0] blit_mem_wdata,blit_mem_rsp_data;logic [31:0] blit_mem_wstrb;
- logic triangle_mem_valid=0,triangle_mem_ready,triangle_mem_rsp_valid,triangle_mem_rsp_ready=1;
- logic triangle_mem_rsp_error;logic [23:0] triangle_mem_addr=0;
- logic [255:0] triangle_mem_wdata=0;logic [31:0] triangle_mem_wstrb=0;
+ logic triangle_mem_valid,triangle_mem_ready,triangle_mem_rsp_valid,triangle_mem_rsp_ready;
+ logic triangle_mem_rsp_error;logic [23:0] triangle_mem_addr;
+ logic [255:0] triangle_mem_wdata;logic [31:0] triangle_mem_wstrb;
  logic mem_valid,mem_ready,mem_write,mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
  logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;logic [31:0] mem_wstrb;
  tarugx_framebuffer_memory_pipeline path(
@@ -101,6 +103,26 @@ module pcie_memory_pipeline_tb;
   .mem_addr(blit_mem_addr),.mem_wdata(blit_mem_wdata),.mem_wstrb(blit_mem_wstrb),
   .mem_rsp_valid(blit_mem_rsp_valid),.mem_rsp_ready(blit_mem_rsp_ready),
   .mem_rsp_data(blit_mem_rsp_data),.mem_rsp_error(blit_mem_rsp_error));
+ logic triangle_cmd_valid,triangle_cmd_ready,triangle_engine_done,triangle_engine_error;
+ logic [271:0] triangle_mem_command;
+ tarugx_render_command_cdc #(.WIDTH(272)) triangle_cdc(
+  .src_clk(clk),.src_rst_n(rst),.src_valid(triangle_start),.src_ready(),
+  .src_command(triangle_command),.src_busy(triangle_busy),.src_done(triangle_done),
+  .src_error(triangle_error),.dst_clk(mem_clk),.dst_rst_n(mem_rst_n),
+  .dst_valid(triangle_cmd_valid),.dst_ready(triangle_cmd_ready),.dst_command(triangle_mem_command),
+  .dst_done(triangle_engine_done),.dst_error(triangle_engine_error));
+ tarugx_triangle_engine triangle_engine(
+  .clk(mem_clk),.rst_n(mem_rst_n),.cmd_valid(triangle_cmd_valid),.cmd_ready(triangle_cmd_ready),
+  .cmd_base(triangle_mem_command[31:0]),.cmd_stride(triangle_mem_command[63:32]),
+  .cmd_width(triangle_mem_command[79:64]),.cmd_height(triangle_mem_command[95:80]),
+  .cmd_x0(triangle_mem_command[119:96]),.cmd_y0(triangle_mem_command[143:120]),
+  .cmd_x1(triangle_mem_command[167:144]),.cmd_y1(triangle_mem_command[191:168]),
+  .cmd_x2(triangle_mem_command[215:192]),.cmd_y2(triangle_mem_command[239:216]),
+  .cmd_color(triangle_mem_command[271:240]),.busy(),.done(triangle_engine_done),
+  .error(triangle_engine_error),.writes(triangle_writes),.mem_valid(triangle_mem_valid),
+  .mem_ready(triangle_mem_ready),.mem_addr(triangle_mem_addr),.mem_wdata(triangle_mem_wdata),
+  .mem_wstrb(triangle_mem_wstrb),.mem_rsp_valid(triangle_mem_rsp_valid),
+  .mem_rsp_ready(triangle_mem_rsp_ready),.mem_rsp_error(triangle_mem_rsp_error));
  byte unsigned memory[0:8191];int cycle=0,delay_count=0,scan_reads=0,writes=0;
  assign mem_ready=delay_count==0 && !mem_rsp_valid && cycle%5!=0;
  always @(posedge mem_clk) if(mem_rst_n) begin
@@ -229,8 +251,27 @@ module pcie_memory_pipeline_tb;
   end
   send(0,0,'h802000a8,0,15);completion(8);
   send(0,0,'h802000ac,0,15);completion(101);
+  // BAR0 triangle registers -> CDC -> fixed-point rasterizer -> RGB565 DDR writes.
+  send(1,0,'h80200100,4096,15);
+  send(1,0,'h80200104,32,15);
+  send(1,0,'h80200108,'h00040004,15);
+  send(1,0,'h8020010c,0,15);send(1,0,'h80200110,0,15);
+  send(1,0,'h80200114,1024,15);send(1,0,'h80200118,0,15);
+  send(1,0,'h8020011c,0,15);send(1,0,'h80200120,1024,15);
+  send(1,0,'h80200124,'h00ff0000,15);
+  send(1,0,'h80200128,1,15);
+  wait(triangle_done);tick();
+  assert(!triangle_error&&!triangle_busy&&triangle_writes==6)else $fatal(1,"triangle completion");
+  for(int y=0;y<4;y++)for(int x=0;x<4;x++) begin
+   int a=4096+y*32+x*2;
+   bit covered=(x+y)<3;
+   assert({memory[a+1],memory[a]}==(covered?16'hf800:16'h5a5a))
+    else $fatal(1,"triangle pixel x=%0d y=%0d",x,y);
+  end
+  send(0,0,'h8020012c,0,15);completion(2);
+  send(0,0,'h80200130,0,15);completion(6);
   assert(scan_reads>128 && !framing_error && !malformed && !unsupported) else $fatal(1,"fairness/error");
-  $display("PCIe + CDC + pipelined arbiter: BAR2, direct/queued fill+blit and fences PASS");$finish;
+  $display("PCIe + CDC + shared DDR: fill, blit, queue and triangle PASS");$finish;
  end
  initial begin #2000000;$fatal(1,"timeout");end
 endmodule

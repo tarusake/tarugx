@@ -22,6 +22,10 @@ module gpu_registers #(
     blit_busy      : input  logic     ,
     blit_done      : input  logic     ,
     blit_error     : input  logic     ,
+    triangle_busy  : input  logic     ,
+    triangle_done  : input  logic     ,
+    triangle_error : input  logic     ,
+    triangle_writes: input  logic<32> ,
     queue_ready    : input  logic     ,
     queue_level    : input  logic<3>  ,
     queue_active   : input  logic     ,
@@ -49,6 +53,8 @@ module gpu_registers #(
     fill_start     : output logic     ,
     blit_command   : output logic<160>,
     blit_start     : output logic     ,
+    triangle_command: output logic<272>,
+    triangle_start : output logic     ,
     queue_command  : output logic<194>,
     queue_submit   : output logic     ,
     queue_clear_error: output logic   ,
@@ -72,6 +78,18 @@ module gpu_registers #(
     var   blit_size        : logic<32>;
     var   blit_done_sticky : logic    ;
     var   blit_error_sticky: logic    ;
+    var   triangle_base       : logic<32>;
+    var   triangle_stride     : logic<32>;
+    var   triangle_size       : logic<32>;
+    var   triangle_x0         : logic<32>;
+    var   triangle_y0         : logic<32>;
+    var   triangle_x1         : logic<32>;
+    var   triangle_y1         : logic<32>;
+    var   triangle_x2         : logic<32>;
+    var   triangle_y2         : logic<32>;
+    var   triangle_color      : logic<32>;
+    var   triangle_done_sticky: logic    ;
+    var   triangle_error_sticky: logic   ;
     var   queue_fence       : logic<32>;
     var   queue_pending     : logic    ;
     var   queue_overflow    : logic    ;
@@ -81,6 +99,9 @@ module gpu_registers #(
 
     assign fill_command = {fill_color, fill_size, fill_stride, fill_addr};
     assign blit_command = {blit_size, blit_dst_stride, blit_src_stride, blit_dst, blit_src};
+    assign triangle_command = {triangle_color, triangle_y2[23:0], triangle_x2[23:0],
+        triangle_y1[23:0], triangle_x1[23:0], triangle_y0[23:0], triangle_x0[23:0],
+        triangle_size[31:16], triangle_size[15:0], triangle_stride, triangle_base};
 
     function merge_bytes (
         old_value: input logic<32>,
@@ -152,6 +173,20 @@ module gpu_registers #(
                 14'h003a: rsp_rdata = {28'b0, dma_error_code};
                 14'h003b: rsp_rdata = dma_profile[159:128];
                 14'h003c: rsp_rdata = dma_profile[191:160];
+                14'h0040: rsp_rdata = triangle_base;
+                14'h0041: rsp_rdata = triangle_stride;
+                14'h0042: rsp_rdata = triangle_size;
+                14'h0043: rsp_rdata = triangle_x0;
+                14'h0044: rsp_rdata = triangle_y0;
+                14'h0045: rsp_rdata = triangle_x1;
+                14'h0046: rsp_rdata = triangle_y1;
+                14'h0047: rsp_rdata = triangle_x2;
+                14'h0048: rsp_rdata = triangle_y2;
+                14'h0049: rsp_rdata = triangle_color;
+                14'h004a: rsp_rdata = 32'b0;
+                14'h004b: rsp_rdata = {29'b0, triangle_error_sticky,
+                    triangle_done_sticky, triangle_busy};
+                14'h004c: rsp_rdata = triangle_writes;
                 default : {
                     rsp_rdata = 32'b0;
                     rsp_error = 1'b1;
@@ -187,6 +222,19 @@ module gpu_registers #(
             blit_start        = 1'b0;
             blit_done_sticky  = 1'b0;
             blit_error_sticky = 1'b0;
+            triangle_base       = 32'b0;
+            triangle_stride     = 32'b0;
+            triangle_size       = 32'b0;
+            triangle_x0         = 32'b0;
+            triangle_y0         = 32'b0;
+            triangle_x1         = 32'b0;
+            triangle_y1         = 32'b0;
+            triangle_x2         = 32'b0;
+            triangle_y2         = 32'b0;
+            triangle_color      = 32'b0;
+            triangle_start      = 1'b0;
+            triangle_done_sticky = 1'b0;
+            triangle_error_sticky = 1'b0;
             queue_fence       = 32'b0;
             queue_command     = 194'b0;
             queue_pending     = 1'b0;
@@ -203,6 +251,7 @@ module gpu_registers #(
             fb_commit_pulse = 1'b0;
             fill_start      = 1'b0;
             blit_start      = 1'b0;
+            triangle_start  = 1'b0;
             queue_clear_error = 1'b0;
             if queue_pending && queue_ready {
                 queue_pending = 1'b0;
@@ -217,6 +266,10 @@ module gpu_registers #(
             if blit_done {
                 blit_done_sticky  = 1'b1;
                 blit_error_sticky = blit_error;
+            }
+            if triangle_done {
+                triangle_done_sticky  = 1'b1;
+                triangle_error_sticky = triangle_error;
             }
             if dma_done {
                 dma_done_sticky  = 1'b1;
@@ -287,6 +340,21 @@ module gpu_registers #(
                     }
                     14'h0035: if req_wstrb[0] && req_wdata[3] {
                         dma_rejected = 1'b0;
+                    }
+                    14'h0040: triangle_base = merge_bytes(triangle_base, req_wdata, req_wstrb);
+                    14'h0041: triangle_stride = merge_bytes(triangle_stride, req_wdata, req_wstrb);
+                    14'h0042: triangle_size = merge_bytes(triangle_size, req_wdata, req_wstrb);
+                    14'h0043: triangle_x0 = merge_bytes(triangle_x0, req_wdata, req_wstrb);
+                    14'h0044: triangle_y0 = merge_bytes(triangle_y0, req_wdata, req_wstrb);
+                    14'h0045: triangle_x1 = merge_bytes(triangle_x1, req_wdata, req_wstrb);
+                    14'h0046: triangle_y1 = merge_bytes(triangle_y1, req_wdata, req_wstrb);
+                    14'h0047: triangle_x2 = merge_bytes(triangle_x2, req_wdata, req_wstrb);
+                    14'h0048: triangle_y2 = merge_bytes(triangle_y2, req_wdata, req_wstrb);
+                    14'h0049: triangle_color = merge_bytes(triangle_color, req_wdata, req_wstrb);
+                    14'h004a: if req_wstrb[0] && req_wdata[0] && !triangle_busy {
+                        triangle_start        = 1'b1;
+                        triangle_done_sticky  = 1'b0;
+                        triangle_error_sticky = 1'b0;
                     }
                     default : {}
                 }

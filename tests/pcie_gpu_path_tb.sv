@@ -12,6 +12,8 @@ module pcie_gpu_path_tb;
  logic [1:0] irq_enable;
  logic fill_busy=0,fill_done=0,fill_error=0,fill_start;logic [127:0] fill_command;
  logic blit_busy=0,blit_done=0,blit_error=0,blit_start;logic [159:0] blit_command;
+ logic triangle_busy=0,triangle_done=0,triangle_error=0,triangle_start;
+ logic [31:0] triangle_writes=0;logic [271:0] triangle_command;
  logic queue_ready=0,queue_active=0,queue_error=0,queue_submit,queue_clear_error;
  logic [2:0] queue_level=0;logic [31:0] queue_completed=0,queue_error_fence=0;
  logic [193:0] queue_command;
