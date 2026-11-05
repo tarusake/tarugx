@@ -2964,7 +2964,8 @@ static int tgx_scheduler_init(struct tarugx *tgx)
 	tgx->render_sched_list[0] = &tgx->render_sched;
 	ret = drm_sched_init(&tgx->render_sched, &tgx_sched_ops, NULL,
 			     DRM_SCHED_PRIORITY_COUNT, 1,
-			     0, msecs_to_jiffies(200), NULL, NULL,
+			     0, msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS),
+			     NULL, NULL,
 			     "tarugx-render", tgx->drm.dev);
 	if (ret)
 		return ret;
