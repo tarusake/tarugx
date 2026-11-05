@@ -173,47 +173,6 @@ static void tarugx_shadow_copy(TaruGXPtr tgx, int src_x, int src_y,
                            width, height);
 }
 
-static void tarugx_cpu_overlap_copy(TaruGXPtr tgx,
-                                    int src_x, int src_y,
-                                    int dst_x, int dst_y,
-                                    int width, int height)
-{
-    tarugx_shadow_copy_one(tgx->shadow, src_x, src_y, dst_x, dst_y,
-                           width, height);
-    for (int row = 0; row < height; row++) {
-        const uint8_t *source = tgx->shadow +
-            (dst_y + row) * TARUGX_PITCH + dst_x * 2;
-        uint8_t *synced = tgx->shadow_synced +
-            (dst_y + row) * TARUGX_PITCH + dst_x * 2;
-        volatile uint16_t *destination = (volatile uint16_t *)(
-            (uint8_t *)tgx->map +
-            (dst_y + row) * TARUGX_PITCH + dst_x * 2);
-        int column = 0;
-
-        while (column < width && ((uintptr_t)&destination[column] & 7)) {
-            uint16_t pixel;
-
-            memcpy(&pixel, source + column * 2, sizeof(pixel));
-            destination[column++] = pixel;
-        }
-        for (; column + 3 < width; column += 4) {
-            uint64_t pixels;
-
-            memcpy(&pixels, source + column * 2, sizeof(pixels));
-            *(volatile uint64_t *)&destination[column] = pixels;
-        }
-        for (; column < width; column++) {
-            uint16_t pixel;
-
-            memcpy(&pixel, source + column * 2, sizeof(pixel));
-            destination[column] = pixel;
-        }
-        memcpy(synced, source, (size_t)width * 2);
-    }
-    __sync_synchronize();
-    tgx->bar_bytes_written += (uint64_t)width * height * 2;
-}
-
 static Bool tarugx_prepare_solid(PixmapPtr pixmap, int alu,
                                  Pixel planemask, Pixel color)
 {
@@ -310,7 +269,6 @@ static void tarugx_copy_window(WindowPtr window, DDXPointRec old_origin,
     int dx = old_origin.x - window->drawable.x;
     int dy = old_origin.y - window->drawable.y;
     int count;
-    Bool overlap = FALSE;
 
     RegionNull(&destination);
     RegionCopy(&destination, source_region);
@@ -357,12 +315,6 @@ static void tarugx_copy_window(WindowPtr window, DDXPointRec old_origin,
             source_x + width > TARUGX_WIDTH ||
             source_y + height > TARUGX_HEIGHT)
             goto fallback;
-        /* The FPGA blitter currently walks a rectangle forward.  Overlap can
-         * overwrite source pixels before they are read, so leave overlapping
-         * window moves to fbCopyWindow. */
-        if (source_x < box->x2 && source_x + width > box->x1 &&
-            source_y < box->y2 && source_y + height > box->y1)
-            overlap = TRUE;
         commands[output] = (struct drm_tarugx_command) {
             .opcode = DRM_TARUGX_OP_BLIT,
             .src_x = source_x,
@@ -372,18 +324,6 @@ static void tarugx_copy_window(WindowPtr window, DDXPointRec old_origin,
             .width = width,
             .height = height,
         };
-    }
-    if (overlap) {
-        for (int output = 0; output < count; output++) {
-            struct drm_tarugx_command *copy = &commands[output];
-
-            tarugx_cpu_overlap_copy(tgx, copy->src_x, copy->src_y,
-                                    copy->dst_x, copy->dst_y,
-                                    copy->width, copy->height);
-        }
-        tgx->copy_count += count;
-        RegionUninit(&destination);
-        return;
     }
     if (tarugx_submit_batch(tgx, commands, count))
         goto fallback;
