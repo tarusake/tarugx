@@ -115,6 +115,9 @@ try:
     update_timings = dict(
         field.split('=', 1) for field in update_profile.split()
     )
+    conversion_timings = dict(
+        field.split('=', 1) for field in conversion_profile.split()
+    )
     pages_synced = int((device/'physical_pages_synced').read_text())
     assert counters['dma_uploads'] >= 131 * iterations, counters
     assert counters['dma_upload_failures'] == 0, counters
@@ -126,7 +129,11 @@ try:
     assert int(update_timings['update_ns']) > 0, update_timings
     assert int(update_timings['dma_ns']) > 0, update_timings
     if 'pitch=7680' in run.stdout:
-        assert int(update_timings['conversion_ns']) > 0, update_timings
+        # The fbdev client can regain the console immediately after the test
+        # closes DRM master and overwrite last_update with its native RGB565
+        # refresh.  Use the cumulative host conversion counters instead.
+        assert int(conversion_timings['host_count']) > 0, conversion_timings
+        assert int(conversion_timings['host_total_ns']) > 0, conversion_timings
     # The final active full-frame upload deliberately leaves the old physical
     # page stale, so the next partial update must reconstruct it.
     assert pages_synced == 0, pages_synced

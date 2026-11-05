@@ -23,6 +23,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
@@ -2825,7 +2826,14 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	drm_plane_enable_fb_damage_clips(&tgx->pipe.plane);
 	drm_mode_config_reset(drm);
-	return drm_dev_register(drm, 0);
+	ret = drm_dev_register(drm, 0);
+	if (ret)
+		return ret;
+
+	/* Establish the fixed scanout mode before userspace starts so the
+	 * initramfs Plymouth renderer can acquire a usable DRM head. */
+	drm_fbdev_generic_setup(drm, tgx->cpp * 8);
+	return 0;
 }
 
 static void tgx_stop_waiters(struct tarugx *tgx)
