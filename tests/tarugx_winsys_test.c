@@ -61,7 +61,10 @@ main(int argc, char **argv)
         fputs("TaruGX winsys fence wait failed\n", stderr);
         goto out_surface;
     }
-    puts("TaruGX Mesa winsys PASS: VRAM resource, fill/triangle submit and syncobj fence");
+    printf("TaruGX Mesa winsys PASS: gpu=%u.%u caps=0x%016llx; "
+           "VRAM resource, fill/triangle submit and syncobj fence\n",
+           winsys.gpu_version >> 16, winsys.gpu_version & 0xffff,
+           (unsigned long long)winsys.caps);
     result = 0;
 out_surface:
     tarugx_winsys_surface_destroy(&winsys, &surface);
