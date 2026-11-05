@@ -50,7 +50,7 @@ from pathlib import Path
 import subprocess
 import time
 
-host_dir = Path('/home/tarusake/tarugx-dev/host')
+host_dir = Path('/home/tarusake/tarugx-dev/host')  # public-check: allow
 config = host_dir/'xorg-tarugx.conf'
 accelerated = base64.b64decode({accelerated!r})
 baseline = base64.b64decode({baseline!r})
@@ -76,12 +76,15 @@ def ticks(pid):
     return int(values[11]) + int(values[12])
 
 def terminal_window():
-    result = run([*env, 'xdotool', 'search', '--sync', '--onlyvisible',
-                  '--class', 'xfce4-terminal'], timeout=15,
-                 capture_output=True).stdout.split()
-    if not result:
-        raise RuntimeError('Xfce terminal window was not found')
-    return result[-1]
+    for _ in range(30):
+        result = subprocess.run(
+            [*env, 'xdotool', 'search', '--onlyvisible',
+             '--class', 'xfce4-terminal'], timeout=5,
+            capture_output=True, text=True).stdout.split()
+        if result:
+            return result[-1]
+        time.sleep(0.5)
+    raise RuntimeError('Xfce terminal window was not found after 15 seconds')
 
 def window_workload(window):
     commands = ['xdotool', 'windowactivate', '--sync', window,
