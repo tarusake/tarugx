@@ -19,6 +19,11 @@ module triangle_rasterizer (
     cmd_width      : input  logic<16>        ,
     cmd_height     : input  logic<16>        ,
     cmd_color      : input  logic<32>        ,
+    // RGB is evaluated at the first clipped bounding-box sample.  Each
+    // gradient packs signed 9.7 d/dx in [15:0] and d/dy in [31:16].
+    cmd_gradient_r : input  logic<32>        ,
+    cmd_gradient_g : input  logic<32>        ,
+    cmd_gradient_b : input  logic<32>        ,
     busy           : output logic            ,
     done           : output logic            ,
     error          : output logic            ,
@@ -67,6 +72,18 @@ module triangle_rasterizer (
     var target_width : logic<16>;
     var target_height: logic<16>;
     var color: logic<32>;
+    var gradient_r_x: signed logic<16>;
+    var gradient_r_y: signed logic<16>;
+    var gradient_g_x: signed logic<16>;
+    var gradient_g_y: signed logic<16>;
+    var gradient_b_x: signed logic<16>;
+    var gradient_b_y: signed logic<16>;
+    var row_r: signed logic<24>;
+    var row_g: signed logic<24>;
+    var row_b: signed logic<24>;
+    var current_r: signed logic<24>;
+    var current_g: signed logic<24>;
+    var current_b: signed logic<24>;
     var start_x: logic<16>;
     var start_y: logic<16>;
     var end_x  : logic<16>;
@@ -162,7 +179,23 @@ module triangle_rasterizer (
     assign fragment_valid = state == State::Present;
     assign fragment_x     = current_x;
     assign fragment_y     = current_y;
-    assign fragment_color = color;
+    function clamp_color (value: input signed logic<24>) -> logic<8> {
+        if value <: 0 {
+            return 0;
+        } else if value >: 24'sd32640 {
+            return 8'hff;
+        } else {
+            return value[14:7];
+        }
+    }
+
+    function extend_gradient (value: input signed logic<16>) -> signed logic<24> {
+        return {value[15], value[15], value[15], value[15],
+            value[15], value[15], value[15], value[15], value};
+    }
+
+    assign fragment_color = {color[31:24], clamp_color(current_r),
+        clamp_color(current_g), clamp_color(current_b)};
 
     always_ff {
         if_reset {
@@ -176,6 +209,18 @@ module triangle_rasterizer (
             target_width  = 0;
             target_height = 0;
             color         = 0;
+            gradient_r_x  = 0;
+            gradient_r_y  = 0;
+            gradient_g_x  = 0;
+            gradient_g_y  = 0;
+            gradient_b_x  = 0;
+            gradient_b_y  = 0;
+            row_r          = 0;
+            row_g          = 0;
+            row_b          = 0;
+            current_r      = 0;
+            current_g      = 0;
+            current_b      = 0;
             start_x       = 0;
             start_y       = 0;
             end_x         = 0;
@@ -229,6 +274,12 @@ module triangle_rasterizer (
                         target_width  = cmd_width;
                         target_height = cmd_height;
                         color         = cmd_color;
+                        gradient_r_x  = cmd_gradient_r[15:0];
+                        gradient_r_y  = cmd_gradient_r[31:16];
+                        gradient_g_x  = cmd_gradient_g[15:0];
+                        gradient_g_y  = cmd_gradient_g[31:16];
+                        gradient_b_x  = cmd_gradient_b[15:0];
+                        gradient_b_y  = cmd_gradient_b[31:16];
                         error         = 0;
                         state         = State::AreaLoad;
                     }
@@ -307,6 +358,12 @@ module triangle_rasterizer (
                             target_width : maximum_x_ceil[23:8];
                         end_y = if maximum_y_ceil >: target_y_fixed ?
                             target_height : maximum_y_ceil[23:8];
+                        row_r = {9'b0, color[23:16], 7'b0};
+                        row_g = {9'b0, color[15:8], 7'b0};
+                        row_b = {9'b0, color[7:0], 7'b0};
+                        current_r = {9'b0, color[23:16], 7'b0};
+                        current_g = {9'b0, color[15:8], 7'b0};
+                        current_b = {9'b0, color[7:0], 7'b0};
                         state = State::Edge0Load;
                 }
                 State::Edge0Load: {
@@ -393,6 +450,9 @@ module triangle_rasterizer (
                     edge0 = edge0 + edge0_step_x;
                     edge1 = edge1 + edge1_step_x;
                     edge2 = edge2 + edge2_step_x;
+                    current_r = current_r + extend_gradient(gradient_r_x);
+                    current_g = current_g + extend_gradient(gradient_g_x);
+                    current_b = current_b + extend_gradient(gradient_b_x);
                     state = State::Evaluate;
                 }
                 State::AdvanceRow: {
@@ -404,6 +464,12 @@ module triangle_rasterizer (
                     edge0 = row_edge0 + edge0_step_y;
                     edge1 = row_edge1 + edge1_step_y;
                     edge2 = row_edge2 + edge2_step_y;
+                    row_r = row_r + extend_gradient(gradient_r_y);
+                    row_g = row_g + extend_gradient(gradient_g_y);
+                    row_b = row_b + extend_gradient(gradient_b_y);
+                    current_r = row_r + extend_gradient(gradient_r_y);
+                    current_g = row_g + extend_gradient(gradient_g_y);
+                    current_b = row_b + extend_gradient(gradient_b_y);
                     state = State::Evaluate;
                 }
                 State::Finish: {

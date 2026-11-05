@@ -16,6 +16,9 @@ module triangle_engine (
     cmd_x2       : input  signed logic<24> ,
     cmd_y2       : input  signed logic<24> ,
     cmd_color    : input  logic<32>        ,
+    cmd_gradient_r: input logic<32>        ,
+    cmd_gradient_g: input logic<32>        ,
+    cmd_gradient_b: input logic<32>        ,
     busy         : output logic            ,
     done         : output logic            ,
     error        : output logic            ,
@@ -49,6 +52,9 @@ module triangle_engine (
     var x2: signed logic<24>;
     var y2: signed logic<24>;
     var color: logic<32>;
+    var gradient_r: logic<32>;
+    var gradient_g: logic<32>;
+    var gradient_b: logic<32>;
     var target_end_checked: logic<64>;
     var target_shape_ok: logic;
     var failed: logic;
@@ -89,6 +95,9 @@ module triangle_engine (
         cmd_width     : width,
         cmd_height    : height,
         cmd_color     : color,
+        cmd_gradient_r: gradient_r,
+        cmd_gradient_g: gradient_g,
+        cmd_gradient_b: gradient_b,
         busy          : raster_busy,
         done          : raster_done,
         error         : raster_error,
@@ -142,6 +151,9 @@ module triangle_engine (
             x2              = 0;
             y2              = 0;
             color           = 0;
+            gradient_r      = 0;
+            gradient_g      = 0;
+            gradient_b      = 0;
             target_end_checked = 0;
             target_shape_ok = 0;
             failed          = 0;
@@ -164,6 +176,9 @@ module triangle_engine (
                         x2              = cmd_x2;
                         y2              = cmd_y2;
                         color           = cmd_color;
+                        gradient_r      = cmd_gradient_r;
+                        gradient_g      = cmd_gradient_g;
+                        gradient_b      = cmd_gradient_b;
                         failed          = 0;
                         raster_finished = 0;
                         error           = 0;

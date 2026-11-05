@@ -403,6 +403,8 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .cmd_x1(triangle_mem_command[167:144]), .cmd_y1(triangle_mem_command[191:168]),
         .cmd_x2(triangle_mem_command[215:192]), .cmd_y2(triangle_mem_command[239:216]),
         .cmd_color(triangle_mem_command[271:240]),
+        .cmd_gradient_r(32'b0), .cmd_gradient_g(32'b0),
+        .cmd_gradient_b(32'b0),
         .busy(), .done(triangle_engine_done), .error(triangle_engine_error),
         .writes(triangle_engine_writes),
         .mem_valid(triangle_mem_valid), .mem_ready(triangle_mem_ready),
