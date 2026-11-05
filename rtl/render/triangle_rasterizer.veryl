@@ -30,9 +30,15 @@ module triangle_rasterizer (
 ) {
     enum State: logic<4> {
         Idle,
-        Orient,
+        AreaFirst,
+        AreaSecond,
         Bounds,
-        EdgeSetup,
+        Edge0First,
+        Edge0Second,
+        Edge1First,
+        Edge1Second,
+        Edge2First,
+        Edge2Second,
         Evaluate,
         Present,
         Advance,
@@ -60,6 +66,7 @@ module triangle_rasterizer (
     var row_edge0: signed logic<50>;
     var row_edge1: signed logic<50>;
     var row_edge2: signed logic<50>;
+    var product_first: signed logic<50>;
 
     let ab_x: signed logic<25> = {ax[23], ax} - {bx[23], bx};
     let ab_y: signed logic<25> = {ay[23], ay} - {by[23], by};
@@ -71,8 +78,6 @@ module triangle_rasterizer (
     let a_to_b_y: signed logic<25> = -ab_y;
     let a_to_c_x: signed logic<25> = ca_x;
     let a_to_c_y: signed logic<25> = ca_y;
-    let area_calc: signed logic<50> =
-        (a_to_b_x * a_to_c_y) - (a_to_b_y * a_to_c_x);
 
     var minimum_x: signed logic<24>;
     var minimum_y: signed logic<24>;
@@ -109,16 +114,57 @@ module triangle_rasterizer (
     let sample_by: signed logic<25> = sample_y - {by[23], by};
     let sample_cx: signed logic<25> = sample_x - {cx[23], cx};
     let sample_cy: signed logic<25> = sample_y - {cy[23], cy};
-    let edge0_setup: signed logic<50> =
-        (a_to_b_x * sample_ay) - (a_to_b_y * sample_ax);
     let b_to_c_x: signed logic<25> = -bc_x;
     let b_to_c_y: signed logic<25> = -bc_y;
-    let edge1_setup: signed logic<50> =
-        (b_to_c_x * sample_by) - (b_to_c_y * sample_bx);
     let c_to_a_x: signed logic<25> = -ca_x;
     let c_to_a_y: signed logic<25> = -ca_y;
-    let edge2_setup: signed logic<50> =
-        (c_to_a_x * sample_cy) - (c_to_a_y * sample_cx);
+
+    // Command setup deliberately time-shares one 25x25 multiplier.  Setup is
+    // eight clocks longer, while pixel evaluation remains one add/compare
+    // pipeline and therefore keeps the same steady-state fragment rate.
+    var multiply_left : signed logic<25>;
+    var multiply_right: signed logic<25>;
+    always_comb {
+        multiply_left  = 0;
+        multiply_right = 0;
+        case state {
+            State::AreaFirst: {
+                multiply_left  = a_to_b_x;
+                multiply_right = a_to_c_y;
+            }
+            State::AreaSecond: {
+                multiply_left  = a_to_b_y;
+                multiply_right = a_to_c_x;
+            }
+            State::Edge0First: {
+                multiply_left  = a_to_b_x;
+                multiply_right = sample_ay;
+            }
+            State::Edge0Second: {
+                multiply_left  = a_to_b_y;
+                multiply_right = sample_ax;
+            }
+            State::Edge1First: {
+                multiply_left  = b_to_c_x;
+                multiply_right = sample_by;
+            }
+            State::Edge1Second: {
+                multiply_left  = b_to_c_y;
+                multiply_right = sample_bx;
+            }
+            State::Edge2First: {
+                multiply_left  = c_to_a_x;
+                multiply_right = sample_cy;
+            }
+            State::Edge2Second: {
+                multiply_left  = c_to_a_y;
+                multiply_right = sample_cx;
+            }
+            default: {}
+        }
+    }
+    let multiply_result: signed logic<50> = multiply_left * multiply_right;
+    let cross_result: signed logic<50> = product_first - multiply_result;
     let edge0_step_x: signed logic<50> = -(a_to_b_y * 50'sd256);
     let edge1_step_x: signed logic<50> = -(b_to_c_y * 50'sd256);
     let edge2_step_x: signed logic<50> = -(c_to_a_y * 50'sd256);
@@ -166,6 +212,7 @@ module triangle_rasterizer (
             row_edge0     = 0;
             row_edge1     = 0;
             row_edge2     = 0;
+            product_first = 0;
             done          = 0;
             error         = 0;
         } else if abort {
@@ -187,18 +234,24 @@ module triangle_rasterizer (
                         target_height = cmd_height;
                         color         = cmd_color;
                         error         = 0;
-                        state         = State::Orient;
+                        state         = State::AreaFirst;
                     }
                 }
-                State::Orient: {
+                State::AreaFirst: {
                     if (target_width == 0) || (target_height == 0)
                         || target_width[15] || target_height[15] {
                         error = 1;
                         state = State::Finish;
-                    } else if area_calc == 0 {
+                    } else {
+                        product_first = multiply_result;
+                        state = State::AreaSecond;
+                    }
+                }
+                State::AreaSecond: {
+                    if cross_result == 0 {
                         state = State::Finish;
                     } else {
-                        if area_calc <: 0 {
+                        if cross_result <: 0 {
                             bx = cx;
                             by = cy;
                             cx = cmd_x1;
@@ -220,18 +273,38 @@ module triangle_rasterizer (
                             target_width : maximum_x_ceil[23:8];
                         end_y = if maximum_y_ceil >: target_y_fixed ?
                             target_height : maximum_y_ceil[23:8];
-                        state = State::EdgeSetup;
+                        state = State::Edge0First;
                     }
                 }
-                State::EdgeSetup: {
+                State::Edge0First: {
+                    product_first = multiply_result;
+                    state = State::Edge0Second;
+                }
+                State::Edge0Second: {
+                    edge0         = cross_result;
+                    row_edge0     = cross_result;
+                    product_first = multiply_result;
+                    state         = State::Edge1First;
+                }
+                State::Edge1First: {
+                    product_first = multiply_result;
+                    state = State::Edge1Second;
+                }
+                State::Edge1Second: {
+                    edge1         = cross_result;
+                    row_edge1     = cross_result;
+                    product_first = multiply_result;
+                    state         = State::Edge2First;
+                }
+                State::Edge2First: {
+                    product_first = multiply_result;
+                    state = State::Edge2Second;
+                }
+                State::Edge2Second: {
                     current_x = start_x;
                     current_y = start_y;
-                    edge0     = edge0_setup;
-                    edge1     = edge1_setup;
-                    edge2     = edge2_setup;
-                    row_edge0 = edge0_setup;
-                    row_edge1 = edge1_setup;
-                    row_edge2 = edge2_setup;
+                    edge2     = cross_result;
+                    row_edge2 = cross_result;
                     state     = State::Evaluate;
                 }
                 State::Evaluate: {
