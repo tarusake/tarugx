@@ -47,7 +47,9 @@ module triangle_rasterizer (
         Edge2Resolve,
         Evaluate,
         Present,
-        Advance,
+        AdvanceDecide,
+        AdvanceX,
+        AdvanceRow,
         Finish,
     }
     var state: State;
@@ -350,33 +352,39 @@ module triangle_rasterizer (
                     state     = State::Evaluate;
                 }
                 State::Evaluate: {
-                    state = if covered ? State::Present : State::Advance;
+                    state = if covered ? State::Present : State::AdvanceDecide;
                 }
                 State::Present: {
                     if fragment_ready {
-                        state = State::Advance;
+                        state = State::AdvanceDecide;
                     }
                 }
-                State::Advance: {
+                State::AdvanceDecide: {
                     if (current_x + 16'd1) <: end_x {
-                        current_x = current_x + 16'd1;
-                        edge0 = edge0 + edge0_step_x;
-                        edge1 = edge1 + edge1_step_x;
-                        edge2 = edge2 + edge2_step_x;
-                        state = State::Evaluate;
+                        state = State::AdvanceX;
                     } else if (current_y + 16'd1) <: end_y {
-                        current_x = start_x;
-                        current_y = current_y + 16'd1;
-                        row_edge0 = row_edge0 + edge0_step_y;
-                        row_edge1 = row_edge1 + edge1_step_y;
-                        row_edge2 = row_edge2 + edge2_step_y;
-                        edge0 = row_edge0 + edge0_step_y;
-                        edge1 = row_edge1 + edge1_step_y;
-                        edge2 = row_edge2 + edge2_step_y;
-                        state = State::Evaluate;
+                        state = State::AdvanceRow;
                     } else {
                         state = State::Finish;
                     }
+                }
+                State::AdvanceX: {
+                    current_x = current_x + 16'd1;
+                    edge0 = edge0 + edge0_step_x;
+                    edge1 = edge1 + edge1_step_x;
+                    edge2 = edge2 + edge2_step_x;
+                    state = State::Evaluate;
+                }
+                State::AdvanceRow: {
+                    current_x = start_x;
+                    current_y = current_y + 16'd1;
+                    row_edge0 = row_edge0 + edge0_step_y;
+                    row_edge1 = row_edge1 + edge1_step_y;
+                    row_edge2 = row_edge2 + edge2_step_y;
+                    edge0 = row_edge0 + edge0_step_y;
+                    edge1 = row_edge1 + edge1_step_y;
+                    edge2 = row_edge2 + edge2_step_y;
+                    state = State::Evaluate;
                 }
                 State::Finish: {
                     done  = 1;

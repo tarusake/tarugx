@@ -39,6 +39,7 @@ module fragment_writer (
     var word_addr: logic<24>;
     var lane: logic<4>;
     var pixel: logic<16>;
+    var target_ok: logic;
 
     let row_offset: logic<64> = (fragment_y as 64) * (target_stride as 64);
     let column_offset: logic<64> = (fragment_x as 64) * 64'd2;
@@ -55,7 +56,10 @@ module fragment_writer (
     let fragment_in_bounds: logic = (fragment_x <: target_width)
         && (fragment_y <: target_height)
         && ((pixel_address + 64'd2) <= 64'h01000000);
-    let fragment_ok: logic = target_valid && fragment_in_bounds;
+    // Target validation is invariant for a command.  Register it when the
+    // engine launches instead of feeding the 64-bit end-address calculation
+    // into every fragment capture enable.
+    let fragment_ok: logic = target_ok && fragment_in_bounds;
 
     assign fragment_ready = state == State::Idle;
     assign busy          = (state == State::Issue) || (state == State::Wait);
@@ -77,6 +81,7 @@ module fragment_writer (
             word_addr = 0;
             lane      = 0;
             pixel     = 0;
+            target_ok = 0;
             writes    = 0;
         } else {
             case state {
@@ -123,6 +128,9 @@ module fragment_writer (
             }
             if clear && (state != State::Fault) {
                 writes = 0;
+            }
+            if clear {
+                target_ok = target_valid;
             }
         }
     }
