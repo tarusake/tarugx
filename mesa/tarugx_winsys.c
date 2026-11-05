@@ -98,27 +98,41 @@ tarugx_winsys_submit_triangle(
     const struct tarugx_winsys_surface *surface,
     const struct tarugx_winsys_triangle *triangle)
 {
+    return tarugx_winsys_submit_triangles(winsys, surface, triangle, 1);
+}
+
+bool
+tarugx_winsys_submit_triangles(
+    struct tarugx_winsys *winsys,
+    const struct tarugx_winsys_surface *surface,
+    const struct tarugx_winsys_triangle *triangles,
+    uint32_t count)
+{
     struct drm_tarugx_submit_gem2 submit;
+    uint32_t i;
 
     if (!winsys || winsys->fd < 0 || !surface || !surface->handle ||
-        !triangle || !winsys->submit_syncobj)
+        !triangles || !count || count > TARUGX_MAX_BATCH_TRIANGLES ||
+        !winsys->submit_syncobj)
         return false;
     submit = (struct drm_tarugx_submit_gem2) {
         .handle = surface->handle,
-        .count = 1,
+        .count = count,
         .flags = DRM_TARUGX_SUBMIT_ASYNC,
         .out_syncobj = winsys->submit_syncobj,
-        .commands = {{
-            .opcode = DRM_TARUGX_OP_TRIANGLE,
-            .x0 = triangle->x0,
-            .y0 = triangle->y0,
-            .x1 = triangle->x1,
-            .y1 = triangle->y1,
-            .x2 = triangle->x2,
-            .y2 = triangle->y2,
-            .color = triangle->color,
-        }},
     };
+    for (i = 0; i < count; i++) {
+        submit.commands[i] = (struct drm_tarugx_command) {
+            .opcode = DRM_TARUGX_OP_TRIANGLE,
+            .x0 = triangles[i].x0,
+            .y0 = triangles[i].y0,
+            .x1 = triangles[i].x1,
+            .y1 = triangles[i].y1,
+            .x2 = triangles[i].x2,
+            .y2 = triangles[i].y2,
+            .color = triangles[i].color,
+        };
+    }
     return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
                     &submit) == 0;
 }

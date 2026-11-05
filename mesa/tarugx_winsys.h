@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define TARUGX_MAX_BATCH_TRIANGLES 4
+
 struct tarugx_winsys {
     int fd;
     uint32_t submit_syncobj;
@@ -39,6 +41,11 @@ bool tarugx_winsys_submit_triangle(
     struct tarugx_winsys *winsys,
     const struct tarugx_winsys_surface *surface,
     const struct tarugx_winsys_triangle *triangle);
+bool tarugx_winsys_submit_triangles(
+    struct tarugx_winsys *winsys,
+    const struct tarugx_winsys_surface *surface,
+    const struct tarugx_winsys_triangle *triangles,
+    uint32_t count);
 bool tarugx_winsys_submit_fill(struct tarugx_winsys *winsys,
                                const struct tarugx_winsys_surface *surface,
                                uint32_t color);

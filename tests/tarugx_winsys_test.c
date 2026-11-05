@@ -11,7 +11,7 @@ main(int argc, char **argv)
 {
     struct tarugx_winsys winsys = { .fd = -1 };
     struct tarugx_winsys_surface surface = {0};
-    const struct tarugx_winsys_triangle triangle = {
+    const struct tarugx_winsys_triangle triangles[2] = {{
         .x0 = 0,
         .y0 = 0,
         .x1 = 4 << 8,
@@ -19,7 +19,15 @@ main(int argc, char **argv)
         .x2 = 0,
         .y2 = 4 << 8,
         .color = 0x0000ff00,
-    };
+    }, {
+        .x0 = 4 << 8,
+        .y0 = 4 << 8,
+        .x1 = 8 << 8,
+        .y1 = 4 << 8,
+        .x2 = 4 << 8,
+        .y2 = 8 << 8,
+        .color = 0x00ff0000,
+    }};
     int fd;
     int result = 1;
 
@@ -45,7 +53,7 @@ main(int argc, char **argv)
         fputs("TaruGX winsys fill submit failed\n", stderr);
         goto out_surface;
     }
-    if (!tarugx_winsys_submit_triangle(&winsys, &surface, &triangle)) {
+    if (!tarugx_winsys_submit_triangles(&winsys, &surface, triangles, 2)) {
         fputs("TaruGX winsys triangle submit failed\n", stderr);
         goto out_surface;
     }

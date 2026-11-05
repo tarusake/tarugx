@@ -77,8 +77,20 @@ main(int argc, char **argv)
         "void main() { gl_FragColor = v_color; }\n";
     static const GLfloat positions[] = {
         -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+        -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
     };
     static const GLfloat colors[] = {
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
@@ -107,13 +119,16 @@ main(int argc, char **argv)
     unsigned iterations = 1;
     unsigned i;
     int software_fallback = 0;
+    int batch = 0;
+    GLsizei vertex_count;
     int position_location;
     int color_location;
     int fd = -1;
     int result = 1;
 
     if (argc < 2 || argc > 4) {
-        fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] [--software]\n",
+        fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
+                        "[--software|--batch]\n",
                 argv[0]);
         return 2;
     }
@@ -128,11 +143,14 @@ main(int argc, char **argv)
         iterations = (unsigned)value;
     }
     if (argc == 4) {
-        if (strcmp(argv[3], "--software")) {
+        if (!strcmp(argv[3], "--software")) {
+            software_fallback = 1;
+        } else if (!strcmp(argv[3], "--batch")) {
+            batch = 1;
+        } else {
             fputs("unknown mode\n", stderr);
             return 2;
         }
-        software_fallback = 1;
     }
     fd = open(argv[1], O_RDWR | O_CLOEXEC);
     if (fd < 0 || drmSetMaster(fd)) {
@@ -196,9 +214,10 @@ main(int argc, char **argv)
         glScissor(0, 0, WIDTH, HEIGHT);
         glEnable(GL_SCISSOR_TEST);
     }
+    vertex_count = batch ? 12 : 3;
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
     for (i = 0; i < iterations; i++) {
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
         glFinish();
     }
     clock_gettime(CLOCK_MONOTONIC, &draw_end);
@@ -220,11 +239,12 @@ main(int argc, char **argv)
     if (pixels == MAP_FAILED)
         goto out;
     printf("renderer=%s\ncenter=%04x\ncorner=%04x\nstride=%u\n"
-           "path=%s\ndraws=%u\ndraw_ms=%.3f\n",
+           "path=%s\ndraws=%u\ntriangles=%u\ndraw_ms=%.3f\n",
            glGetString(GL_RENDERER),
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
-           stride, software_fallback ? "softpipe" : "fpga", iterations,
-           draw_ms);
+           stride, software_fallback ? "softpipe" :
+                   (batch ? "fpga-batch" : "fpga"), iterations,
+           iterations * (batch ? 4 : 1), draw_ms);
     if (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800 ||
         pixels[0] != 0x001f) {
         fputs("RGB565 readback mismatch\n", stderr);

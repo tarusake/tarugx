@@ -5,6 +5,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -153,16 +154,13 @@ tarugx_rgb888(const float *rgba)
 }
 
 static bool
-tarugx_submit_triangle(struct tarugx_context_state *state,
-                       const float *v0, const float *v1, const float *v2,
-                       const struct tarugx_winsys_surface *surface)
+tarugx_prepare_triangle(const float *v0, const float *v1, const float *v2,
+                        struct tarugx_winsys_triangle *triangle)
 {
-    struct tarugx_winsys_triangle triangle;
-
     if (!tarugx_colors_equal(v0 + 4, v1 + 4) ||
         !tarugx_colors_equal(v0 + 4, v2 + 4))
         return false;
-    triangle = (struct tarugx_winsys_triangle) {
+    *triangle = (struct tarugx_winsys_triangle) {
         .x0 = tarugx_fixed_16_8(v0[0]),
         .y0 = tarugx_fixed_16_8(v0[1]),
         .x1 = tarugx_fixed_16_8(v1[0]),
@@ -171,9 +169,7 @@ tarugx_submit_triangle(struct tarugx_context_state *state,
         .y2 = tarugx_fixed_16_8(v2[1]),
         .color = tarugx_rgb888(v0 + 4),
     };
-    return tarugx_winsys_submit_triangle(&state->winsys, surface,
-                                         &triangle) &&
-           tarugx_winsys_wait(&state->winsys, INT64_MAX);
+    return true;
 }
 
 static bool
@@ -182,6 +178,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
 {
     const float *vertices;
     struct tarugx_winsys_surface surface;
+    struct tarugx_winsys_triangle *triangles;
+    unsigned triangle_count;
     unsigned stride;
     unsigned i;
 
@@ -193,16 +191,35 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     stride = state->softpipe->vertex_info.size;
     if (!vertices || stride < 8)
         return false;
+    triangle_count = count / 3;
+    triangles = calloc(triangle_count, sizeof(*triangles));
+    if (!triangles)
+        return false;
     for (i = 0; i < count; i += 3) {
         unsigned a = indices ? indices[i] : start + i;
         unsigned b = indices ? indices[i + 1] : start + i + 1;
         unsigned c = indices ? indices[i + 2] : start + i + 2;
 
-        if (!tarugx_submit_triangle(state, vertices + a * stride,
-                                    vertices + b * stride,
-                                    vertices + c * stride, &surface))
+        if (!tarugx_prepare_triangle(vertices + a * stride,
+                                     vertices + b * stride,
+                                     vertices + c * stride,
+                                     &triangles[i / 3])) {
+            free(triangles);
             return false;
+        }
     }
+    for (i = 0; i < triangle_count; i += TARUGX_MAX_BATCH_TRIANGLES) {
+        unsigned batch_count = MIN2(TARUGX_MAX_BATCH_TRIANGLES,
+                                    triangle_count - i);
+
+        if (!tarugx_winsys_submit_triangles(&state->winsys, &surface,
+                                            triangles + i, batch_count) ||
+            !tarugx_winsys_wait(&state->winsys, INT64_MAX)) {
+            free(triangles);
+            return false;
+        }
+    }
+    free(triangles);
     return true;
 }
 
