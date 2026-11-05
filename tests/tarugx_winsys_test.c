@@ -40,6 +40,11 @@ main(int argc, char **argv)
         fputs("TaruGX winsys surface create failed\n", stderr);
         goto out_winsys;
     }
+    if (!tarugx_winsys_submit_fill(&winsys, &surface, 0x000000ff) ||
+        !tarugx_winsys_wait(&winsys, INT64_MAX)) {
+        fputs("TaruGX winsys fill submit failed\n", stderr);
+        goto out_surface;
+    }
     if (!tarugx_winsys_submit_triangle(&winsys, &surface, &triangle)) {
         fputs("TaruGX winsys triangle submit failed\n", stderr);
         goto out_surface;
@@ -48,7 +53,7 @@ main(int argc, char **argv)
         fputs("TaruGX winsys fence wait failed\n", stderr);
         goto out_surface;
     }
-    puts("TaruGX Mesa winsys PASS: VRAM resource, triangle submit and syncobj fence");
+    puts("TaruGX Mesa winsys PASS: VRAM resource, fill/triangle submit and syncobj fence");
     result = 0;
 out_surface:
     tarugx_winsys_surface_destroy(&winsys, &surface);

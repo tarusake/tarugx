@@ -20,12 +20,17 @@ elif ! patch --dry-run -R -d "$mesa_source" -p1 < "$patch_file" >/dev/null 2>&1;
 fi
 
 driver_dir="$mesa_source/src/gallium/drivers/tarugx"
+common_include_dir="$mesa_source/src/tarugx"
 install -d "$driver_dir"
+install -d "$common_include_dir"
 install -m 0644 "$root/mesa/gallium/meson.build" "$driver_dir/meson.build"
+install -m 0644 "$root/mesa/gallium/tarugx_context.c" "$driver_dir/tarugx_context.c"
+install -m 0644 "$root/mesa/gallium/tarugx_context.h" "$driver_dir/tarugx_context.h"
 install -m 0644 "$root/mesa/gallium/tarugx_screen.c" "$driver_dir/tarugx_screen.c"
 install -m 0644 "$root/mesa/gallium/tarugx_screen.h" "$driver_dir/tarugx_screen.h"
 install -m 0644 "$root/mesa/tarugx_winsys.c" "$driver_dir/tarugx_winsys.c"
 install -m 0644 "$root/mesa/tarugx_winsys.h" "$driver_dir/tarugx_winsys.h"
 install -m 0644 "$root/drivers/tarugx/tarugx_drm.h" "$driver_dir/tarugx_drm.h"
+install -m 0644 "$root/drivers/tarugx/tarugx_drm.h" "$common_include_dir/tarugx_drm.h"
 
 echo "Prepared TaruGX Gallium sources in $mesa_source"

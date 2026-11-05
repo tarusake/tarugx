@@ -39,6 +39,9 @@ bool tarugx_winsys_submit_triangle(
     struct tarugx_winsys *winsys,
     const struct tarugx_winsys_surface *surface,
     const struct tarugx_winsys_triangle *triangle);
+bool tarugx_winsys_submit_fill(struct tarugx_winsys *winsys,
+                               const struct tarugx_winsys_surface *surface,
+                               uint32_t color);
 bool tarugx_winsys_wait(struct tarugx_winsys *winsys, int64_t timeout_ns);
 
 #endif

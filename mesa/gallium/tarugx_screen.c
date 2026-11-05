@@ -7,12 +7,13 @@
 #include "sw/kms-dri/kms_dri_sw_winsys.h"
 
 #include "tarugx_winsys.h"
+#include "tarugx_context.h"
 
 static const char *
 tarugx_screen_name(struct pipe_screen *screen)
 {
     (void)screen;
-    return "TaruGX (softpipe fallback)";
+    return "TaruGX (FPGA 3D + softpipe fallback)";
 }
 
 static const char *
@@ -40,6 +41,10 @@ tarugx_screen_create(int fd, const struct pipe_screen_config *config)
     screen = softpipe_create_screen(software);
     if (!screen) {
         software->destroy(software);
+        return NULL;
+    }
+    if (!tarugx_context_enable(screen, fd)) {
+        screen->destroy(screen);
         return NULL;
     }
     screen->get_name = tarugx_screen_name;

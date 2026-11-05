@@ -44,8 +44,8 @@ index 323832e..15e16dc 100644
 @@ -133,6 +133,20 @@ DRM_DRIVER_DESCRIPTOR(crocus, crocus_driconf, ARRAY_SIZE(crocus_driconf))
  DRM_DRIVER_DESCRIPTOR_STUB(crocus)
  #endif
- 
-+#ifdef GALLIUM_TARUGX
+
++#ifdef HAVE_TARUGX
 +#include "tarugx/tarugx_screen.h"
 +
 +static struct pipe_screen *
@@ -61,7 +61,7 @@ index 323832e..15e16dc 100644
 +
  #ifdef GALLIUM_NOUVEAU
  #include "nouveau/drm/nouveau_drm_public.h"
- 
+
 diff --git a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
 index 89c0a42..9c8f922 100644
 --- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h
@@ -120,7 +120,7 @@ index d506869..270e84d 100644
 @@ -43,6 +43,10 @@ DEFINE_LOADER_DRM_ENTRYPOINT(iris)
  DEFINE_LOADER_DRM_ENTRYPOINT(crocus)
  #endif
- 
+
 +#if defined(GALLIUM_TARUGX)
 +DEFINE_LOADER_DRM_ENTRYPOINT(tarugx)
 +#endif
@@ -128,3 +128,57 @@ index d506869..270e84d 100644
  #if defined(GALLIUM_NOUVEAU)
  DEFINE_LOADER_DRM_ENTRYPOINT(nouveau)
  #endif
+diff --git a/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c b/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c
+--- a/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c
++++ b/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c
+@@ -52 +52,4 @@
+ #include "util/simple_mtx.h"
++#ifdef HAVE_TARUGX
++#include "tarugx/tarugx_drm.h"
++#endif
+@@ -135,3 +138,4 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
+    struct drm_mode_create_dumb create_req;
+    struct drm_mode_destroy_dumb destroy_req;
++   bool allocated = false;
+    int ret;
+@@ -153,8 +157,36 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
+    create_req.bpp = util_format_get_blocksizebits(format);
+    create_req.width = width;
+    create_req.height = height;
+-   ret = drmIoctl(kms_sw->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_req);
+-   if (ret) {
+-      fprintf(stderr, "KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: %s\n", strerror(errno));
+-      goto free_bo;
++#ifdef HAVE_TARUGX
++   if (format == PIPE_FORMAT_B5G6R5_UNORM && width == 1920 &&
++       height == 1080) {
++      drmVersionPtr version = drmGetVersion(kms_sw->fd);
++      bool is_tarugx = version && version->name_len == 6 &&
++                       !memcmp(version->name, "tarugx", 6);
++
++      drmFreeVersion(version);
++      if (is_tarugx) {
++         struct drm_tarugx_vram_create create_vram = {
++            .width = width,
++            .height = height,
++            .flags = DRM_TARUGX_VRAM_FRONT,
++         };
++
++         if (!drmIoctl(kms_sw->fd, DRM_IOCTL_TARUGX_VRAM_CREATE,
++                       &create_vram)) {
++            create_req.handle = create_vram.handle;
++            create_req.pitch = create_vram.pitch;
++            create_req.size = create_vram.size;
++            allocated = true;
++         }
++      }
++   }
++#endif
++   if (!allocated) {
++      ret = drmIoctl(kms_sw->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_req);
++      if (ret) {
++         fprintf(stderr, "KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: %s\n",
++                 strerror(errno));
++         goto free_bo;
++      }
+    }

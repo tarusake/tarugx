@@ -124,6 +124,32 @@ tarugx_winsys_submit_triangle(
 }
 
 bool
+tarugx_winsys_submit_fill(struct tarugx_winsys *winsys,
+                          const struct tarugx_winsys_surface *surface,
+                          uint32_t color)
+{
+    struct drm_tarugx_submit_gem2 submit;
+
+    if (!winsys || winsys->fd < 0 || !surface || !surface->handle ||
+        !surface->width || !surface->height || !winsys->submit_syncobj)
+        return false;
+    submit = (struct drm_tarugx_submit_gem2) {
+        .handle = surface->handle,
+        .count = 1,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .out_syncobj = winsys->submit_syncobj,
+        .commands = {{
+            .opcode = DRM_TARUGX_OP_FILL,
+            .width = surface->width,
+            .height = surface->height,
+            .color = color,
+        }},
+    };
+    return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                    &submit) == 0;
+}
+
+bool
 tarugx_winsys_wait(struct tarugx_winsys *winsys, int64_t timeout_ns)
 {
     if (!winsys || winsys->fd < 0 || !winsys->submit_syncobj)
