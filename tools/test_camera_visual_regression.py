@@ -223,6 +223,16 @@ print(json.dumps({{'moves': {moves},
     return json.loads(output.strip().splitlines()[-1])
 
 
+def workload_passed(workload: dict[str, object] | None) -> bool:
+    if workload is None:
+        return True
+    delta = workload.get("delta")
+    if not isinstance(delta, dict):
+        return False
+    return all(int(delta.get(name, -1)) == 0 for name in
+               ("render_failures", "dma_upload_failures", "flip_timeouts"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=Path, default=Path("/dev/video0"))
@@ -244,14 +254,17 @@ def main() -> int:
             parser.error(f"capture device is unavailable: {args.device}")
         baseline = args.output / "baseline.ppm"
         observed = args.output / "after-window-moves.ppm"
+        # Normalize the terminal geometry before taking the reference frame.
+        remote_workload(0)
         capture(args.device, baseline)
         time.sleep(1)
         workload = remote_workload(args.moves)
         capture(args.device, observed)
 
     metrics = compare_files(baseline, observed, args.top_mask)
+    passed = metrics.passed and workload_passed(workload)
     result = {
-        "result": "visual_regression_pass" if metrics.passed
+        "result": "visual_regression_pass" if passed
                   else "visual_regression_failed",
         "baseline": str(baseline),
         "observed": str(observed),
@@ -259,7 +272,7 @@ def main() -> int:
         "workload": workload,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if metrics.passed else 1
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

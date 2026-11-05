@@ -60,6 +60,13 @@ class CameraVisualRegressionTest(unittest.TestCase):
         self.assertEqual(CAMERA.mean_luma(self.frame(4, 3, (0, 0, 0))), 0)
         self.assertGreater(CAMERA.mean_luma(self.frame(4, 3, (80, 100, 120))), 8)
 
+    def test_hardware_error_counters_affect_result(self):
+        clean = {"delta": {"render_failures": 0, "dma_upload_failures": 0,
+                            "flip_timeouts": 0}}
+        failed = {"delta": {**clean["delta"], "flip_timeouts": 1}}
+        self.assertTrue(CAMERA.workload_passed(clean))
+        self.assertFalse(CAMERA.workload_passed(failed))
+
     def test_ppm_round_trip(self):
         pixels = self.frame(4, 3, (1, 2, 3))
         with tempfile.TemporaryDirectory() as directory:
