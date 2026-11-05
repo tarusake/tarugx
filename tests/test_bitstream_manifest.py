@@ -42,6 +42,16 @@ class BitstreamManifestTest(unittest.TestCase):
     def test_unchanged_build_verifies(self):
         m.verify(self.output, self.repo)
 
+    def test_expected_video_mode_verifies(self):
+        m.verify(self.output, self.repo, "1080p60_scanout")
+
+    def test_unexpected_video_mode_is_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "video mode mismatch: expected 480p60, got 1080p60_scanout",
+        ):
+            m.verify(self.output, self.repo, "480p60")
+
     def test_changed_source_is_rejected(self):
         (self.repo / "rtl" / "core.veryl").write_text("module changed {}\n")
         with self.assertRaisesRegex(ValueError, "build input changed"):

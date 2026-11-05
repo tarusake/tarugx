@@ -97,7 +97,7 @@ def create(output: Path, repo: Path, video_mode: str,
     print(f"Build manifest: {destination}")
 
 
-def verify(output: Path, repo: Path) -> None:
+def verify(output: Path, repo: Path, expected_video_mode: str | None = None) -> None:
     output = output.resolve(strict=True)
     manifest = output / MANIFEST
     if not manifest.is_file():
@@ -105,6 +105,11 @@ def verify(output: Path, repo: Path) -> None:
     data = json.loads(manifest.read_text())
     if data.get("version") != 1:
         raise ValueError("unsupported build manifest version")
+    video_mode = data.get("video_mode")
+    if expected_video_mode is not None and video_mode != expected_video_mode:
+        raise ValueError(
+            f"video mode mismatch: expected {expected_video_mode}, got {video_mode}"
+        )
     expected_auto = set(data.get("auto_inputs", []))
     current_auto = {key_for(path, repo) for path in auto_inputs(repo, output)}
     if current_auto != expected_auto:
@@ -126,7 +131,7 @@ def verify(output: Path, repo: Path) -> None:
         path = output / name
         if not path.is_file() or digest(path) != expected:
             raise ValueError(f"build artifact changed: {name}")
-    print(f"Build manifest verified: mode={data['video_mode']} inputs={len(data['input_sha256'])}")
+    print(f"Build manifest verified: mode={video_mode} inputs={len(data['input_sha256'])}")
 
 
 def main() -> None:
@@ -134,6 +139,8 @@ def main() -> None:
     parser.add_argument("action", choices=("create", "verify"))
     parser.add_argument("output", type=Path)
     parser.add_argument("--video-mode", default="480p60")
+    parser.add_argument("--expected-video-mode",
+                        help="reject a verified build for a different video mode")
     parser.add_argument("--input", action="append", type=Path, default=[])
     parser.add_argument("--repo-root", type=Path, default=REPO,
                         help=argparse.SUPPRESS)
@@ -143,7 +150,7 @@ def main() -> None:
         if args.action == "create":
             create(args.output, repo, args.video_mode, args.input)
         else:
-            verify(args.output, repo)
+            verify(args.output, repo, args.expected_video_mode)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"Build manifest check failed: {error}", file=sys.stderr)
         raise SystemExit(1) from None
