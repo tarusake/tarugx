@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Build and install the current TaruGX driver on the hardware host."""
 
+import argparse
 import base64
 from pathlib import Path
 
@@ -80,6 +81,8 @@ finally:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
     names = ("Makefile", "tarugx.c", "tarugx_drm.h")
     files = {name: encoded(DRIVER / name) for name in names}
     output = Backend().remote(
