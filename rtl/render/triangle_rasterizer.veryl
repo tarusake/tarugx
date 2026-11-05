@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Fixed-point triangle coverage generator.
+///
+/// Vertices are signed 16.8 screen coordinates.  The output is one covered
+/// pixel at a time and remains stable under backpressure.  Winding is
+/// normalized and shared edges follow the top-left rule for a downward Y axis.
+module triangle_rasterizer (
+    clk            : input  clock            ,
+    rst_n          : input  reset            ,
+    cmd_valid      : input  logic            ,
+    cmd_ready      : output logic            ,
+    cmd_x0         : input  signed logic<24> ,
+    cmd_y0         : input  signed logic<24> ,
+    cmd_x1         : input  signed logic<24> ,
+    cmd_y1         : input  signed logic<24> ,
+    cmd_x2         : input  signed logic<24> ,
+    cmd_y2         : input  signed logic<24> ,
+    cmd_width      : input  logic<16>        ,
+    cmd_height     : input  logic<16>        ,
+    cmd_color      : input  logic<32>        ,
+    busy           : output logic            ,
+    done           : output logic            ,
+    error          : output logic            ,
+    fragment_valid : output logic            ,
+    fragment_ready : input  logic            ,
+    fragment_x     : output logic<16>        ,
+    fragment_y     : output logic<16>        ,
+    fragment_color : output logic<32>        ,
+) {
+    enum State: logic<4> {
+        Idle,
+        Orient,
+        Bounds,
+        EdgeSetup,
+        Evaluate,
+        Present,
+        Advance,
+        Finish,
+    }
+    var state: State;
+    var ax: signed logic<24>;
+    var ay: signed logic<24>;
+    var bx: signed logic<24>;
+    var by: signed logic<24>;
+    var cx: signed logic<24>;
+    var cy: signed logic<24>;
+    var target_width : logic<16>;
+    var target_height: logic<16>;
+    var color: logic<32>;
+    var start_x: logic<16>;
+    var start_y: logic<16>;
+    var end_x  : logic<16>;
+    var end_y  : logic<16>;
+    var current_x: logic<16>;
+    var current_y: logic<16>;
+    var edge0: signed logic<50>;
+    var edge1: signed logic<50>;
+    var edge2: signed logic<50>;
+    var row_edge0: signed logic<50>;
+    var row_edge1: signed logic<50>;
+    var row_edge2: signed logic<50>;
+
+    let ab_x: signed logic<25> = {ax[23], ax} - {bx[23], bx};
+    let ab_y: signed logic<25> = {ay[23], ay} - {by[23], by};
+    let bc_x: signed logic<25> = {bx[23], bx} - {cx[23], cx};
+    let bc_y: signed logic<25> = {by[23], by} - {cy[23], cy};
+    let ca_x: signed logic<25> = {cx[23], cx} - {ax[23], ax};
+    let ca_y: signed logic<25> = {cy[23], cy} - {ay[23], ay};
+    let a_to_b_x: signed logic<25> = -ab_x;
+    let a_to_b_y: signed logic<25> = -ab_y;
+    let a_to_c_x: signed logic<25> = ca_x;
+    let a_to_c_y: signed logic<25> = ca_y;
+    let area_calc: signed logic<50> =
+        (a_to_b_x * a_to_c_y) - (a_to_b_y * a_to_c_x);
+
+    var minimum_x: signed logic<24>;
+    var minimum_y: signed logic<24>;
+    var maximum_x: signed logic<24>;
+    var maximum_y: signed logic<24>;
+    always_comb {
+        minimum_x = ax;
+        minimum_y = ay;
+        maximum_x = ax;
+        maximum_y = ay;
+        if bx <: minimum_x { minimum_x = bx; }
+        if cx <: minimum_x { minimum_x = cx; }
+        if by <: minimum_y { minimum_y = by; }
+        if cy <: minimum_y { minimum_y = cy; }
+        if bx >: maximum_x { maximum_x = bx; }
+        if cx >: maximum_x { maximum_x = cx; }
+        if by >: maximum_y { maximum_y = by; }
+        if cy >: maximum_y { maximum_y = cy; }
+    }
+    let maximum_x_ceil: signed logic<25> = {maximum_x[23], maximum_x} + 25'sd255;
+    let maximum_y_ceil: signed logic<25> = {maximum_y[23], maximum_y} + 25'sd255;
+    let minimum_x_extended: signed logic<25> = {minimum_x[23], minimum_x};
+    let minimum_y_extended: signed logic<25> = {minimum_y[23], minimum_y};
+    let target_x_fixed: signed logic<25> = {1'b0, target_width, 8'b0};
+    let target_y_fixed: signed logic<25> = {1'b0, target_height, 8'b0};
+
+    // Setup must use the new clipped origin, not current_x/current_y left by
+    // the preceding command while the state register advances to EdgeSetup.
+    let sample_x: signed logic<25> = {1'b0, start_x, 8'h80};
+    let sample_y: signed logic<25> = {1'b0, start_y, 8'h80};
+    let sample_ax: signed logic<25> = sample_x - {ax[23], ax};
+    let sample_ay: signed logic<25> = sample_y - {ay[23], ay};
+    let sample_bx: signed logic<25> = sample_x - {bx[23], bx};
+    let sample_by: signed logic<25> = sample_y - {by[23], by};
+    let sample_cx: signed logic<25> = sample_x - {cx[23], cx};
+    let sample_cy: signed logic<25> = sample_y - {cy[23], cy};
+    let edge0_setup: signed logic<50> =
+        (a_to_b_x * sample_ay) - (a_to_b_y * sample_ax);
+    let b_to_c_x: signed logic<25> = -bc_x;
+    let b_to_c_y: signed logic<25> = -bc_y;
+    let edge1_setup: signed logic<50> =
+        (b_to_c_x * sample_by) - (b_to_c_y * sample_bx);
+    let c_to_a_x: signed logic<25> = -ca_x;
+    let c_to_a_y: signed logic<25> = -ca_y;
+    let edge2_setup: signed logic<50> =
+        (c_to_a_x * sample_cy) - (c_to_a_y * sample_cx);
+    let edge0_step_x: signed logic<50> = -(a_to_b_y * 50'sd256);
+    let edge1_step_x: signed logic<50> = -(b_to_c_y * 50'sd256);
+    let edge2_step_x: signed logic<50> = -(c_to_a_y * 50'sd256);
+    let edge0_step_y: signed logic<50> = a_to_b_x * 50'sd256;
+    let edge1_step_y: signed logic<50> = b_to_c_x * 50'sd256;
+    let edge2_step_y: signed logic<50> = c_to_a_x * 50'sd256;
+    let edge0_inclusive: logic = (a_to_b_y <: 0)
+        || ((a_to_b_y == 0) && (a_to_b_x >: 0));
+    let edge1_inclusive: logic = (b_to_c_y <: 0)
+        || ((b_to_c_y == 0) && (b_to_c_x >: 0));
+    let edge2_inclusive: logic = (c_to_a_y <: 0)
+        || ((c_to_a_y == 0) && (c_to_a_x >: 0));
+    let covered: logic = ((edge0 >: 0) || ((edge0 == 0) && edge0_inclusive))
+        && ((edge1 >: 0) || ((edge1 == 0) && edge1_inclusive))
+        && ((edge2 >: 0) || ((edge2 == 0) && edge2_inclusive));
+
+    assign cmd_ready      = state == State::Idle;
+    assign busy           = state != State::Idle;
+    assign fragment_valid = state == State::Present;
+    assign fragment_x     = current_x;
+    assign fragment_y     = current_y;
+    assign fragment_color = color;
+
+    always_ff {
+        if_reset {
+            state         = State::Idle;
+            ax            = 0;
+            ay            = 0;
+            bx            = 0;
+            by            = 0;
+            cx            = 0;
+            cy            = 0;
+            target_width  = 0;
+            target_height = 0;
+            color         = 0;
+            start_x       = 0;
+            start_y       = 0;
+            end_x         = 0;
+            end_y         = 0;
+            current_x     = 0;
+            current_y     = 0;
+            edge0         = 0;
+            edge1         = 0;
+            edge2         = 0;
+            row_edge0     = 0;
+            row_edge1     = 0;
+            row_edge2     = 0;
+            done          = 0;
+            error         = 0;
+        } else {
+            done = 0;
+            case state {
+                State::Idle: {
+                    if cmd_valid {
+                        ax            = cmd_x0;
+                        ay            = cmd_y0;
+                        bx            = cmd_x1;
+                        by            = cmd_y1;
+                        cx            = cmd_x2;
+                        cy            = cmd_y2;
+                        target_width  = cmd_width;
+                        target_height = cmd_height;
+                        color         = cmd_color;
+                        error         = 0;
+                        state         = State::Orient;
+                    }
+                }
+                State::Orient: {
+                    if (target_width == 0) || (target_height == 0)
+                        || target_width[15] || target_height[15] {
+                        error = 1;
+                        state = State::Finish;
+                    } else if area_calc == 0 {
+                        state = State::Finish;
+                    } else {
+                        if area_calc <: 0 {
+                            bx = cx;
+                            by = cy;
+                            cx = cmd_x1;
+                            cy = cmd_y1;
+                        }
+                        state = State::Bounds;
+                    }
+                }
+                State::Bounds: {
+                    if (maximum_x <= 0)
+                        || (maximum_y <= 0)
+                        || (minimum_x_extended >= target_x_fixed)
+                        || (minimum_y_extended >= target_y_fixed) {
+                        state = State::Finish;
+                    } else {
+                        start_x = if minimum_x <: 0 ? 0 : minimum_x[23:8];
+                        start_y = if minimum_y <: 0 ? 0 : minimum_y[23:8];
+                        end_x = if maximum_x_ceil >: target_x_fixed ?
+                            target_width : maximum_x_ceil[23:8];
+                        end_y = if maximum_y_ceil >: target_y_fixed ?
+                            target_height : maximum_y_ceil[23:8];
+                        state = State::EdgeSetup;
+                    }
+                }
+                State::EdgeSetup: {
+                    current_x = start_x;
+                    current_y = start_y;
+                    edge0     = edge0_setup;
+                    edge1     = edge1_setup;
+                    edge2     = edge2_setup;
+                    row_edge0 = edge0_setup;
+                    row_edge1 = edge1_setup;
+                    row_edge2 = edge2_setup;
+                    state     = State::Evaluate;
+                }
+                State::Evaluate: {
+                    state = if covered ? State::Present : State::Advance;
+                }
+                State::Present: {
+                    if fragment_ready {
+                        state = State::Advance;
+                    }
+                }
+                State::Advance: {
+                    if (current_x + 16'd1) <: end_x {
+                        current_x = current_x + 16'd1;
+                        edge0 = edge0 + edge0_step_x;
+                        edge1 = edge1 + edge1_step_x;
+                        edge2 = edge2 + edge2_step_x;
+                        state = State::Evaluate;
+                    } else if (current_y + 16'd1) <: end_y {
+                        current_x = start_x;
+                        current_y = current_y + 16'd1;
+                        row_edge0 = row_edge0 + edge0_step_y;
+                        row_edge1 = row_edge1 + edge1_step_y;
+                        row_edge2 = row_edge2 + edge2_step_y;
+                        edge0 = row_edge0 + edge0_step_y;
+                        edge1 = row_edge1 + edge1_step_y;
+                        edge2 = row_edge2 + edge2_step_y;
+                        state = State::Evaluate;
+                    } else {
+                        state = State::Finish;
+                    }
+                }
+                State::Finish: {
+                    done  = 1;
+                    state = State::Idle;
+                }
+                default: {
+                    error = 1;
+                    done  = 1;
+                    state = State::Idle;
+                }
+            }
+        }
+    }
+}
