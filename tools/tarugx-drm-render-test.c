@@ -140,6 +140,9 @@ int main(int argc, char **argv)
     struct drm_tarugx_vram_create render_vram = {
         .width = 64, .height = 64,
     };
+    struct drm_tarugx_vram_create triangle_vram = {
+        .width = 64, .height = 64,
+    };
     struct drm_tarugx_vram_create dependency_vram = {
         .width = 1920, .height = 1080,
     };
@@ -199,6 +202,7 @@ int main(int argc, char **argv)
     uint16_t overlap_snapshot[64 * 32];
     uint32_t fb_id = 0;
     uint32_t syncobj = 0;
+    uint32_t triangle_syncobj = 0;
     uint32_t timeline_syncobj = 0;
     uint64_t timeline_point = 7;
     uint32_t fb_handles[4] = { 0 };
@@ -524,6 +528,91 @@ int main(int argc, char **argv)
             }
     puts("VRAM overlapping blit PASS: horizontal and vertical memmove semantics");
 
+    /* Normal 1080p VRAM GEMs live above the 4 MiB PCIe BAR and deliberately
+     * cannot be CPU-mapped.  Initialize through PCIe DMA, render through the
+     * queued triangle engine, then use FPGA blit to bring a small result
+     * window into the BAR-visible front GEM for exact pixel verification. */
+    {
+        struct drm_tarugx_upload_gem triangle_upload = upload;
+        struct drm_tarugx_copy_gem triangle_copy = {
+            .destination_handle = front_vram.handle,
+            .destination_x = 1000,
+            .destination_y = 500,
+            .width = 32,
+            .height = 16,
+        };
+        struct drm_tarugx_submit_gem2 invalid_triangle = triangle_batch;
+
+        if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &triangle_vram)) {
+            perror("create triangle VRAM GEM");
+            goto out_other;
+        }
+        for (uint32_t y = 0; y < triangle_copy.height; y++)
+            for (uint32_t x = 0; x < triangle_copy.width; x++)
+                upload_pixels[y * (upload_source.pitch / 2) + x] = 0x5a5a;
+        triangle_upload.source_handle = upload_source.handle;
+        triangle_upload.destination_handle = triangle_vram.handle;
+        triangle_upload.source_x = 0;
+        triangle_upload.source_y = 0;
+        triangle_upload.destination_x = 0;
+        triangle_upload.destination_y = 0;
+        triangle_upload.width = triangle_copy.width;
+        triangle_upload.height = triangle_copy.height;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &triangle_upload)) {
+            perror("upload triangle background");
+            goto out_other;
+        }
+        if (drmSyncobjCreate(fd, 0, &triangle_syncobj)) {
+            perror("triangle drmSyncobjCreate");
+            goto out_other;
+        }
+        triangle_batch.handle = triangle_vram.handle;
+        triangle_batch.out_syncobj = triangle_syncobj;
+        invalid_triangle = triangle_batch;
+        invalid_triangle.commands[0].x0 = 0x800000;
+        if (expect_errno(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                         &invalid_triangle, EINVAL))
+            goto out_other;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2, &triangle_batch)) {
+            perror("triangle DRM_IOCTL_TARUGX_SUBMIT_GEM2");
+            goto out_other;
+        }
+        if (drmSyncobjWait(fd, &triangle_syncobj, 1,
+                           INT64_MAX, 0, NULL)) {
+            perror("triangle drmSyncobjWait");
+            goto out_other;
+        }
+        triangle_copy.source_handle = triangle_vram.handle;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_COPY_GEM, &triangle_copy)) {
+            perror("copy triangle result into BAR-visible GEM");
+            goto out_other;
+        }
+        for (uint32_t y = 0; y < triangle_copy.height; y++) {
+            for (uint32_t x = 0; x < triangle_copy.width; x++) {
+                uint16_t expected = x < 4 && y < 4 && x + y < 3 ?
+                    0xf800 : 0x5a5a;
+                uint16_t observed = vram_pixels[
+                    (triangle_copy.destination_y + y) * 1920 +
+                    triangle_copy.destination_x + x];
+
+                if (observed != expected) {
+                    fprintf(stderr,
+                            "triangle mismatch at %u,%u: %#x != %#x\n",
+                            x, y, observed, expected);
+                    goto out_other;
+                }
+            }
+        }
+        drmSyncobjDestroy(fd, triangle_syncobj);
+        triangle_syncobj = 0;
+        if (close_handle(fd, triangle_vram.handle)) {
+            perror("close triangle VRAM GEM");
+            goto out_other;
+        }
+        triangle_vram.handle = 0;
+        puts("DRM triangle pixels PASS: DMA background, fenced raster and FPGA readback");
+    }
+
     munmap(upload_pixels, upload_source.size);
     if (close_handle(fd, upload_source.handle)) {
         perror("close partial-DMA source GEM");
@@ -662,61 +751,29 @@ vram_gem_done:
         goto out_render;
     }
     {
-        volatile uint16_t *triangle_pixels;
         struct drm_tarugx_submit_gem2 invalid_triangle = triangle_batch;
 
-        triangle_pixels = mmap(NULL, render_vram.size,
-                               PROT_READ | PROT_WRITE, MAP_SHARED, render,
-                               (off_t)render_vram.mmap_offset);
-        if (triangle_pixels == MAP_FAILED) {
-            perror("mmap triangle VRAM GEM");
-            close_handle(render, render_vram.handle);
-            goto out_render;
-        }
-        for (uint64_t pixel = 0; pixel < render_vram.size / 2; pixel++)
-            triangle_pixels[pixel] = 0x5a5a;
-        __sync_synchronize();
         triangle_batch.handle = render_vram.handle;
         triangle_batch.out_syncobj = syncobj;
         invalid_triangle = triangle_batch;
         invalid_triangle.commands[0].x0 = 0x800000;
         if (expect_errno(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
                          &invalid_triangle, EINVAL)) {
-            munmap((void *)triangle_pixels, render_vram.size);
             close_handle(render, render_vram.handle);
             goto out_render;
         }
         if (ioctl(render, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
                   &triangle_batch)) {
             perror("triangle DRM_IOCTL_TARUGX_SUBMIT_GEM2");
-            munmap((void *)triangle_pixels, render_vram.size);
             close_handle(render, render_vram.handle);
             goto out_render;
         }
         if (drmSyncobjWait(render, &syncobj, 1, INT64_MAX, 0, NULL)) {
             perror("triangle drmSyncobjWait");
-            munmap((void *)triangle_pixels, render_vram.size);
             close_handle(render, render_vram.handle);
             goto out_render;
         }
-        for (uint32_t y = 0; y < 4; y++) {
-            for (uint32_t x = 0; x < 4; x++) {
-                uint16_t expected = x + y < 3 ? 0xf800 : 0x5a5a;
-                uint16_t observed = triangle_pixels[
-                    y * (render_vram.pitch / 2) + x];
-
-                if (observed != expected) {
-                    fprintf(stderr,
-                            "triangle mismatch at %u,%u: %#x != %#x\n",
-                            x, y, observed, expected);
-                    munmap((void *)triangle_pixels, render_vram.size);
-                    close_handle(render, render_vram.handle);
-                    goto out_render;
-                }
-            }
-        }
-        munmap((void *)triangle_pixels, render_vram.size);
-        puts("DRM triangle PASS: GEM2 scheduler, fence and exact RGB565 pixels");
+        puts("DRM render-node triangle PASS: GEM2 scheduler and syncobj fence");
     }
     invalid_sync_batch = render_batch;
     invalid_sync_batch.handle = UINT32_MAX;
