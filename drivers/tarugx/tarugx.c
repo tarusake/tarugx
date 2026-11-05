@@ -93,6 +93,7 @@ struct tarugx {
 	atomic64_t prime_sg_segments_peak;
 	bool dma_available;
 	bool render_available;
+	bool triangle_available;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
 	bool physical_pages_synced;
@@ -152,6 +153,8 @@ struct tarugx_sched_job {
 	u32 count;
 	u32 vram_base;
 	u32 pitch;
+	u32 width;
+	u32 height;
 };
 
 struct tarugx_dma_fence {
@@ -202,6 +205,7 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_GPU_VERSION_ACTIVE_FB_BASE 0x00010001
 #define TGX_GPU_VERSION_1080P60 0x00010002
 #define TGX_GPU_VERSION_RGB565 0x00010003
+#define TGX_GPU_VERSION_TRIANGLE 0x00010004
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -223,6 +227,16 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_REG_QUEUE_STATUS 0xa8
 #define TGX_REG_QUEUE_COMPLETED 0xac
 #define TGX_REG_QUEUE_ERROR_FENCE 0xb0
+#define TGX_REG_TRIANGLE_BASE 0x100
+#define TGX_REG_TRIANGLE_STRIDE 0x104
+#define TGX_REG_TRIANGLE_SIZE 0x108
+#define TGX_REG_TRIANGLE_X0 0x10c
+#define TGX_REG_TRIANGLE_Y0 0x110
+#define TGX_REG_TRIANGLE_X1 0x114
+#define TGX_REG_TRIANGLE_Y1 0x118
+#define TGX_REG_TRIANGLE_X2 0x11c
+#define TGX_REG_TRIANGLE_Y2 0x120
+#define TGX_REG_TRIANGLE_COLOR 0x124
 #define TGX_QUEUE_LEVEL GENMASK(2, 0)
 #define TGX_QUEUE_READY BIT(3)
 #define TGX_QUEUE_ACTIVE BIT(4)
@@ -485,9 +499,13 @@ static void tgx_update_sync_fence(struct tarugx *tgx)
 		tgx_signal_sync_fence(tgx, 0);
 }
 
-static bool tgx_command_valid(const struct drm_tarugx_command *command,
+static bool tgx_command_valid(const struct tarugx *tgx,
+			      const struct drm_tarugx_command *command,
 			      u32 width, u32 height)
 {
+	const s32 coord_min = -0x800000;
+	const s32 coord_max = 0x7fffff;
+
 	if (command->flags || command->pad[0] || command->pad[1] ||
 	    command->pad[2])
 		return false;
@@ -504,12 +522,21 @@ static bool tgx_command_valid(const struct drm_tarugx_command *command,
 			tgx_rect_valid(command->dst_x, command->dst_y,
 				       command->width, command->height,
 				       width, height);
+	if (command->opcode == DRM_TARUGX_OP_TRIANGLE)
+		return tgx->triangle_available &&
+			command->x0 >= coord_min && command->x0 <= coord_max &&
+			command->y0 >= coord_min && command->y0 <= coord_max &&
+			command->x1 >= coord_min && command->x1 <= coord_max &&
+			command->y1 >= coord_min && command->y1 <= coord_max &&
+			command->x2 >= coord_min && command->x2 <= coord_max &&
+			command->y2 >= coord_min && command->y2 <= coord_max;
 	return false;
 }
 
 static void tgx_program_render(struct tarugx *tgx,
 			       u32 source_base, u32 source_pitch,
 			       u32 destination_base, u32 destination_pitch,
+			       u32 destination_width, u32 destination_height,
 			       const struct drm_tarugx_command *command)
 {
 	if (command->opcode == DRM_TARUGX_OP_FILL) {
@@ -520,7 +547,7 @@ static void tgx_program_render(struct tarugx *tgx,
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_FILL_SIZE);
 		writel(command->color, tgx->regs + TGX_REG_FILL_COLOR);
-	} else {
+	} else if (command->opcode == DRM_TARUGX_OP_BLIT) {
 		writel(source_base + command->src_y * source_pitch +
 		       command->src_x * tgx->cpp,
 		       tgx->regs + TGX_REG_BLIT_SRC);
@@ -531,6 +558,18 @@ static void tgx_program_render(struct tarugx *tgx,
 		writel(destination_pitch, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_BLIT_SIZE);
+	} else {
+		writel(destination_base, tgx->regs + TGX_REG_TRIANGLE_BASE);
+		writel(destination_pitch, tgx->regs + TGX_REG_TRIANGLE_STRIDE);
+		writel((destination_height << 16) | destination_width,
+		       tgx->regs + TGX_REG_TRIANGLE_SIZE);
+		writel((u32)command->x0, tgx->regs + TGX_REG_TRIANGLE_X0);
+		writel((u32)command->y0, tgx->regs + TGX_REG_TRIANGLE_Y0);
+		writel((u32)command->x1, tgx->regs + TGX_REG_TRIANGLE_X1);
+		writel((u32)command->y1, tgx->regs + TGX_REG_TRIANGLE_Y1);
+		writel((u32)command->x2, tgx->regs + TGX_REG_TRIANGLE_X2);
+		writel((u32)command->y2, tgx->regs + TGX_REG_TRIANGLE_Y2);
+		writel(command->color, tgx->regs + TGX_REG_TRIANGLE_COLOR);
 	}
 }
 
@@ -610,6 +649,7 @@ static int tgx_execute_commands(struct tarugx *tgx,
 				const struct drm_tarugx_command *commands,
 				u32 count, u32 source_base, u32 source_pitch,
 				u32 destination_base, u32 destination_pitch,
+				u32 destination_width, u32 destination_height,
 				struct drm_file *async_owner,
 				u32 *fence_out)
 {
@@ -663,6 +703,7 @@ static int tgx_execute_commands(struct tarugx *tgx,
 		}
 		tgx_program_render(tgx, source_base, source_pitch,
 				   destination_base, destination_pitch,
+				   destination_width, destination_height,
 				   &commands[submitted]);
 		fence = tgx_next_render_fence(tgx);
 		writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -741,6 +782,7 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 			}
 			tgx_program_render(tgx, job->vram_base, job->pitch,
 					   job->vram_base, job->pitch,
+					   job->width, job->height,
 					   &job->commands[submitted]);
 			fence = tgx_next_render_fence(tgx);
 			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -818,6 +860,7 @@ static int tgx_execute_screen_commands(struct tarugx *tgx,
 		return -EIO;
 	return tgx_execute_commands(tgx, commands, count,
 				    active, tgx->pitch, active, tgx->pitch,
+				    tgx->width, tgx->height,
 				    async_owner, fence_out);
 }
 
@@ -912,7 +955,7 @@ static int tgx_ioctl_submit(struct drm_device *drm, void *data,
 	    args->flags & ~DRM_TARUGX_SUBMIT_ASYNC || args->pad)
 		return -EINVAL;
 	for (i = 0; i < args->count; i++)
-		if (!tgx_command_valid(&args->commands[i],
+		if (!tgx_command_valid(tgx, &args->commands[i],
 				       tgx->width, tgx->height))
 			return -EINVAL;
 	if (!tgx->render_available)
@@ -1156,7 +1199,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	}
 	object = container_of(gem, struct tarugx_vram_object, base);
 	for (i = 0; i < args->count; i++) {
-		if (!tgx_command_valid(&args->commands[i], object->width,
+		if (!tgx_command_valid(tgx, &args->commands[i], object->width,
 				       object->height)) {
 			ret = -EINVAL;
 			goto out_put;
@@ -1184,6 +1227,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
 				   object->node.start, object->pitch,
 				   object->node.start, object->pitch,
+				   object->width, object->height,
 				   async ? file : NULL, &args->fence);
 	if (!ret && async) {
 		tgx->render_async_gem = gem;
@@ -1273,7 +1317,7 @@ static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
 	}
 	object = container_of(gem, struct tarugx_vram_object, base);
 	for (i = 0; i < args->count; i++) {
-		if (!tgx_command_valid(&args->commands[i], object->width,
+		if (!tgx_command_valid(tgx, &args->commands[i], object->width,
 				       object->height)) {
 			ret = -EINVAL;
 			goto out;
@@ -1289,6 +1333,8 @@ static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
 	job->count = args->count;
 	job->vram_base = object->node.start;
 	job->pitch = object->pitch;
+	job->width = object->width;
+	job->height = object->height;
 	for (i = 0; i < args->count; i++)
 		job->commands[i] = args->commands[i];
 	entity_index = (u32)atomic_inc_return(&tgx->render_entity_next) - 1;
@@ -1600,6 +1646,7 @@ static int tgx_ioctl_copy_gem(struct drm_device *drm, void *data,
 	ret = tgx_execute_commands(tgx, &command, 1,
 				   source->node.start, source->pitch,
 				   destination->node.start, destination->pitch,
+				   destination->width, destination->height,
 				   NULL, &fence);
 out_unlock_render:
 	mutex_unlock(&tgx->render_lock);
@@ -3001,6 +3048,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ARRAY_SIZE(rgb565_formats) : ARRAY_SIZE(xrgb8888_formats);
 	tgx->active_fb_base_available =
 		gpu_version >= TGX_GPU_VERSION_ACTIVE_FB_BASE;
+	tgx->triangle_available = gpu_version >= TGX_GPU_VERSION_TRIANGLE;
 	dev_info(&pdev->dev,
 		 "GPU version %u.%u, %ux%u, 32-bit active FB base %s\n",
 		 gpu_version >> 16, gpu_version & 0xffff,

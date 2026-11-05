@@ -32,18 +32,32 @@ struct drm_tarugx_blit {
 
 #define DRM_TARUGX_OP_FILL 1
 #define DRM_TARUGX_OP_BLIT 2
+#define DRM_TARUGX_OP_TRIANGLE 3
 #define DRM_TARUGX_MAX_COMMANDS 4
 #define DRM_TARUGX_SUBMIT_ASYNC (1U << 0)
 
 struct drm_tarugx_command {
 	__u32 opcode;
 	__u32 flags;
-	__u32 src_x;
-	__u32 src_y;
-	__u32 dst_x;
-	__u32 dst_y;
-	__u32 width;
-	__u32 height;
+	union {
+		struct {
+			__u32 src_x;
+			__u32 src_y;
+			__u32 dst_x;
+			__u32 dst_y;
+			__u32 width;
+			__u32 height;
+		};
+		/* Signed 16.8 fixed-point framebuffer coordinates. */
+		struct {
+			__s32 x0;
+			__s32 y0;
+			__s32 x1;
+			__s32 y1;
+			__s32 x2;
+			__s32 y2;
+		};
+	};
 	__u32 color;
 	__u32 pad[3];
 };
