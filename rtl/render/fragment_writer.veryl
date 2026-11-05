@@ -13,11 +13,16 @@ module fragment_writer (
     target_width   : input  logic<16> ,
     target_height  : input  logic<16> ,
     target_validated: input logic     ,
+    depth_enable   : input  logic     ,
+    depth_write_enable: input logic   ,
+    depth_base     : input  logic<32> ,
+    depth_func     : input  logic<3>  ,
     fragment_valid : input  logic     ,
     fragment_ready : output logic     ,
     fragment_x     : input  logic<16> ,
     fragment_y     : input  logic<16> ,
     fragment_color : input  logic<32> ,
+    fragment_depth : input  logic<16> ,
     busy           : output logic     ,
     fault          : output logic     ,
     writes         : output logic<32> ,
@@ -32,22 +37,34 @@ module fragment_writer (
     mem_rsp_data   : input  logic<256>,
     mem_rsp_error  : input  logic     ,
 ) {
-    enum State: logic<3> {
+    enum State: logic<4> {
         Idle,
         RowAddress,
         PixelAddress,
-        Issue,
-        Wait,
+        DepthReadIssue,
+        DepthReadWait,
+        ColorIssue,
+        ColorWait,
+        DepthWriteIssue,
+        DepthWriteWait,
         Fault,
     }
     var state: State;
     var word_addr: logic<24>;
     var lane: logic<4>;
     var pixel: logic<16>;
+    var depth_word_addr: logic<24>;
+    var depth_lane: logic<4>;
+    var depth_value: logic<16>;
+    var depth_active: logic;
+    var depth_write_active: logic;
+    var depth_target_base: logic<32>;
+    var depth_compare: logic<3>;
     var target_ok: logic;
     var pending_x: logic<16>;
     var pending_y: logic<16>;
     var pending_color: logic<32>;
+    var pending_depth: logic<16>;
     var pending_in_bounds: logic;
     var row_offset: logic<64>;
 
@@ -55,26 +72,47 @@ module fragment_writer (
         (pending_y as 64) * (target_stride as 64);
     let column_offset: logic<64> = (pending_x as 64) * 64'd2;
     let pixel_address: logic<64> = (target_base as 64) + row_offset + column_offset;
+    let depth_address: logic<64> = (depth_target_base as 64)
+        + row_offset + column_offset;
     let fragment_in_bounds: logic = (fragment_x <: target_width)
         && (fragment_y <: target_height);
     let fragment_ok: logic = target_ok && pending_in_bounds
-        && ((pixel_address + 64'd2) <= 64'h01000000);
+        && ((pixel_address + 64'd2) <= 64'h01000000)
+        && (!depth_active || ((depth_address + 64'd2) <= 64'h01000000));
+
+    function depth_pass (func: input logic<3>, incoming: input logic<16>,
+                         stored: input logic<16>) -> logic {
+        if func == 0 { return 0; }
+        else if func == 1 { return incoming <: stored; }
+        else if func == 2 { return incoming == stored; }
+        else if func == 3 { return incoming <= stored; }
+        else if func == 4 { return incoming >: stored; }
+        else if func == 5 { return incoming != stored; }
+        else if func == 6 { return incoming >= stored; }
+        else { return 1; }
+    }
 
     assign fragment_ready = state == State::Idle;
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
-    assign mem_valid     = state == State::Issue;
-    assign mem_write     = 1'b1;
-    assign mem_rsp_ready = state == State::Wait;
-    // Reserved for the depth-test read/modify/write stage.
-    let _unused_rsp_data: logic = ^mem_rsp_data;
-    assign mem_addr      = word_addr;
+    assign mem_valid = (state == State::DepthReadIssue)
+        || (state == State::ColorIssue) || (state == State::DepthWriteIssue);
+    assign mem_write = state != State::DepthReadIssue;
+    assign mem_rsp_ready = (state == State::DepthReadWait)
+        || (state == State::ColorWait) || (state == State::DepthWriteWait);
+    assign mem_addr = if (state == State::DepthReadIssue)
+        || (state == State::DepthWriteIssue) ? depth_word_addr : word_addr;
 
     always_comb {
         mem_wdata = 0;
         mem_wstrb = 0;
-        mem_wdata[(lane as 8) * 8'd16+:16] = pixel;
-        mem_wstrb[(lane as 5) * 5'd2+:2] = 2'b11;
+        if state == State::DepthWriteIssue {
+            mem_wdata[(depth_lane as 8) * 8'd16+:16] = depth_value;
+            mem_wstrb[(depth_lane as 5) * 5'd2+:2] = 2'b11;
+        } else if state == State::ColorIssue {
+            mem_wdata[(lane as 8) * 8'd16+:16] = pixel;
+            mem_wstrb[(lane as 5) * 5'd2+:2] = 2'b11;
+        }
     }
 
     always_ff {
@@ -83,10 +121,18 @@ module fragment_writer (
             word_addr = 0;
             lane      = 0;
             pixel     = 0;
+            depth_word_addr = 0;
+            depth_lane = 0;
+            depth_value = 0;
+            depth_active = 0;
+            depth_write_active = 0;
+            depth_target_base = 0;
+            depth_compare = 0;
             target_ok = 0;
             pending_x = 0;
             pending_y = 0;
             pending_color = 0;
+            pending_depth = 0;
             pending_in_bounds = 0;
             row_offset = 0;
             writes    = 0;
@@ -97,6 +143,7 @@ module fragment_writer (
                         pending_x = fragment_x;
                         pending_y = fragment_y;
                         pending_color = fragment_color;
+                        pending_depth = fragment_depth;
                         pending_in_bounds = fragment_in_bounds;
                         state = State::RowAddress;
                     }
@@ -114,23 +161,57 @@ module fragment_writer (
                                 pending_color[15:10],
                                 pending_color[7:3]
                             };
-                            state = State::Issue;
+                            depth_word_addr = {depth_address[23:5], 5'b0};
+                            depth_lane = depth_address[4:1];
+                            depth_value = pending_depth;
+                            state = if depth_active ? State::DepthReadIssue
+                                : State::ColorIssue;
                         } else {
                             state = State::Fault;
                         }
                 }
-                State::Issue: {
+                State::DepthReadIssue: {
                     if mem_ready {
-                        state = State::Wait;
+                        state = State::DepthReadWait;
                     }
                 }
-                State::Wait: {
+                State::DepthReadWait: {
+                    if mem_rsp_valid {
+                        if mem_rsp_error {
+                            state = State::Fault;
+                        } else if depth_pass(depth_compare, depth_value,
+                            mem_rsp_data[(depth_lane as 8) * 8'd16+:16]) {
+                            state = State::ColorIssue;
+                        } else {
+                            state  = State::Idle;
+                        }
+                    }
+                }
+                State::ColorIssue: {
+                    if mem_ready { state = State::ColorWait; }
+                }
+                State::ColorWait: {
+                    if mem_rsp_valid {
+                        if mem_rsp_error {
+                            state = State::Fault;
+                        } else if depth_active && depth_write_active {
+                            state = State::DepthWriteIssue;
+                        } else {
+                            writes = writes + 32'd1;
+                            state = State::Idle;
+                        }
+                    }
+                }
+                State::DepthWriteIssue: {
+                    if mem_ready { state = State::DepthWriteWait; }
+                }
+                State::DepthWriteWait: {
                     if mem_rsp_valid {
                         if mem_rsp_error {
                             state = State::Fault;
                         } else {
                             writes = writes + 32'd1;
-                            state  = State::Idle;
+                            state = State::Idle;
                         }
                     }
                 }
@@ -149,6 +230,10 @@ module fragment_writer (
             }
             if clear {
                 target_ok = target_validated;
+                depth_active = depth_enable;
+                depth_write_active = depth_write_enable;
+                depth_target_base = depth_base;
+                depth_compare = depth_func;
             }
         }
     }
