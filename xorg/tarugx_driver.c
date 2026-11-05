@@ -68,7 +68,11 @@ typedef struct {
     uint64_t access_scan_count;
     uint64_t access_dirty_pages;
     uint64_t bar_bytes_written;
+    uint64_t async_submits;
+    uint64_t async_waits;
+    uint64_t async_wait_failures;
     uint64_t submit_failures;
+    uint32_t pending_fence;
     int last_submit_errno;
 } TaruGXRec, *TaruGXPtr;
 
@@ -76,6 +80,26 @@ typedef struct {
 
 static Bool tarugx_close_screen(ScreenPtr screen);
 static void tarugx_destroy_front(TaruGXPtr tgx);
+
+static int tarugx_wait_pending(TaruGXPtr tgx)
+{
+    struct drm_tarugx_wait wait;
+
+    if (!tgx->pending_fence)
+        return 0;
+    wait = (struct drm_tarugx_wait) {
+        .fence = tgx->pending_fence,
+        .timeout_ms = 1000,
+    };
+    tgx->async_waits++;
+    if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_WAIT, &wait)) {
+        tgx->async_wait_failures++;
+        tgx->last_submit_errno = errno;
+        return -1;
+    }
+    tgx->pending_fence = 0;
+    return 0;
+}
 
 static Bool tarugx_pixmap_is_front(PixmapPtr pixmap)
 {
@@ -93,14 +117,19 @@ static int tarugx_submit(TaruGXPtr tgx, struct drm_tarugx_command *command)
     struct drm_tarugx_submit_gem submit = {
         .handle = tgx->handle,
         .count = 1,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
     };
 
+    if (tarugx_wait_pending(tgx))
+        return -1;
     submit.commands[0] = *command;
     if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
         tgx->submit_failures++;
         tgx->last_submit_errno = errno;
         return -1;
     }
+    tgx->pending_fence = submit.fence;
+    tgx->async_submits++;
     return 0;
 }
 
@@ -111,14 +140,19 @@ static int tarugx_submit_batch(TaruGXPtr tgx,
     struct drm_tarugx_submit_gem submit = {
         .handle = tgx->handle,
         .count = count,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
     };
 
+    if (tarugx_wait_pending(tgx))
+        return -1;
     memcpy(submit.commands, commands, count * sizeof(*commands));
     if (ioctl(tgx->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM, &submit)) {
         tgx->submit_failures++;
         tgx->last_submit_errno = errno;
         return -1;
     }
+    tgx->pending_fence = submit.fence;
+    tgx->async_submits++;
     return 0;
 }
 
@@ -352,9 +386,10 @@ static Bool tarugx_prepare_access(PixmapPtr pixmap, int index)
     (void)index;
     if (!exaDrawableIsOffscreen(&pixmap->drawable))
         return TRUE;
-    /* All EXA pixmaps live in the linear BAR2 aperture.  Hardware submits are
-     * synchronous.  EXA still requires the CPU pointer and pitch to be made
-     * explicit while a fallback accesses a framebuffer-resident pixmap. */
+    /* A CPU fallback must not touch BAR2 or its front-buffer shadow while an
+     * asynchronous FPGA fill/blit is still using the same pixmap. */
+    if (tarugx_wait_pending(tgx))
+        return FALSE;
     __sync_synchronize();
     if (offset >= tgx->map_size)
         return FALSE;
@@ -439,6 +474,8 @@ static Bool tarugx_upload_to_screen(PixmapPtr destination, int x, int y,
         (size_t)(y + height - 1) * destination_pitch +
             (size_t)(x + width) * 2 > tgx->map_size - offset)
         return FALSE;
+    if (tarugx_wait_pending(tgx))
+        return FALSE;
     for (int row = 0; row < height; row++) {
         const uint8_t *src = (const uint8_t *)source + row * source_pitch;
         volatile uint16_t *dst = (volatile uint16_t *)
@@ -482,8 +519,11 @@ static Bool tarugx_upload_to_screen(PixmapPtr destination, int x, int y,
 
 static void tarugx_wait_marker(ScreenPtr screen, int marker)
 {
-    (void)screen;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    TaruGXPtr tgx = TARUGXPTR(scrn);
+
     (void)marker;
+    (void)tarugx_wait_pending(tgx);
     __sync_synchronize();
 }
 
@@ -603,6 +643,7 @@ static void tarugx_destroy_front(TaruGXPtr tgx)
 {
     struct drm_gem_close close = { .handle = tgx->handle };
 
+    (void)tarugx_wait_pending(tgx);
     if (tgx->saved_crtc) {
         drmModeSetCrtc(tgx->fd, tgx->saved_crtc->crtc_id,
                        tgx->saved_crtc->buffer_id,
@@ -713,6 +754,7 @@ static Bool tarugx_close_screen(ScreenPtr screen)
     xf86DrvMsg(scrn->scrnIndex, X_INFO,
                "EXA totals: solid=%llu copy=%llu upload=%llu fallback=%llu "
                "access_scans=%llu dirty_pages=%llu bar_bytes=%llu "
+               "async_submits=%llu async_waits=%llu async_wait_failures=%llu "
                "submit_failures=%llu last_errno=%d\n",
                (unsigned long long)tgx->solid_count,
                (unsigned long long)tgx->copy_count,
@@ -721,6 +763,9 @@ static Bool tarugx_close_screen(ScreenPtr screen)
                (unsigned long long)tgx->access_scan_count,
                (unsigned long long)tgx->access_dirty_pages,
                (unsigned long long)tgx->bar_bytes_written,
+               (unsigned long long)tgx->async_submits,
+               (unsigned long long)tgx->async_waits,
+               (unsigned long long)tgx->async_wait_failures,
                (unsigned long long)tgx->submit_failures,
                tgx->last_submit_errno);
     if (tgx->exa)

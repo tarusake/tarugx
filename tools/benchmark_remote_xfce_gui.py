@@ -131,7 +131,8 @@ def sample(label, contents):
              'delta': {{name: after[name] - before[name] for name in names}},
              'pcie_bytes_observed': after['bytes_uploaded'] -
                                     before['bytes_uploaded'] + bar_bytes,
-             'xorg_acceleration_totals': acceleration}}
+             'xorg_acceleration_totals': acceleration,
+             'xorg_acceleration_fields': acceleration_fields}}
 
 try:
     shadow = sample('modesetting-shadow', baseline)
@@ -140,6 +141,9 @@ try:
     assert exa['delta']['render_commands'] > 0, exa
     assert exa['delta']['render_failures'] == 0, exa
     assert exa['delta']['bytes_uploaded'] == 0, exa
+    assert int(exa['xorg_acceleration_fields']['async_submits']) > 0, exa
+    assert int(exa['xorg_acceleration_fields']['async_wait_failures']) == 0, exa
+    assert int(exa['xorg_acceleration_fields']['submit_failures']) == 0, exa
     assert exa['xorg_cpu_seconds'] < shadow['xorg_cpu_seconds'], (shadow, exa)
     assert exa['pcie_bytes_observed'] < shadow['pcie_bytes_observed'], \
         (shadow, exa)
