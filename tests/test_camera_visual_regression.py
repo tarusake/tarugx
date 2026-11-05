@@ -67,6 +67,18 @@ class CameraVisualRegressionTest(unittest.TestCase):
         self.assertTrue(CAMERA.workload_passed(clean))
         self.assertFalse(CAMERA.workload_passed(failed))
 
+    def test_http_capture_keeps_shared_camera_server_available(self):
+        command = CAMERA.capture_command(
+            "http://127.0.0.1:8765/snapshot.jpg", Path("frame.ppm")
+        )
+        self.assertNotIn("v4l2", command)
+        self.assertIn("http://127.0.0.1:8765/snapshot.jpg", command)
+
+    def test_v4l2_capture_discards_initial_frames(self):
+        command = CAMERA.capture_command("/dev/video0", Path("frame.ppm"))
+        self.assertIn("v4l2", command)
+        self.assertIn("select=gte(n\\,30)", command)
+
     def test_ppm_round_trip(self):
         pixels = self.frame(4, 3, (1, 2, 3))
         with tempfile.TemporaryDirectory() as directory:

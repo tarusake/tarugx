@@ -157,14 +157,22 @@ def mean_luma(pixels: bytes) -> float:
     return total / (len(pixels) // 3)
 
 
-def capture(device: Path, destination: Path) -> None:
+def capture_command(source: str, destination: Path) -> list[str]:
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    if source.startswith(("http://", "https://")):
+        command += ["-i", source]
+    else:
+        command += ["-f", "v4l2", "-i", source,
+                    "-vf", "select=gte(n\\,30)"]
+    return command + ["-frames:v", "1", "-pix_fmt", "rgb24",
+                      str(destination)]
+
+
+def capture(source: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(3):
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "v4l2", "-i", str(device),
-             "-vf", "select=gte(n\\,30)", "-frames:v", "1",
-             "-pix_fmt", "rgb24", str(destination)],
+            capture_command(source, destination),
             check=True,
             timeout=30,
         )
@@ -172,13 +180,14 @@ def capture(device: Path, destination: Path) -> None:
         if mean_luma(pixels) >= 8.0:
             return
         time.sleep(1)
-    raise RuntimeError(f"capture stayed black after 3 attempts: {device}")
+    raise RuntimeError(f"capture stayed black after 3 attempts: {source}")
 
 
 def remote_workload(moves: int) -> dict[str, object]:
     program = f"""
 import json
 from pathlib import Path
+import pwd
 import subprocess
 import time
 
@@ -192,11 +201,34 @@ env = ['runuser', '-u', 'tarusake', '--', 'env', 'DISPLAY=:1',
 def run(args, **kwargs):
     return subprocess.run(args, check=True, text=True, **kwargs)
 
-windows = run([*env, 'xdotool', 'search', '--sync', '--onlyvisible',
-               '--class', 'xfce4-terminal'], timeout=15,
-              capture_output=True).stdout.split()
+def find_terminal():
+    result = subprocess.run(
+        [*env, 'xdotool', 'search', '--onlyvisible',
+         '--class', 'xfce4-terminal'], timeout=5,
+        capture_output=True, text=True)
+    return result.stdout.split()
+
+windows = find_terminal()
 if not windows:
-    raise RuntimeError('Xfce terminal window was not found')
+    account = pwd.getpwnam('tarusake')
+    runtime = Path(f'/run/user/{{account.pw_uid}}')
+    subprocess.run(['systemctl', 'reset-failed', 'tarugx-terminal'],
+                   check=False, capture_output=True)
+    run(['systemd-run', '--unit=tarugx-terminal', '--collect',
+         '--uid=tarusake', f'--working-directory={{account.pw_dir}}',
+         f'--setenv=HOME={{account.pw_dir}}',
+         f'--setenv=XDG_RUNTIME_DIR={{runtime}}', '--setenv=DISPLAY=:1',
+         f'--setenv=XAUTHORITY={{host_dir / "Xauthority"}}',
+         f'--setenv=XDG_CONFIG_HOME={{host_dir / "desktop-config"}}',
+         '/usr/bin/xfce4-terminal', '--disable-server', '--title=TaruGX/100',
+         '--geometry=60x16+45+100'], capture_output=True)
+    for _ in range(30):
+        windows = find_terminal()
+        if windows:
+            break
+        time.sleep(0.5)
+    else:
+        raise RuntimeError('Xfce terminal did not appear after startup')
 window = windows[-1]
 run([*env, 'xdotool', 'windowactivate', '--sync', window,
      'windowmove', '--sync', window, '80', '100',
@@ -237,6 +269,8 @@ def workload_passed(workload: dict[str, object] | None) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=Path, default=Path("/dev/video0"))
+    parser.add_argument("--camera-url",
+                        help="capture from the shared HTTP snapshot endpoint")
     parser.add_argument("--output", type=Path,
                         default=Path("/tmp/tarugx-visual-regression"))
     parser.add_argument("--moves", type=int, default=180)
@@ -251,16 +285,17 @@ def main() -> int:
     if args.compare:
         baseline, observed = args.compare
     else:
-        if not args.device.exists():
+        if not args.camera_url and not args.device.exists():
             parser.error(f"capture device is unavailable: {args.device}")
+        source = args.camera_url or str(args.device)
         baseline = args.output / "baseline.ppm"
         observed = args.output / "after-window-moves.ppm"
         # Normalize the terminal geometry before taking the reference frame.
         remote_workload(0)
-        capture(args.device, baseline)
+        capture(source, baseline)
         time.sleep(1)
         workload = remote_workload(args.moves)
-        capture(args.device, observed)
+        capture(source, observed)
 
     metrics = compare_files(baseline, observed, args.top_mask)
     passed = metrics.passed and workload_passed(workload)
