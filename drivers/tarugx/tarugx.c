@@ -1349,6 +1349,34 @@ out_syncobj:
 	return ret;
 }
 
+static int tgx_ioctl_vram_info(struct drm_device *drm, void *data,
+			       struct drm_file *file)
+{
+	struct drm_tarugx_vram_info *args = data;
+	struct tarugx_vram_object *object;
+	struct drm_gem_object *gem;
+
+	if (args->flags || args->width || args->height || args->pitch ||
+	    args->depth_offset || memchr_inv(args->pad, 0, sizeof(args->pad)))
+		return -EINVAL;
+	gem = drm_gem_object_lookup(file, args->handle);
+	if (!gem)
+		return -ENOENT;
+	if (gem->funcs != &tgx_vram_object_funcs) {
+		drm_gem_object_put(gem);
+		return -EINVAL;
+	}
+	object = container_of(gem, struct tarugx_vram_object, base);
+	args->flags = (object->front ? DRM_TARUGX_VRAM_FRONT : 0) |
+		(object->depth ? DRM_TARUGX_VRAM_DEPTH : 0);
+	args->width = object->width;
+	args->height = object->height;
+	args->pitch = object->pitch;
+	args->depth_offset = object->depth_offset;
+	drm_gem_object_put(gem);
+	return 0;
+}
+
 static int tgx_ioctl_submit_gem2(struct drm_device *drm, void *data,
 				 struct drm_file *file)
 {
@@ -3180,6 +3208,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_GET_PARAM, tgx_ioctl_get_param,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM3, tgx_ioctl_submit_gem3,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_VRAM_INFO, tgx_ioctl_vram_info,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 

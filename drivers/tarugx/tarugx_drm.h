@@ -98,6 +98,16 @@ struct drm_tarugx_vram_create {
 	__u64 mmap_offset;
 };
 
+struct drm_tarugx_vram_info {
+	__u32 handle;
+	__u32 flags; /* returned DRM_TARUGX_VRAM_* properties */
+	__u32 width;
+	__u32 height;
+	__u32 pitch;
+	__u32 depth_offset;
+	__u32 pad[2];
+};
+
 /* Allocate the physical scanout page at BAR2 offset zero.  This is reserved
  * for the DRM master so a display server can combine CPU fallback through the
  * mmap offset with FPGA fill/blit on the same RGB565 front buffer. */
@@ -218,6 +228,7 @@ struct drm_tarugx_get_param {
 #define DRM_TARUGX_COPY_GEM 0x08
 #define DRM_TARUGX_GET_PARAM 0x09
 #define DRM_TARUGX_SUBMIT_GEM3 0x0a
+#define DRM_TARUGX_VRAM_INFO 0x0b
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -248,5 +259,8 @@ struct drm_tarugx_get_param {
 #define DRM_IOCTL_TARUGX_SUBMIT_GEM3 \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM3, \
 		 struct drm_tarugx_submit_gem3)
+#define DRM_IOCTL_TARUGX_VRAM_INFO \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_VRAM_INFO, \
+		 struct drm_tarugx_vram_info)
 
 #endif
