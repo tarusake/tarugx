@@ -72,6 +72,12 @@ tarugx_winsys_supports_triangle_interpolation(
         winsys, DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION);
 }
 
+bool
+tarugx_winsys_supports_depth(const struct tarugx_winsys *winsys)
+{
+    return tarugx_winsys_has_cap(winsys, DRM_TARUGX_CAP_Z16);
+}
+
 void
 tarugx_winsys_close(struct tarugx_winsys *winsys)
 {
@@ -92,6 +98,8 @@ tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
     struct drm_tarugx_vram_create create = {
         .width = width,
         .height = height,
+        .flags = tarugx_winsys_supports_depth(winsys) ?
+                 DRM_TARUGX_VRAM_DEPTH : 0,
     };
 
     if (!winsys || winsys->fd < 0 || !surface || !width || !height)
@@ -104,6 +112,29 @@ tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
         .height = height,
         .pitch = create.pitch,
         .size = create.size,
+        .depth_offset = create.depth_offset,
+        .depth = create.depth_offset != 0,
+    };
+    return true;
+}
+
+bool
+tarugx_winsys_surface_query(struct tarugx_winsys *winsys, uint32_t handle,
+                            struct tarugx_winsys_surface *surface)
+{
+    struct drm_tarugx_vram_info info = { .handle = handle };
+
+    if (!winsys || winsys->fd < 0 || !handle || !surface ||
+        drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_VRAM_INFO, &info))
+        return false;
+    *surface = (struct tarugx_winsys_surface) {
+        .handle = handle,
+        .width = info.width,
+        .height = info.height,
+        .pitch = info.pitch,
+        .size = (uint64_t)info.pitch * info.height,
+        .depth_offset = info.depth_offset,
+        .depth = (info.flags & DRM_TARUGX_VRAM_DEPTH) != 0,
     };
     return true;
 }
@@ -138,12 +169,50 @@ tarugx_winsys_submit_triangles(
     uint32_t count)
 {
     struct drm_tarugx_submit_gem2 submit;
+    struct drm_tarugx_submit_gem3 submit3;
+    bool depth = false;
     uint32_t i;
 
     if (!winsys || winsys->fd < 0 || !surface || !surface->handle ||
         !triangles || !count || count > TARUGX_MAX_BATCH_TRIANGLES ||
         !winsys->submit_syncobj)
         return false;
+    for (i = 0; i < count; i++)
+        depth |= triangles[i].depth_flags != 0;
+    if (depth) {
+        if (!surface->depth ||
+            !tarugx_winsys_supports_depth(winsys))
+            return false;
+        submit3 = (struct drm_tarugx_submit_gem3) {
+            .handle = surface->handle,
+            .count = count,
+            .flags = DRM_TARUGX_SUBMIT_ASYNC,
+            .out_syncobj = winsys->submit_syncobj,
+        };
+        for (i = 0; i < count; i++) {
+            struct drm_tarugx_command3d *output = &submit3.commands[i];
+
+            output->command = (struct drm_tarugx_command) {
+                .opcode = DRM_TARUGX_OP_TRIANGLE,
+                .x0 = triangles[i].x0,
+                .y0 = triangles[i].y0,
+                .x1 = triangles[i].x1,
+                .y1 = triangles[i].y1,
+                .x2 = triangles[i].x2,
+                .y2 = triangles[i].y2,
+                .color = triangles[i].color,
+                .gradient_r = triangles[i].gradient_r,
+                .gradient_g = triangles[i].gradient_g,
+                .gradient_b = triangles[i].gradient_b,
+            };
+            output->depth_flags = triangles[i].depth_flags;
+            output->depth = triangles[i].depth;
+            output->gradient_z_x = triangles[i].gradient_z_x;
+            output->gradient_z_y = triangles[i].gradient_z_y;
+        }
+        return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM3,
+                        &submit3) == 0;
+    }
     submit = (struct drm_tarugx_submit_gem2) {
         .handle = surface->handle,
         .count = count,

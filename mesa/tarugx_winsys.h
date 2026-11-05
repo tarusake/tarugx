@@ -20,6 +20,8 @@ struct tarugx_winsys_surface {
     uint32_t height;
     uint32_t pitch;
     uint64_t size;
+    uint32_t depth_offset;
+    bool depth;
 };
 
 struct tarugx_winsys_triangle {
@@ -33,6 +35,10 @@ struct tarugx_winsys_triangle {
     uint32_t gradient_r;
     uint32_t gradient_g;
     uint32_t gradient_b;
+    uint32_t depth_flags;
+    uint16_t depth;
+    int32_t gradient_z_x;
+    int32_t gradient_z_y;
 };
 
 bool tarugx_winsys_open(struct tarugx_winsys *winsys, int fd);
@@ -41,9 +47,13 @@ bool tarugx_winsys_has_cap(const struct tarugx_winsys *winsys,
                            uint64_t capability);
 bool tarugx_winsys_supports_triangle_interpolation(
     const struct tarugx_winsys *winsys);
+bool tarugx_winsys_supports_depth(const struct tarugx_winsys *winsys);
 bool tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
                                   uint32_t width, uint32_t height,
                                   struct tarugx_winsys_surface *surface);
+bool tarugx_winsys_surface_query(struct tarugx_winsys *winsys,
+                                 uint32_t handle,
+                                 struct tarugx_winsys_surface *surface);
 void tarugx_winsys_surface_destroy(struct tarugx_winsys *winsys,
                                    struct tarugx_winsys_surface *surface);
 bool tarugx_winsys_submit_triangle(

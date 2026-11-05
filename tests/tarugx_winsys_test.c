@@ -5,12 +5,14 @@
 #include <unistd.h>
 
 #include "tarugx_winsys.h"
+#include "tarugx_drm.h"
 
 int
 main(int argc, char **argv)
 {
     struct tarugx_winsys winsys = { .fd = -1 };
     struct tarugx_winsys_surface surface = {0};
+    struct tarugx_winsys_triangle depth_triangle;
     const struct tarugx_winsys_triangle triangles[2] = {{
         .x0 = 0,
         .y0 = 0,
@@ -61,8 +63,27 @@ main(int argc, char **argv)
         fputs("TaruGX winsys fence wait failed\n", stderr);
         goto out_surface;
     }
+    if (tarugx_winsys_supports_depth(&winsys)) {
+        if (!surface.depth || !surface.depth_offset) {
+            fputs("TaruGX Z16 surface allocation missing\n", stderr);
+            goto out_surface;
+        }
+        depth_triangle = triangles[0];
+        depth_triangle.depth_flags = DRM_TARUGX_DEPTH_ENABLE |
+                                     DRM_TARUGX_DEPTH_WRITE |
+                                     (1U << DRM_TARUGX_DEPTH_FUNC_SHIFT);
+        depth_triangle.depth = 1000;
+        depth_triangle.gradient_z_x = 10 << 8;
+        depth_triangle.gradient_z_y = 20 << 8;
+        if (!tarugx_winsys_submit_triangle(&winsys, &surface,
+                                           &depth_triangle) ||
+            !tarugx_winsys_wait(&winsys, INT64_MAX)) {
+            fputs("TaruGX Z16 triangle submit failed\n", stderr);
+            goto out_surface;
+        }
+    }
     printf("TaruGX Mesa winsys PASS: gpu=%u.%u caps=0x%016llx; "
-           "VRAM resource, fill/triangle submit and syncobj fence\n",
+           "VRAM resource, fill/color/Z triangle submit and syncobj fence\n",
            winsys.gpu_version >> 16, winsys.gpu_version & 0xffff,
            (unsigned long long)winsys.caps);
     result = 0;
