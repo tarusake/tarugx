@@ -6,11 +6,17 @@ mesa_source=${1:?usage: build_mesa_tarugx.sh MESA_SOURCE [BUILD_DIR]}
 build_dir=${2:-"$root/build/mesa-tarugx"}
 python_modules=${TARUGX_MESA_PYTHONPATH:-"$root/build/mesa-python"}
 ninja=${TARUGX_NINJA:-"$python_modules/bin/ninja"}
+package_version=${TARUGX_MESA_PACKAGE_VERSION:-}
 
 "$root/scripts/prepare_mesa_tarugx.sh" "$mesa_source"
 
+if [[ -n "$package_version" ]]; then
+    printf '%s\n' "$package_version" > "$mesa_source/VERSION"
+fi
+
 export PYTHONPATH="$python_modules${PYTHONPATH:+:$PYTHONPATH}"
 export NINJA="$ninja"
+export MESA_GIT_SHA1_OVERRIDE=${TARUGX_MESA_GIT_SHA1:-}
 python3 -m mesonbuild.mesonmain setup --reconfigure "$build_dir" "$mesa_source" \
     -Dgallium-drivers=tarugx -Dvulkan-drivers=[] -Dplatforms=[] \
     -Degl=enabled -Dglx=disabled -Dgbm=enabled \

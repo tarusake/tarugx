@@ -10,6 +10,19 @@ Build from an unmodified Mesa 23.2.1 checkout with:
 scripts/build_mesa_tarugx.sh /path/to/mesa-23.2.1
 ```
 
+When loading the result beside a distribution Mesa build, its interface
+version must match exactly.  For Ubuntu, pass the installed package version
+and suppress the upstream Git suffix:
+
+```sh
+TARUGX_MESA_PACKAGE_VERSION="$(dpkg-query -W -f='${Version}' libegl-mesa0)" \
+  scripts/build_mesa_tarugx.sh /path/to/mesa-23.2.1
+```
+
+The build script deliberately sets an empty `MESA_GIT_SHA1_OVERRIDE` unless
+`TARUGX_MESA_GIT_SHA1` is supplied, matching distribution builds made from
+release tarballs.
+
 The first integration milestone deliberately identifies itself as
 `TaruGX (softpipe fallback)`: it proves that Mesa selects the TaruGX-specific
 pipe screen and that the DRM winsys can open the render node. Hardware triangle
