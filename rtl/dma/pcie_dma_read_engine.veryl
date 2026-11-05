@@ -90,6 +90,11 @@ module pcie_dma_read_engine #(
     var completion_lower  : logic<7>  ;
     var completion_end    : logic     ;
     var completion_words  : logic<256>;
+    var completion_expected_lower: logic<7> ;
+    var completion_remaining: logic<7>      ;
+    var completion_vram   : logic<32>       ;
+    var completion_received: logic<7>       ;
+    var completion_slot_length: logic<7>    ;
 
     // Only the final 256 bytes of a 4 KiB page can constrain a 256-byte MRd.
     // Keeping both comparisons seven bits wide avoids a long request-valid path.
@@ -141,13 +146,6 @@ module pcie_dma_read_engine #(
         : if cpl_match[5] ? 5
         : if cpl_match[6] ? 6
         : 7;
-    let expected_address: logic<64> = slot_host[completion_slot]
-        + ((slot_received[completion_slot] as 64) << 2);
-    let cpl_expected_lower: logic<7> = expected_address[6:0];
-    let cpl_remaining: logic<7> = (slot_length[completion_slot] as 7)
-        - (slot_received[completion_slot] as 7);
-    let cpl_vram: logic<32> = slot_vram[completion_slot]
-        + ((slot_received[completion_slot] as 32) << 2);
     // A request may cover every DWORD up to the next 32-byte boundary.  The
     // framebuffer arbiter shifts data and strobes into the addressed lanes,
     // so restricting unaligned writes to one or two DWORDs only creates
@@ -242,6 +240,11 @@ module pcie_dma_read_engine #(
             completion_lower   = 0;
             completion_end     = 0;
             completion_words   = 0;
+            completion_expected_lower = 0;
+            completion_remaining = 0;
+            completion_vram    = 0;
+            completion_received = 0;
+            completion_slot_length = 0;
             done               = 0;
             error              = 0;
             error_code         = 0;
@@ -305,6 +308,14 @@ module pcie_dma_read_engine #(
                         completion_lower    = cpl_lower_address;
                         completion_end      = cpl_end;
                         completion_words    = cpl_data;
+                        completion_expected_lower = slot_host[cpl_slot][6:0]
+                            + ((slot_received[cpl_slot] as 7) << 2);
+                        completion_remaining = (slot_length[cpl_slot] as 7)
+                            - (slot_received[cpl_slot] as 7);
+                        completion_vram = slot_vram[cpl_slot]
+                            + ((slot_received[cpl_slot] as 32) << 2);
+                        completion_received = slot_received[cpl_slot];
+                        completion_slot_length = slot_length[cpl_slot];
                     }
                     if issue_possible {
                         request_pending    = 1;
@@ -342,18 +353,18 @@ module pcie_dma_read_engine #(
                             error = 1;
                             error_code = 4'd4;
                             state = State::Fail;
-                        } else if (completion_length as 7) >: cpl_remaining {
+                        } else if (completion_length as 7) >: completion_remaining {
                             error = 1;
                             error_code = 4'd5;
                             state = State::Fail;
-                        } else if completion_lower != cpl_expected_lower {
+                        } else if completion_lower != completion_expected_lower {
                             error = 1;
                             error_code = 4'd6;
                             state = State::Fail;
                         } else {
                             if !chunk_pending {
                                 chunk_slot = completion_slot;
-                                write_vram = cpl_vram;
+                                write_vram = completion_vram;
                             }
                             chunk_words = if !chunk_pending ?
                                 (completion_words as 512) :
@@ -363,10 +374,10 @@ module pcie_dma_read_engine #(
                                 (completion_length as 5) :
                                 chunk_left + (completion_length as 5);
                             chunk_pending = 1;
-                            slot_received[completion_slot] = slot_received[completion_slot]
+                            slot_received[completion_slot] = completion_received
                                 + (completion_length as 7);
-                            chunk_request_done = ((slot_received[completion_slot]
-                                + (completion_length as 7)) >= slot_length[completion_slot]);
+                            chunk_request_done = ((completion_received
+                                + (completion_length as 7)) >= completion_slot_length);
                             if completion_end {
                                 chunk_flush = 1;
                             }

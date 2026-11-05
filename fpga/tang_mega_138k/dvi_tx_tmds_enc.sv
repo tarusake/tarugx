@@ -37,13 +37,13 @@ module dvi_tx_tmds_enc(
     assign qm_next[8] = !use_xnor;
 
     reg [8:0] qm_reg;
+    reg [3:0] qm_ones_reg;
     reg       qm_den;
     reg [1:0] qm_ctrl;
     reg signed [8:0] disparity;
     reg signed [8:0] next_disparity;
     reg [9:0] encoded;
-    wire [3:0] qm_ones = count_ones(qm_reg[7:0]);
-    wire signed [8:0] balance = $signed({4'b0, qm_ones, 1'b0}) - 9'sd8;
+    wire signed [8:0] balance = $signed({4'b0, qm_ones_reg, 1'b0}) - 9'sd8;
 
     always @* begin
         encoded = 10'b0;
@@ -56,7 +56,7 @@ module dvi_tx_tmds_enc(
                 2'b10: encoded = 10'b0101010100;
                 default: encoded = 10'b1010101011;
             endcase
-        end else if ((disparity == 0) || (qm_ones == 4)) begin
+        end else if ((disparity == 0) || (qm_ones_reg == 4)) begin
             encoded = {~qm_reg[8], qm_reg[8], qm_reg[8] ? qm_reg[7:0] : ~qm_reg[7:0]};
             next_disparity = disparity + (qm_reg[8] ? balance : -balance);
         end else if (((disparity > 0) && (balance > 0)) ||
@@ -75,6 +75,7 @@ module dvi_tx_tmds_enc(
             den_reg <= 0;
             ctrl_reg <= 0;
             qm_reg <= 0;
+            qm_ones_reg <= 0;
             qm_den <= 0;
             qm_ctrl <= 0;
             disparity <= 0;
@@ -84,6 +85,10 @@ module dvi_tx_tmds_enc(
             den_reg <= den;
             ctrl_reg <= ctrl;
             qm_reg <= qm_next;
+            // qm_reg and its population count describe the same symbol.  The
+            // count is computed in the preceding pipeline stage so it is not
+            // part of the 148.5 MHz disparity feedback path.
+            qm_ones_reg <= count_ones(qm_next[7:0]);
             qm_den <= den_reg;
             qm_ctrl <= ctrl_reg;
             disparity <= next_disparity;

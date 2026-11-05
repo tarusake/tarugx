@@ -212,8 +212,12 @@ module dma_completion_rx (
                     packet_active       = !beat_eop;
                 }
             }
-            if transfer_present && !rx_wait {
-                beat_pending = 1;
+            // Capture the wide RX bus whenever the one-beat input register is
+            // available.  Only `beat_pending` depends on rx_valid.  Keeping
+            // rx_valid off the clock enables of the 256 data flops avoids a
+            // high-fanout 100 MHz control path; idle bus samples are ignored
+            // because beat_pending remains clear.
+            if !beat_pending && !chunk_pending {
                 beat_sop     = rx_sop;
                 beat_eop     = rx_eop;
                 beat_valid   = rx_valid;
@@ -227,6 +231,9 @@ module dma_completion_rx (
                     || (active_valid[5] && (rx_data[175:168] == active_tags[47:40]))
                     || (active_valid[6] && (rx_data[175:168] == active_tags[55:48]))
                     || (active_valid[7] && (rx_data[175:168] == active_tags[63:56]));
+                if transfer_present {
+                    beat_pending = 1;
+                }
             }
         }
     }
