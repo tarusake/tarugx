@@ -18,5 +18,13 @@ result=$(env LIBGL_DRIVERS_PATH="$driver_dir" \
     "$test_binary" "$card_node" "$@")
 printf '%s\n' "$result"
 grep -qx 'renderer=TaruGX (FPGA 3D + softpipe fallback)' <<<"$result"
-grep -qx 'center=f800' <<<"$result"
 grep -qx 'corner=001f' <<<"$result"
+if grep -qx 'path=fpga-batch' <<<"$result"; then
+    grep -qx 'center=001f' <<<"$result"
+    grep -qx 'top_left=ffe0' <<<"$result"
+    grep -qx 'top_right=ffff' <<<"$result"
+    grep -qx 'bottom_left=f800' <<<"$result"
+    grep -qx 'bottom_right=07e0' <<<"$result"
+else
+    grep -qx 'center=f800' <<<"$result"
+fi

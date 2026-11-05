@@ -95,6 +95,26 @@ main(int argc, char **argv)
         1.0f, 0.0f, 0.0f, 1.0f,
         1.0f, 0.0f, 0.0f, 1.0f,
     };
+    static const GLfloat batch_positions[] = {
+        -0.9f, -0.9f, -0.1f, -0.9f, -0.5f, -0.1f,
+         0.1f, -0.9f,  0.9f, -0.9f,  0.5f, -0.1f,
+        -0.9f,  0.1f, -0.1f,  0.1f, -0.5f,  0.9f,
+         0.1f,  0.1f,  0.9f,  0.1f,  0.5f,  0.9f,
+    };
+    static const GLfloat batch_colors[] = {
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        0.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,
+    };
     static const GLushort indices[] = {0, 1, 2};
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
     struct drm_mode_map_dumb map_request = {0};
@@ -210,8 +230,9 @@ main(int argc, char **argv)
     glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
-                          positions);
-    glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0, colors);
+                          batch ? batch_positions : positions);
+    glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0,
+                          batch ? batch_colors : colors);
     glEnableVertexAttribArray(position_location);
     glEnableVertexAttribArray(color_location);
     if (software_fallback) {
@@ -253,7 +274,21 @@ main(int argc, char **argv)
                    (batch ? "fpga-batch" :
                     (indexed ? "fpga-indexed" : "fpga")), iterations,
            iterations * (batch ? 4 : 1), draw_ms);
-    if (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800 ||
+    if (batch)
+        printf("top_left=%04x\ntop_right=%04x\n"
+               "bottom_left=%04x\nbottom_right=%04x\n",
+               pixels[198 * (stride / 2) + 480],
+               pixels[198 * (stride / 2) + 1440],
+               pixels[738 * (stride / 2) + 480],
+               pixels[738 * (stride / 2) + 1440]);
+    if ((!batch &&
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
+        (batch &&
+         (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f ||
+          pixels[198 * (stride / 2) + 480] != 0xffe0 ||
+          pixels[198 * (stride / 2) + 1440] != 0xffff ||
+          pixels[738 * (stride / 2) + 480] != 0xf800 ||
+          pixels[738 * (stride / 2) + 1440] != 0x07e0)) ||
         pixels[0] != 0x001f) {
         fputs("RGB565 readback mismatch\n", stderr);
         goto out;
