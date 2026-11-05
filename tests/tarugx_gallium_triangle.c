@@ -150,9 +150,11 @@ main(int argc, char **argv)
     int gradient = 0;
     int cull_mode = 0;
     int front_face_cw = 0;
+    int scissor_mode = 0;
     GLsizei vertex_count;
     int position_location;
     int color_location;
+    const char *path;
     int fd = -1;
     int result = 1;
 
@@ -160,7 +162,7 @@ main(int argc, char **argv)
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
                         "[--software|--batch|--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
-                        "--cull-front-cw]\n",
+                        "--cull-front-cw|--scissor]\n",
                 argv[0]);
         return 2;
     }
@@ -193,6 +195,8 @@ main(int argc, char **argv)
         } else if (!strcmp(argv[3], "--cull-front-cw")) {
             cull_mode = GL_FRONT;
             front_face_cw = 1;
+        } else if (!strcmp(argv[3], "--scissor")) {
+            scissor_mode = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -264,7 +268,11 @@ main(int argc, char **argv)
     glEnableVertexAttribArray(position_location);
     glEnableVertexAttribArray(color_location);
     if (software_fallback) {
-        glScissor(0, 0, WIDTH, HEIGHT);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ZERO);
+    }
+    if (scissor_mode) {
+        glScissor(800, 0, 320, HEIGHT);
         glEnable(GL_SCISSOR_TEST);
     }
     vertex_count = batch ? 12 : 3;
@@ -294,20 +302,29 @@ main(int argc, char **argv)
                   map_request.offset);
     if (pixels == MAP_FAILED)
         goto out;
-    printf("renderer=%s\ncenter=%04x\ncorner=%04x\nstride=%u\n"
+    path = "fpga";
+    if (software_fallback)
+        path = "softpipe";
+    else if (batch)
+        path = "fpga-batch";
+    else if (indexed)
+        path = "fpga-indexed";
+    else if (gradient)
+        path = "fpga-gradient";
+    else if (cull_mode == GL_BACK)
+        path = front_face_cw ? "fpga-cull-back-cw" : "fpga-cull-back";
+    else if (cull_mode == GL_FRONT)
+        path = front_face_cw ? "fpga-cull-front-cw" : "fpga-cull-front";
+    else if (scissor_mode)
+        path = "fpga-scissor";
+    printf("renderer=%s\ncenter=%04x\ncorner=%04x\n"
+           "scissor_outside=%04x\nscissor_inside=%04x\nstride=%u\n"
            "path=%s\ndraws=%u\ntriangles=%u\ndraw_ms=%.3f\n",
            glGetString(GL_RENDERER),
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
-           stride, software_fallback ? "softpipe" :
-                   (batch ? "fpga-batch" :
-                    (indexed ? "fpga-indexed" :
-                     (gradient ? "fpga-gradient" :
-                      (cull_mode == GL_BACK ?
-                       (front_face_cw ? "fpga-cull-back-cw" :
-                        "fpga-cull-back") :
-                       (cull_mode == GL_FRONT ?
-                        (front_face_cw ? "fpga-cull-front-cw" :
-                         "fpga-cull-front") : "fpga"))))), iterations,
+           pixels[(HEIGHT / 2) * (stride / 2) + 760],
+           pixels[(HEIGHT / 2) * (stride / 2) + 1080],
+           stride, path, iterations,
            iterations * (batch ? 4 : 1), draw_ms);
     if (batch)
         printf("top_left=%04x\ntop_right=%04x\n"
@@ -328,6 +345,9 @@ main(int argc, char **argv)
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
         (cull_mode && ((cull_mode == GL_FRONT) != front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f) ||
+        (scissor_mode &&
+         (pixels[(HEIGHT / 2) * (stride / 2) + 760] != 0x001f ||
+          pixels[(HEIGHT / 2) * (stride / 2) + 1080] != 0xf800)) ||
         (batch &&
          (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x001f ||
           pixels[198 * (stride / 2) + 480] != 0xffe0 ||

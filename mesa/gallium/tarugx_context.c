@@ -20,6 +20,9 @@
 
 #define TARUGX_MAX_SCREENS 8
 #define TARUGX_MAX_CONTEXTS 16
+#define TARUGX_VERTEX_FLOATS 8
+#define TARUGX_CLIP_MAX_VERTICES 8
+#define TARUGX_CLIP_MAX_TRIANGLES (TARUGX_CLIP_MAX_VERTICES - 2)
 
 struct tarugx_screen_state {
     struct pipe_screen *screen;
@@ -110,7 +113,7 @@ tarugx_draw_state_supported(struct tarugx_context_state *state)
         softpipe->depth_stencil;
 
     return rasterizer && blend && depth &&
-           !rasterizer->rasterizer_discard && !rasterizer->scissor &&
+           !rasterizer->rasterizer_discard &&
            !rasterizer->poly_smooth && !rasterizer->multisample &&
            rasterizer->fill_front == PIPE_POLYGON_MODE_FILL &&
            rasterizer->fill_back == PIPE_POLYGON_MODE_FILL &&
@@ -312,6 +315,83 @@ tarugx_triangle_culled(const struct tarugx_context_state *state,
            (front_facing ? PIPE_FACE_FRONT : PIPE_FACE_BACK);
 }
 
+static unsigned
+tarugx_clip_edge(const float input[][TARUGX_VERTEX_FLOATS],
+                 unsigned input_count,
+                 float output[][TARUGX_VERTEX_FLOATS], unsigned axis,
+                 float boundary, bool keep_greater)
+{
+    const float *previous;
+    bool previous_inside;
+    unsigned output_count = 0;
+    unsigned i, component;
+
+    if (!input_count)
+        return 0;
+    previous = input[input_count - 1];
+    previous_inside = keep_greater ? previous[axis] >= boundary :
+                                     previous[axis] <= boundary;
+    for (i = 0; i < input_count; i++) {
+        const float *current = input[i];
+        bool current_inside = keep_greater ? current[axis] >= boundary :
+                                             current[axis] <= boundary;
+
+        if (current_inside != previous_inside) {
+            double denominator = (double)current[axis] - previous[axis];
+            double amount = ((double)boundary - previous[axis]) /
+                            denominator;
+
+            if (!isfinite(amount) || output_count >= TARUGX_CLIP_MAX_VERTICES)
+                return 0;
+            for (component = 0; component < TARUGX_VERTEX_FLOATS;
+                 component++)
+                output[output_count][component] =
+                    previous[component] +
+                    (current[component] - previous[component]) * amount;
+            output[output_count][axis] = boundary;
+            output_count++;
+        }
+        if (current_inside) {
+            if (output_count >= TARUGX_CLIP_MAX_VERTICES)
+                return 0;
+            memcpy(output[output_count], current,
+                   sizeof(output[output_count]));
+            output_count++;
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    return output_count;
+}
+
+static unsigned
+tarugx_clip_triangle(const struct tarugx_context_state *state,
+                     const float *v0, const float *v1, const float *v2,
+                     float output[][TARUGX_VERTEX_FLOATS])
+{
+    const struct pipe_rasterizer_state *rasterizer =
+        state->softpipe->rasterizer;
+    const struct pipe_scissor_state *clip = &state->softpipe->cliprect[0];
+    float first[TARUGX_CLIP_MAX_VERTICES][TARUGX_VERTEX_FLOATS] = {{0}};
+    float second[TARUGX_CLIP_MAX_VERTICES][TARUGX_VERTEX_FLOATS] = {{0}};
+    unsigned count = 3;
+
+    memcpy(first[0], v0, sizeof(first[0]));
+    memcpy(first[1], v1, sizeof(first[1]));
+    memcpy(first[2], v2, sizeof(first[2]));
+    if (!rasterizer->scissor) {
+        memcpy(output, first, count * sizeof(first[0]));
+        return count;
+    }
+    if (clip->minx >= clip->maxx || clip->miny >= clip->maxy)
+        return 0;
+    count = tarugx_clip_edge(first, count, second, 0, clip->minx, true);
+    count = tarugx_clip_edge(second, count, first, 0, clip->maxx, false);
+    count = tarugx_clip_edge(first, count, second, 1, clip->miny, true);
+    count = tarugx_clip_edge(second, count, output, 1, clip->maxy, false);
+    return count;
+}
+
 static bool
 tarugx_draw_vertices(struct tarugx_context_state *state,
                      const uint16_t *indices, unsigned start, unsigned count)
@@ -321,6 +401,7 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     struct tarugx_winsys_triangle *triangles;
     unsigned triangle_count;
     unsigned prepared_count = 0;
+    unsigned maximum_triangles;
     unsigned stride;
     unsigned i;
 
@@ -333,24 +414,48 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     if (!vertices || stride < 8)
         return false;
     triangle_count = count / 3;
-    triangles = calloc(triangle_count, sizeof(*triangles));
+    if (triangle_count > UINT_MAX / TARUGX_CLIP_MAX_TRIANGLES)
+        return false;
+    maximum_triangles = triangle_count * TARUGX_CLIP_MAX_TRIANGLES;
+    triangles = calloc(maximum_triangles, sizeof(*triangles));
     if (!triangles)
         return false;
     for (i = 0; i < count; i += 3) {
+        float clipped[TARUGX_CLIP_MAX_VERTICES][TARUGX_VERTEX_FLOATS];
+        unsigned clipped_count;
+        unsigned clipped_index;
         unsigned a = indices ? indices[i] : start + i;
         unsigned b = indices ? indices[i + 1] : start + i + 1;
         unsigned c = indices ? indices[i + 2] : start + i + 2;
 
-        if (!tarugx_prepare_triangle(state, &surface,
-                                     vertices + a * stride,
-                                     vertices + b * stride,
-                                     vertices + c * stride,
-                                     &triangles[prepared_count])) {
+        if (!isfinite(vertices[a * stride]) ||
+            !isfinite(vertices[a * stride + 1]) ||
+            !isfinite(vertices[b * stride]) ||
+            !isfinite(vertices[b * stride + 1]) ||
+            !isfinite(vertices[c * stride]) ||
+            !isfinite(vertices[c * stride + 1])) {
             free(triangles);
             return false;
         }
-        if (!tarugx_triangle_culled(state, &triangles[prepared_count]))
-            prepared_count++;
+        clipped_count = tarugx_clip_triangle(state,
+                                             vertices + a * stride,
+                                             vertices + b * stride,
+                                             vertices + c * stride,
+                                             clipped);
+        for (clipped_index = 1; clipped_index + 1 < clipped_count;
+             clipped_index++) {
+            if (prepared_count >= maximum_triangles ||
+                !tarugx_prepare_triangle(state, &surface, clipped[0],
+                                         clipped[clipped_index],
+                                         clipped[clipped_index + 1],
+                                         &triangles[prepared_count])) {
+                free(triangles);
+                return false;
+            }
+            if (!tarugx_triangle_culled(state,
+                                        &triangles[prepared_count]))
+                prepared_count++;
+        }
     }
     for (i = 0; i < prepared_count; i += TARUGX_MAX_BATCH_TRIANGLES) {
         unsigned batch_count = MIN2(TARUGX_MAX_BATCH_TRIANGLES,
