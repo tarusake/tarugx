@@ -133,6 +133,35 @@ struct drm_tarugx_submit_gem2 {
 	struct drm_tarugx_command commands[DRM_TARUGX_MAX_COMMANDS];
 };
 
+#define DRM_TARUGX_DEPTH_ENABLE (1U << 0)
+#define DRM_TARUGX_DEPTH_WRITE (1U << 1)
+#define DRM_TARUGX_DEPTH_FUNC_SHIFT 2
+#define DRM_TARUGX_DEPTH_FUNC_MASK (7U << DRM_TARUGX_DEPTH_FUNC_SHIFT)
+
+/* Extended triangle command.  Depth is unsigned Z16; gradients are signed
+ * 16.8 values restricted to the low signed 24-bit hardware range. */
+struct drm_tarugx_command3d {
+	struct drm_tarugx_command command;
+	__u32 depth_flags;
+	__u32 depth;
+	__s32 gradient_z_x;
+	__s32 gradient_z_y;
+};
+
+/* Scheduler-backed submission for a VRAM GEM created with
+ * DRM_TARUGX_VRAM_DEPTH.  Color and Z planes share one reservation object. */
+struct drm_tarugx_submit_gem3 {
+	__u32 handle;
+	__u32 count;
+	__u32 flags;
+	__u32 pad;
+	__u32 in_syncobj;
+	__u32 out_syncobj;
+	__u64 in_point;
+	__u64 out_point;
+	struct drm_tarugx_command3d commands[DRM_TARUGX_MAX_COMMANDS];
+};
+
 /* Copy a validated RGB565 rectangle from a DMA-coherent host dumb GEM into a
  * TaruGX VRAM GEM.  Coordinates and width must preserve the FPGA DMA engine's
  * 32-bit transfer alignment. */
@@ -188,6 +217,7 @@ struct drm_tarugx_get_param {
 #define DRM_TARUGX_UPLOAD_GEM 0x07
 #define DRM_TARUGX_COPY_GEM 0x08
 #define DRM_TARUGX_GET_PARAM 0x09
+#define DRM_TARUGX_SUBMIT_GEM3 0x0a
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -215,5 +245,8 @@ struct drm_tarugx_get_param {
 #define DRM_IOCTL_TARUGX_GET_PARAM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_GET_PARAM, \
 		 struct drm_tarugx_get_param)
+#define DRM_IOCTL_TARUGX_SUBMIT_GEM3 \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM3, \
+		 struct drm_tarugx_submit_gem3)
 
 #endif

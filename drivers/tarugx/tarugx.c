@@ -149,6 +149,13 @@ struct tarugx_vram_object {
 	u32 depth_offset;
 };
 
+struct tarugx_depth_state {
+	u32 flags;
+	u16 depth;
+	s32 gradient_x;
+	s32 gradient_y;
+};
+
 struct tarugx_sched_job {
 	struct drm_sched_job base;
 	struct tarugx *tgx;
@@ -160,6 +167,8 @@ struct tarugx_sched_job {
 	u32 pitch;
 	u32 width;
 	u32 height;
+	u32 depth_base;
+	struct tarugx_depth_state depth[DRM_TARUGX_MAX_COMMANDS];
 };
 
 struct tarugx_dma_fence {
@@ -556,6 +565,8 @@ static void tgx_program_render(struct tarugx *tgx,
 			       u32 source_base, u32 source_pitch,
 			       u32 destination_base, u32 destination_pitch,
 			       u32 destination_width, u32 destination_height,
+			       u32 depth_base,
+			       const struct tarugx_depth_state *depth,
 			       const struct drm_tarugx_command *command)
 {
 	if (command->opcode == DRM_TARUGX_OP_FILL) {
@@ -595,14 +606,23 @@ static void tgx_program_render(struct tarugx *tgx,
 		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_G);
 		writel(command->gradient_b,
 		       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_B);
-		/* Every legacy triangle explicitly disables Z16.  This prevents
-		 * depth state from a future extended submission leaking into an
-		 * ordinary command that uses the same hardware register file. */
 		if (tgx->depth_available) {
-			writel(0, tgx->regs + TGX_REG_TRIANGLE_DEPTH_BASE);
-			writel(0, tgx->regs + TGX_REG_TRIANGLE_DEPTH_CONFIG);
-			writel(0, tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_X);
-			writel(0, tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_Y);
+			u32 config = 0;
+
+			if (depth && depth->flags & DRM_TARUGX_DEPTH_ENABLE) {
+				config = depth->depth | BIT(16) |
+					 ((depth->flags & DRM_TARUGX_DEPTH_WRITE) ?
+					  BIT(17) : 0) |
+					 ((depth->flags & DRM_TARUGX_DEPTH_FUNC_MASK)
+					  << (18 - DRM_TARUGX_DEPTH_FUNC_SHIFT));
+			}
+			writel(config ? depth_base : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_DEPTH_BASE);
+			writel(config, tgx->regs + TGX_REG_TRIANGLE_DEPTH_CONFIG);
+			writel(config ? (u32)depth->gradient_x & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_X);
+			writel(config ? (u32)depth->gradient_y & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_Y);
 		}
 	}
 }
@@ -738,6 +758,7 @@ static int tgx_execute_commands(struct tarugx *tgx,
 		tgx_program_render(tgx, source_base, source_pitch,
 				   destination_base, destination_pitch,
 				   destination_width, destination_height,
+				   0, NULL,
 				   &commands[submitted]);
 		fence = tgx_next_render_fence(tgx);
 		writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -817,6 +838,8 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 			tgx_program_render(tgx, job->vram_base, job->pitch,
 					   job->vram_base, job->pitch,
 					   job->width, job->height,
+					   job->depth_base,
+					   &job->depth[submitted],
 					   &job->commands[submitted]);
 			fence = tgx_next_render_fence(tgx);
 			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -1469,6 +1492,209 @@ out_unlock_gate:
 	resv_locked = false;
 	/* Keep the SPSC entity producer side serialized without waiting for the
 	 * hardware execution lock held by the scheduler worker. */
+	mutex_lock(&tgx->render_submit_lock);
+	drm_sched_entity_push_job(&job->base);
+	mutex_unlock(&tgx->render_submit_lock);
+	gem = NULL;
+	job = NULL;
+	job_initialized = false;
+	gate_held = false;
+	ret = 0;
+out:
+	if (resv_locked)
+		dma_resv_unlock(gem->resv);
+	if (job_initialized)
+		drm_sched_job_cleanup(&job->base);
+	if (job)
+		dma_fence_put(job->input_fence);
+	if (gate_held)
+		atomic_dec(&tgx->render_sched_jobs);
+	if (out_chain)
+		dma_fence_chain_free(out_chain);
+	dma_fence_put(in_fence);
+	drm_gem_object_put(gem);
+	kfree(job);
+	if (out_syncobj)
+		drm_syncobj_put(out_syncobj);
+	return ret;
+}
+
+static bool tgx_command3d_valid(const struct tarugx *tgx,
+				const struct drm_tarugx_command3d *command,
+				u32 width, u32 height)
+{
+	const u32 valid_flags = DRM_TARUGX_DEPTH_ENABLE |
+		DRM_TARUGX_DEPTH_WRITE | DRM_TARUGX_DEPTH_FUNC_MASK;
+
+	if (!tgx_command_valid(tgx, &command->command, width, height) ||
+	    command->depth_flags & ~valid_flags || command->depth > U16_MAX ||
+	    command->gradient_z_x < -0x800000 ||
+	    command->gradient_z_x > 0x7fffff ||
+	    command->gradient_z_y < -0x800000 ||
+	    command->gradient_z_y > 0x7fffff)
+		return false;
+	if (command->command.opcode != DRM_TARUGX_OP_TRIANGLE)
+		return !command->depth_flags && !command->depth &&
+			!command->gradient_z_x && !command->gradient_z_y;
+	if (!(command->depth_flags & DRM_TARUGX_DEPTH_ENABLE))
+		return !command->depth_flags && !command->depth &&
+			!command->gradient_z_x && !command->gradient_z_y;
+	if (!tgx->depth_available ||
+	    ((command->depth_flags & DRM_TARUGX_DEPTH_WRITE) &&
+	     !(command->depth_flags & DRM_TARUGX_DEPTH_ENABLE)))
+		return false;
+	return true;
+}
+
+static int tgx_ioctl_submit_gem3(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_submit_gem3 *args = data;
+	struct tarugx_sched_job *job = NULL;
+	struct tarugx_vram_object *object;
+	struct drm_gem_object *gem = NULL;
+	struct drm_syncobj *out_syncobj = NULL;
+	struct dma_fence_chain *out_chain = NULL;
+	struct dma_fence *in_fence = NULL;
+	struct dma_fence *dependency;
+	struct dma_fence *finished;
+	bool gate_held = false, job_initialized = false, resv_locked = false;
+	u32 entity_index, i;
+	int ret;
+
+	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS || args->pad ||
+	    args->flags != DRM_TARUGX_SUBMIT_ASYNC ||
+	    (args->in_point && !args->in_syncobj) ||
+	    (args->out_point && !args->out_syncobj))
+		return -EINVAL;
+	if (!tgx->render_sched_initialized || !tgx->depth_available)
+		return -EOPNOTSUPP;
+	if (args->out_syncobj) {
+		out_syncobj = drm_syncobj_find(file, args->out_syncobj);
+		if (!out_syncobj)
+			return -ENOENT;
+	}
+	gem = drm_gem_object_lookup(file, args->handle);
+	if (!gem) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (gem->funcs != &tgx_vram_object_funcs) {
+		ret = -EINVAL;
+		goto out;
+	}
+	object = container_of(gem, struct tarugx_vram_object, base);
+	if (!object->depth) {
+		ret = -EINVAL;
+		goto out;
+	}
+	for (i = 0; i < args->count; i++) {
+		if (!tgx_command3d_valid(tgx, &args->commands[i],
+					 object->width, object->height)) {
+			ret = -EINVAL;
+			goto out;
+		}
+	}
+	job = kzalloc(sizeof(*job), GFP_KERNEL);
+	if (!job) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	job->tgx = tgx;
+	job->gem = gem;
+	job->count = args->count;
+	job->vram_base = object->node.start;
+	job->pitch = object->pitch;
+	job->width = object->width;
+	job->height = object->height;
+	job->depth_base = object->node.start + object->depth_offset;
+	for (i = 0; i < args->count; i++) {
+		job->commands[i] = args->commands[i].command;
+		job->depth[i].flags = args->commands[i].depth_flags;
+		job->depth[i].depth = args->commands[i].depth;
+		job->depth[i].gradient_x = args->commands[i].gradient_z_x;
+		job->depth[i].gradient_y = args->commands[i].gradient_z_y;
+	}
+	entity_index = (u32)atomic_inc_return(&tgx->render_entity_next) - 1;
+	entity_index %= tgx->render_entity_count;
+	ret = drm_sched_job_init(&job->base,
+				 &tgx->render_entities[entity_index], 1, tgx);
+	if (ret)
+		goto out;
+	job_initialized = true;
+	if (args->in_syncobj) {
+		ret = drm_syncobj_find_fence(file, args->in_syncobj,
+					     args->in_point, 0, &in_fence);
+		if (ret)
+			goto out;
+		job->input_fence = dma_fence_get(in_fence);
+		dependency = in_fence;
+		in_fence = NULL;
+		ret = drm_sched_job_add_dependency(&job->base, dependency);
+		if (ret)
+			goto out;
+	}
+	if (args->out_point) {
+		out_chain = dma_fence_chain_alloc();
+		if (!out_chain) {
+			ret = -ENOMEM;
+			goto out;
+		}
+	}
+	mutex_lock(&tgx->render_submit_lock);
+	if (tgx->render_async_valid && tgx->render_async_owner == file) {
+		ret = tgx_reap_async(tgx, 0);
+		if (tgx->render_async_completed)
+			tgx_clear_async(tgx);
+		if (ret && ret != -EAGAIN)
+			goto out_unlock_gate3;
+	}
+	if (tgx->removing) {
+		ret = -ENODEV;
+	} else if (tgx->render_async_valid) {
+		ret = -EBUSY;
+	} else {
+		i = atomic_inc_return(&tgx->render_sched_jobs);
+		if (i > TGX_RENDER_JOB_LIMIT) {
+			atomic_dec(&tgx->render_sched_jobs);
+			ret = -EBUSY;
+		} else {
+			if (i > atomic64_read(&tgx->render_sched_peak))
+				atomic64_set(&tgx->render_sched_peak, i);
+			gate_held = true;
+			ret = 0;
+		}
+	}
+out_unlock_gate3:
+	mutex_unlock(&tgx->render_submit_lock);
+	if (ret)
+		goto out;
+	ret = dma_resv_lock_interruptible(gem->resv, NULL);
+	if (ret)
+		goto out;
+	resv_locked = true;
+	ret = drm_sched_job_add_resv_dependencies(&job->base, gem->resv,
+						  DMA_RESV_USAGE_WRITE);
+	if (ret)
+		goto out;
+	ret = dma_resv_reserve_fences(gem->resv, 1);
+	if (ret)
+		goto out;
+	drm_sched_job_arm(&job->base);
+	finished = &job->base.s_fence->finished;
+	dma_resv_add_fence(gem->resv, finished, DMA_RESV_USAGE_WRITE);
+	if (out_syncobj) {
+		if (args->out_point) {
+			drm_syncobj_add_point(out_syncobj, out_chain, finished,
+					      args->out_point);
+			out_chain = NULL;
+		} else {
+			drm_syncobj_replace_fence(out_syncobj, finished);
+		}
+	}
+	dma_resv_unlock(gem->resv);
+	resv_locked = false;
 	mutex_lock(&tgx->render_submit_lock);
 	drm_sched_entity_push_job(&job->base);
 	mutex_unlock(&tgx->render_submit_lock);
@@ -2952,6 +3178,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_COPY_GEM, tgx_ioctl_copy_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_GET_PARAM, tgx_ioctl_get_param,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM3, tgx_ioctl_submit_gem3,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
