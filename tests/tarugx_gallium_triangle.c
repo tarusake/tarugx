@@ -38,7 +38,7 @@ compile_shader(GLenum type, const char *source)
 }
 
 static EGLConfig
-find_rgb565_config(EGLDisplay display)
+find_rgb565_config(EGLDisplay display, int depth_test)
 {
     EGLConfig configs[128];
     EGLint count = 0;
@@ -50,14 +50,16 @@ find_rgb565_config(EGLDisplay display)
         EGLint visual = 0;
         EGLint renderable = 0;
         EGLint surfaces = 0;
+        EGLint depth_size = 0;
 
         eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &visual);
         eglGetConfigAttrib(display, configs[i], EGL_RENDERABLE_TYPE,
                            &renderable);
         eglGetConfigAttrib(display, configs[i], EGL_SURFACE_TYPE, &surfaces);
+        eglGetConfigAttrib(display, configs[i], EGL_DEPTH_SIZE, &depth_size);
         if ((uint32_t)visual == DRM_FORMAT_RGB565 &&
             (renderable & EGL_OPENGL_ES2_BIT) &&
-            (surfaces & EGL_WINDOW_BIT))
+            (surfaces & EGL_WINDOW_BIT) && (!depth_test || depth_size >= 16))
             return configs[i];
     }
     return NULL;
@@ -68,9 +70,10 @@ main(int argc, char **argv)
 {
     static const char vertex_source[] =
         "attribute vec2 position;\n"
+        "attribute float depth;\n"
         "attribute vec4 color;\n"
         "varying lowp vec4 v_color;\n"
-        "void main() { gl_Position = vec4(position, 0.0, 1.0);"
+        "void main() { gl_Position = vec4(position, depth, 1.0);"
         " v_color = color; }\n";
     static const char fragment_source[] =
         "varying lowp vec4 v_color;\n"
@@ -99,6 +102,18 @@ main(int argc, char **argv)
         0.25f, 0.25f, 0.25f, 1.0f,
         0.75f, 0.25f, 0.25f, 1.0f,
         0.50f, 0.75f, 0.25f, 1.0f,
+    };
+    static const GLfloat depth_values[] = {
+        -0.6f, -0.6f, -0.6f,
+         0.4f,  0.4f,  0.4f,
+    };
+    static const GLfloat depth_colors[] = {
+        0.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 1.0f, 0.0f, 1.0f,
+        0.0f, 1.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
     };
     static const GLfloat batch_positions[] = {
         -0.9f, -0.9f, -0.1f, -0.9f, -0.5f, -0.1f,
@@ -151,8 +166,10 @@ main(int argc, char **argv)
     int cull_mode = 0;
     int front_face_cw = 0;
     int scissor_mode = 0;
+    int depth_test = 0;
     GLsizei vertex_count;
     int position_location;
+    int depth_location;
     int color_location;
     const char *path;
     int fd = -1;
@@ -162,7 +179,7 @@ main(int argc, char **argv)
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
                         "[--software|--batch|--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
-                        "--cull-front-cw|--scissor]\n",
+                        "--cull-front-cw|--scissor|--depth]\n",
                 argv[0]);
         return 2;
     }
@@ -197,6 +214,8 @@ main(int argc, char **argv)
             front_face_cw = 1;
         } else if (!strcmp(argv[3], "--scissor")) {
             scissor_mode = 1;
+        } else if (!strcmp(argv[3], "--depth")) {
+            depth_test = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -216,7 +235,7 @@ main(int argc, char **argv)
     if (!eglInitialize(display, &major, &minor) ||
         !eglBindAPI(EGL_OPENGL_ES_API))
         goto out;
-    config = find_rgb565_config(display);
+    config = find_rgb565_config(display, depth_test);
     if (!config) {
         fputs("RGB565 EGL config not found\n", stderr);
         goto out;
@@ -248,6 +267,7 @@ main(int argc, char **argv)
     glLinkProgram(program);
     glUseProgram(program);
     position_location = glGetAttribLocation(program, "position");
+    depth_location = glGetAttribLocation(program, "depth");
     color_location = glGetAttribLocation(program, "color");
     glViewport(0, 0, WIDTH, HEIGHT);
     glDisable(GL_BLEND);
@@ -259,12 +279,25 @@ main(int argc, char **argv)
         glFrontFace(front_face_cw ? GL_CW : GL_CCW);
     }
     glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClearDepthf(1.0f);
+    if (depth_test) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+    }
+    glClear(GL_COLOR_BUFFER_BIT |
+            (depth_test ? GL_DEPTH_BUFFER_BIT : 0));
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
                           batch ? batch_positions : positions);
     glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0,
-                          batch ? batch_colors :
-                          (gradient ? gradient_colors : colors));
+                          depth_test ? depth_colors :
+                          (batch ? batch_colors :
+                          (gradient ? gradient_colors : colors)));
+    if (depth_test) {
+        glVertexAttribPointer(depth_location, 1, GL_FLOAT, GL_FALSE, 0,
+                              depth_values);
+        glEnableVertexAttribArray(depth_location);
+    }
     glEnableVertexAttribArray(position_location);
     glEnableVertexAttribArray(color_location);
     if (software_fallback) {
@@ -275,7 +308,7 @@ main(int argc, char **argv)
         glScissor(800, 0, 320, HEIGHT);
         glEnable(GL_SCISSOR_TEST);
     }
-    vertex_count = batch ? 12 : 3;
+    vertex_count = depth_test ? 6 : (batch ? 12 : 3);
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
     for (i = 0; i < iterations; i++) {
         if (indexed)
@@ -317,6 +350,8 @@ main(int argc, char **argv)
         path = front_face_cw ? "fpga-cull-front-cw" : "fpga-cull-front";
     else if (scissor_mode)
         path = "fpga-scissor";
+    else if (depth_test)
+        path = "fpga-depth";
     printf("renderer=%s\ncenter=%04x\ncorner=%04x\n"
            "scissor_outside=%04x\nscissor_inside=%04x\nstride=%u\n"
            "path=%s\ndraws=%u\ntriangles=%u\ndraw_ms=%.3f\n",
@@ -325,7 +360,7 @@ main(int argc, char **argv)
            pixels[(HEIGHT / 2) * (stride / 2) + 760],
            pixels[(HEIGHT / 2) * (stride / 2) + 1080],
            stride, path, iterations,
-           iterations * (batch ? 4 : 1), draw_ms);
+           iterations * (depth_test ? 2 : (batch ? 4 : 1)), draw_ms);
     if (batch)
         printf("top_left=%04x\ntop_right=%04x\n"
                "bottom_left=%04x\nbottom_right=%04x\n",
@@ -340,7 +375,9 @@ main(int argc, char **argv)
           ((pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 5) & 63) > 34 ||
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) < 7 ||
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
-        (!batch && !gradient &&
+        (depth_test &&
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x07e0) ||
+        (!batch && !gradient && !depth_test &&
          ((cull_mode == GL_FRONT) == front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
         (cull_mode && ((cull_mode == GL_FRONT) != front_face_cw) &&
