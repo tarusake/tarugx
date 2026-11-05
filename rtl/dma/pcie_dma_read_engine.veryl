@@ -49,7 +49,8 @@ module pcie_dma_read_engine #(
 ) {
     enum State: logic<3> {
         Idle,
-        Validate,
+        ValidateCapture,
+        ValidateResolve,
         Run,
         Finish,
         Fail,
@@ -95,6 +96,11 @@ module pcie_dma_read_engine #(
     var completion_vram   : logic<32>       ;
     var completion_received: logic<7>       ;
     var completion_slot_length: logic<7>    ;
+    // Capture the two wide additions before the validation decision.  This
+    // keeps command length bits from crossing adders and comparators in the
+    // same 100 MHz cycle that writes the error/state registers.
+    var validation_vram_end: logic<33>;
+    var validation_host_end: logic<65>;
 
     // Only the final 256 bytes of a 4 KiB page can constrain a 256-byte MRd.
     // Keeping both comparisons seven bits wide avoids a long request-valid path.
@@ -104,11 +110,10 @@ module pcie_dma_read_engine #(
         7'd64 - {1'b0, issue_host[7:2]} : 7'd64;
     let next_request_dw: logic<7> = if remaining_limit_dw <: page_limit_dw ?
         remaining_limit_dw : page_limit_dw;
-    let command_end: logic<33> = (issue_vram as 33) + (length_bytes as 33);
-    let command_ok: logic = (issue_host[1:0] == 0) && (issue_vram[1:0] == 0)
-        && (length_bytes != 0) && (length_bytes[1:0] == 0)
-        && (command_end <= 33'h01000000)
-        && ((issue_host + (length_bytes as 64)) >= issue_host);
+    let command_basic_ok: logic = (issue_host[1:0] == 0) && (issue_vram[1:0] == 0)
+        && (length_bytes != 0) && (length_bytes[1:0] == 0);
+    let command_bounds_ok: logic = (validation_vram_end <= 33'h01000000)
+        && !validation_host_end[64];
     let issue_slot: logic<3> = if !slot_valid[0] ? 0
         : if !slot_valid[1] ? 1
         : if !slot_valid[2] ? 2
@@ -245,6 +250,8 @@ module pcie_dma_read_engine #(
             completion_vram    = 0;
             completion_received = 0;
             completion_slot_length = 0;
+            validation_vram_end = 0;
+            validation_host_end = 0;
             done               = 0;
             error              = 0;
             error_code         = 0;
@@ -286,10 +293,15 @@ module pcie_dma_read_engine #(
                     fb_outstanding     = 0;
                     error              = 0;
                     error_code         = 0;
-                    state              = State::Validate;
+                    state              = State::ValidateCapture;
                 }
-                State::Validate: {
-                    if command_ok {
+                State::ValidateCapture: {
+                    validation_vram_end = (issue_vram as 33) + (length_bytes as 33);
+                    validation_host_end = (issue_host as 65) + (length_bytes as 65);
+                    state = State::ValidateResolve;
+                }
+                State::ValidateResolve: {
+                    if command_basic_ok && command_bounds_ok {
                         state = State::Run;
                     } else {
                         error = 1;
