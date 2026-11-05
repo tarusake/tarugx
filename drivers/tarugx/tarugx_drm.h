@@ -122,6 +122,20 @@ struct drm_tarugx_upload_gem {
 	__u32 pad[3];
 };
 
+/* Copy one validated RGB565 rectangle between two TaruGX VRAM GEMs. */
+struct drm_tarugx_copy_gem {
+	__u32 source_handle;
+	__u32 destination_handle;
+	__u32 source_x;
+	__u32 source_y;
+	__u32 destination_x;
+	__u32 destination_y;
+	__u32 width;
+	__u32 height;
+	__u32 flags;
+	__u32 pad[3];
+};
+
 #define DRM_TARUGX_FILL 0x00
 #define DRM_TARUGX_BLIT 0x01
 #define DRM_TARUGX_SUBMIT 0x02
@@ -130,6 +144,7 @@ struct drm_tarugx_upload_gem {
 #define DRM_TARUGX_SUBMIT_GEM 0x05
 #define DRM_TARUGX_SUBMIT_GEM2 0x06
 #define DRM_TARUGX_UPLOAD_GEM 0x07
+#define DRM_TARUGX_COPY_GEM 0x08
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -151,5 +166,8 @@ struct drm_tarugx_upload_gem {
 #define DRM_IOCTL_TARUGX_UPLOAD_GEM \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_TARUGX_UPLOAD_GEM, \
 		struct drm_tarugx_upload_gem)
+#define DRM_IOCTL_TARUGX_COPY_GEM \
+	DRM_IOW(DRM_COMMAND_BASE + DRM_TARUGX_COPY_GEM, \
+		struct drm_tarugx_copy_gem)
 
 #endif

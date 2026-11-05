@@ -507,23 +507,28 @@ static bool tgx_command_valid(const struct drm_tarugx_command *command,
 	return false;
 }
 
-static void tgx_program_render(struct tarugx *tgx, u32 base, u32 pitch,
+static void tgx_program_render(struct tarugx *tgx,
+			       u32 source_base, u32 source_pitch,
+			       u32 destination_base, u32 destination_pitch,
 			       const struct drm_tarugx_command *command)
 {
 	if (command->opcode == DRM_TARUGX_OP_FILL) {
-		writel(base + command->dst_y * pitch + command->dst_x * tgx->cpp,
+		writel(destination_base + command->dst_y * destination_pitch +
+		       command->dst_x * tgx->cpp,
 		       tgx->regs + TGX_REG_FILL_ADDR);
-		writel(pitch, tgx->regs + TGX_REG_FILL_STRIDE);
+		writel(destination_pitch, tgx->regs + TGX_REG_FILL_STRIDE);
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_FILL_SIZE);
 		writel(command->color, tgx->regs + TGX_REG_FILL_COLOR);
 	} else {
-		writel(base + command->src_y * pitch + command->src_x * tgx->cpp,
+		writel(source_base + command->src_y * source_pitch +
+		       command->src_x * tgx->cpp,
 		       tgx->regs + TGX_REG_BLIT_SRC);
-		writel(base + command->dst_y * pitch + command->dst_x * tgx->cpp,
+		writel(destination_base + command->dst_y * destination_pitch +
+		       command->dst_x * tgx->cpp,
 		       tgx->regs + TGX_REG_BLIT_DST);
-		writel(pitch, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
-		writel(pitch, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
+		writel(source_pitch, tgx->regs + TGX_REG_BLIT_SRC_STRIDE);
+		writel(destination_pitch, tgx->regs + TGX_REG_BLIT_DST_STRIDE);
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_BLIT_SIZE);
 	}
@@ -603,7 +608,8 @@ static int tgx_reap_async(struct tarugx *tgx, u32 timeout_ms)
 
 static int tgx_execute_commands(struct tarugx *tgx,
 				const struct drm_tarugx_command *commands,
-				u32 count, u32 base, u32 pitch,
+				u32 count, u32 source_base, u32 source_pitch,
+				u32 destination_base, u32 destination_pitch,
 				struct drm_file *async_owner,
 				u32 *fence_out)
 {
@@ -655,7 +661,9 @@ static int tgx_execute_commands(struct tarugx *tgx,
 			ret = -EBUSY;
 			break;
 		}
-		tgx_program_render(tgx, base, pitch, &commands[submitted]);
+		tgx_program_render(tgx, source_base, source_pitch,
+				   destination_base, destination_pitch,
+				   &commands[submitted]);
 		fence = tgx_next_render_fence(tgx);
 		writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
 		writel(commands[submitted].opcode,
@@ -732,6 +740,7 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 				break;
 			}
 			tgx_program_render(tgx, job->vram_base, job->pitch,
+					   job->vram_base, job->pitch,
 					   &job->commands[submitted]);
 			fence = tgx_next_render_fence(tgx);
 			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -807,8 +816,9 @@ static int tgx_execute_screen_commands(struct tarugx *tgx,
 
 	if (active > tgx->vram_bytes - tgx->frame_bytes)
 		return -EIO;
-	return tgx_execute_commands(tgx, commands, count, active,
-				    tgx->pitch, async_owner, fence_out);
+	return tgx_execute_commands(tgx, commands, count,
+				    active, tgx->pitch, active, tgx->pitch,
+				    async_owner, fence_out);
 }
 
 static int tgx_ioctl_fill(struct drm_device *drm, void *data,
@@ -1173,6 +1183,7 @@ static int tgx_ioctl_submit_gem(struct drm_device *drm, void *data,
 	mutex_lock(&tgx->render_lock);
 	ret = tgx_execute_commands(tgx, args->commands, args->count,
 				   object->node.start, object->pitch,
+				   object->node.start, object->pitch,
 				   async ? file : NULL, &args->fence);
 	if (!ret && async) {
 		tgx->render_async_gem = gem;
@@ -1495,6 +1506,101 @@ static int tgx_ioctl_upload_gem(struct drm_device *drm, void *data,
 		atomic64_add((u64)row_bytes * args->height,
 			     &tgx->partial_dma_bytes);
 	}
+out_unlock_render:
+	mutex_unlock(&tgx->render_lock);
+	mutex_unlock(&tgx->render_submit_lock);
+	drm_dev_exit(idx);
+out:
+	drm_gem_object_put(destination_gem);
+	drm_gem_object_put(source_gem);
+	return ret;
+}
+
+static int tgx_ioctl_copy_gem(struct drm_device *drm, void *data,
+			      struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_copy_gem *args = data;
+	struct drm_gem_object *source_gem = NULL, *destination_gem = NULL;
+	struct tarugx_vram_object *source, *destination;
+	struct drm_tarugx_command command = {
+		.opcode = DRM_TARUGX_OP_BLIT,
+	};
+	long waited;
+	u32 fence;
+	int idx, ret = 0;
+
+	if (args->flags || memchr_inv(args->pad, 0, sizeof(args->pad)) ||
+	    !args->width || !args->height ||
+	    args->source_handle == args->destination_handle)
+		return -EINVAL;
+	source_gem = drm_gem_object_lookup(file, args->source_handle);
+	if (!source_gem)
+		return -ENOENT;
+	destination_gem = drm_gem_object_lookup(file,
+						args->destination_handle);
+	if (!destination_gem) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (source_gem->funcs != &tgx_vram_object_funcs ||
+	    destination_gem->funcs != &tgx_vram_object_funcs) {
+		ret = -EINVAL;
+		goto out;
+	}
+	source = container_of(source_gem, struct tarugx_vram_object, base);
+	destination = container_of(destination_gem,
+				   struct tarugx_vram_object, base);
+	if (args->source_x >= source->width ||
+	    args->source_y >= source->height ||
+	    args->destination_x >= destination->width ||
+	    args->destination_y >= destination->height ||
+	    args->width > source->width - args->source_x ||
+	    args->height > source->height - args->source_y ||
+	    args->width > destination->width - args->destination_x ||
+	    args->height > destination->height - args->destination_y) {
+		ret = -EINVAL;
+		goto out;
+	}
+	command.src_x = args->source_x;
+	command.src_y = args->source_y;
+	command.dst_x = args->destination_x;
+	command.dst_y = args->destination_y;
+	command.width = args->width;
+	command.height = args->height;
+	waited = dma_resv_wait_timeout(source_gem->resv, DMA_RESV_USAGE_READ,
+				       true,
+				       msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS));
+	if (waited <= 0) {
+		ret = waited ? (int)waited : -ETIMEDOUT;
+		goto out;
+	}
+	waited = dma_resv_wait_timeout(destination_gem->resv,
+				       DMA_RESV_USAGE_WRITE, true,
+				       msecs_to_jiffies(TGX_RENDER_TIMEOUT_MS));
+	if (waited <= 0) {
+		ret = waited ? (int)waited : -ETIMEDOUT;
+		goto out;
+	}
+	if (!tgx->render_available) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (!drm_dev_enter(drm, &idx)) {
+		ret = -ENODEV;
+		goto out;
+	}
+	mutex_lock(&tgx->render_submit_lock);
+	mutex_lock(&tgx->render_lock);
+	if (tgx->render_async_valid) {
+		ret = tgx_reap_async(tgx, TGX_RENDER_TIMEOUT_MS);
+		if (ret)
+			goto out_unlock_render;
+	}
+	ret = tgx_execute_commands(tgx, &command, 1,
+				   source->node.start, source->pitch,
+				   destination->node.start, destination->pitch,
+				   NULL, &fence);
 out_unlock_render:
 	mutex_unlock(&tgx->render_lock);
 	mutex_unlock(&tgx->render_submit_lock);
@@ -2711,6 +2817,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM2, tgx_ioctl_submit_gem2,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_UPLOAD_GEM, tgx_ioctl_upload_gem,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_COPY_GEM, tgx_ioctl_copy_gem,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 

@@ -30,6 +30,8 @@ _Static_assert(offsetof(struct drm_tarugx_submit_gem2, commands) == 40,
                "submit GEM2 command offset changed");
 _Static_assert(sizeof(struct drm_tarugx_upload_gem) == 48,
                "upload GEM ABI size changed");
+_Static_assert(sizeof(struct drm_tarugx_copy_gem) == 48,
+               "copy GEM ABI size changed");
 
 static int close_handle(int fd, uint32_t handle)
 {
@@ -103,6 +105,14 @@ int main(int argc, char **argv)
     struct drm_tarugx_upload_gem upload = {
         .source_x = 4, .source_y = 2,
         .destination_x = 100, .destination_y = 80,
+        .width = 32, .height = 16,
+    };
+    struct drm_tarugx_vram_create copy_source = {
+        .width = 64, .height = 32,
+    };
+    struct drm_tarugx_copy_gem copy = {
+        .source_x = 0, .source_y = 0,
+        .destination_x = 200, .destination_y = 120,
         .width = 32, .height = 16,
     };
     struct drm_tarugx_vram_create other_vram = { .width = 32, .height = 32 };
@@ -331,6 +341,87 @@ int main(int argc, char **argv)
             goto out_other;
         }
     }
+    if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &copy_source)) {
+        perror("create cross-GEM blit source");
+        munmap(upload_pixels, upload_source.size);
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    upload.destination_handle = copy_source.handle;
+    upload.destination_x = 0;
+    upload.destination_y = 0;
+    if (ioctl(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &upload)) {
+        perror("upload cross-GEM blit source");
+        close_handle(fd, copy_source.handle);
+        munmap(upload_pixels, upload_source.size);
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    copy.source_handle = copy_source.handle;
+    copy.destination_handle = front_vram.handle;
+    for (uint32_t y = 0; y < copy.height; y++)
+        for (uint32_t x = 0; x < copy.width; x++)
+            vram_pixels[(copy.destination_y + y) * 1920 +
+                        copy.destination_x + x] = 0;
+    __sync_synchronize();
+    if (ioctl(fd, DRM_IOCTL_TARUGX_COPY_GEM, &copy)) {
+        perror("DRM_IOCTL_TARUGX_COPY_GEM");
+        close_handle(fd, copy_source.handle);
+        munmap(upload_pixels, upload_source.size);
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    for (uint32_t y = 0; y < copy.height; y++) {
+        for (uint32_t x = 0; x < copy.width; x++) {
+            uint16_t expected = (uint16_t)(0x4000 +
+                (upload.source_y + y) * upload_source.width +
+                upload.source_x + x);
+            uint16_t observed = vram_pixels[
+                (copy.destination_y + y) * 1920 +
+                copy.destination_x + x];
+
+            if (observed != expected) {
+                fprintf(stderr,
+                        "cross-GEM blit mismatch at %u,%u: %#x != %#x\n",
+                        x, y, observed, expected);
+                close_handle(fd, copy_source.handle);
+                munmap(upload_pixels, upload_source.size);
+                close_handle(fd, upload_source.handle);
+                munmap((void *)vram_map, front_vram.size);
+                close_handle(fd, front_vram.handle);
+                goto out_other;
+            }
+        }
+    }
+    {
+        struct drm_tarugx_copy_gem invalid_copy = copy;
+
+        invalid_copy.source_handle = upload_source.handle;
+        if (expect_errno(fd, DRM_IOCTL_TARUGX_COPY_GEM,
+                         &invalid_copy, EINVAL)) {
+            close_handle(fd, copy_source.handle);
+            munmap(upload_pixels, upload_source.size);
+            close_handle(fd, upload_source.handle);
+            munmap((void *)vram_map, front_vram.size);
+            close_handle(fd, front_vram.handle);
+            goto out_other;
+        }
+    }
+    if (close_handle(fd, copy_source.handle)) {
+        perror("close cross-GEM blit source");
+        munmap(upload_pixels, upload_source.size);
+        close_handle(fd, upload_source.handle);
+        munmap((void *)vram_map, front_vram.size);
+        close_handle(fd, front_vram.handle);
+        goto out_other;
+    }
+    puts("VRAM cross-GEM blit PASS: offscreen source copied to front buffer");
     munmap(upload_pixels, upload_source.size);
     if (close_handle(fd, upload_source.handle)) {
         perror("close partial-DMA source GEM");
