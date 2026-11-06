@@ -33,6 +33,10 @@ module scanout_engine #(
     underflow     : output 'pixel logic     ,
     vblank_toggle : output 'pixel logic     ,
     fault_snapshot: output 'pixel logic<64> ,
+    debug_push_valid: output 'mem logic,
+    debug_push_ready: output 'mem logic,
+    debug_pop_valid : output 'pixel logic,
+    debug_pop_ready : output 'pixel logic,
 ) {
     var buffered      : 'mem   logic     ;
     var push_valid    : 'mem   logic     ;
@@ -44,6 +48,10 @@ module scanout_engine #(
     var pop_ready     : 'pixel logic     ;
     var pop_data      : 'pixel logic<257 + INDEX_WIDTH>;
     var display_active: 'pixel logic     ;
+    assign debug_push_valid = push_valid;
+    assign debug_push_ready = push_ready;
+    assign debug_pop_valid = pop_valid;
+    assign debug_pop_ready = pop_ready;
     #[sv("async_reg = \"true\", syn_preserve = 1")]
     var display_active_sync: 'mem logic<2>;
     assign scan_urgent = (enable || display_active_sync[1]) && !buffered && !config_error;

@@ -13,6 +13,7 @@ module scanout_engine_tb;
  logic [63:0] fault_snapshot;
  int delay_count=0,cycle=0,frame=0,pixels=0;logic [23:0] saved_addr;
  logic scan_urgent;
+ logic debug_push_valid,debug_push_ready,debug_pop_valid,debug_pop_ready;
  tarugx_scanout_engine dut(.*);
  assign mem_ready=delay_count==0 && !mem_rsp_valid && cycle%7!=0;
  always @(posedge mem_clk) if(mem_rst_n) begin

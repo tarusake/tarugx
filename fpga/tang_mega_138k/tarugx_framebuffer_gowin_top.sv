@@ -232,6 +232,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .clkin(sys_clk_p), .clkout0(pixel_clk), .clkout1(serial_clk), .lock(video_lock)
     );
     wire [25:0] video_settings;
+    wire scanout_debug_push_valid;
+    wire scanout_debug_push_ready;
+    wire scanout_debug_pop_valid;
+    wire scanout_debug_pop_ready;
 `ifdef TARUGX_VIDEO_LINK_TEST
     assign video_settings = 26'b0;
 `else
@@ -508,6 +512,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     assign mem_active_buffer = 1'b0;
     assign mem_active_fb_base = 32'b0;
     assign fault_snapshot = 64'b0;
+    assign scanout_debug_push_valid = 1'b0;
+    assign scanout_debug_push_ready = 1'b0;
+    assign scanout_debug_pop_valid = 1'b0;
+    assign scanout_debug_pop_ready = 1'b0;
 `else
 `ifdef TARUGX_PIPELINED_MEMORY
     tarugx_scanout_pipeline_engine #(
@@ -530,6 +538,10 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
         .de(scan_video_de), .hsync(scan_video_hsync), .vsync(scan_video_vsync),
         .rgb(scan_video_rgb), .underflow(underflow), .vblank_toggle(scan_vblank_toggle),
         .fault_snapshot(fault_snapshot),
+        .debug_push_valid(scanout_debug_push_valid),
+        .debug_push_ready(scanout_debug_push_ready),
+        .debug_pop_valid(scanout_debug_pop_valid),
+        .debug_pop_ready(scanout_debug_pop_ready),
         .mem_valid(scan_valid),
         .mem_ready(scan_ready),
         .mem_addr(scan_addr),
@@ -735,8 +747,8 @@ module tarugx_framebuffer_gowin_top #(parameter bit PCIE_RECOVERY_EXPERIMENT = 1
     tarugx_scanout_debug_monitor u_scanout_debug (
         .mem_clk(ui_clk), .mem_rst_n(mem_reset[1]),
         .pixel_clk(pixel_clk), .pixel_rst_n(pixel_reset[1]),
-        .push(u_scanout.push_valid && u_scanout.push_ready),
-        .pop(u_scanout.pop_valid && u_scanout.pop_ready), .underflow(underflow),
+        .push(scanout_debug_push_valid && scanout_debug_push_ready),
+        .pop(scanout_debug_pop_valid && scanout_debug_pop_ready), .underflow(underflow),
         .scan_valid(scan_valid), .scan_ready(scan_ready),
         .scan_rsp_valid(scan_rsp_valid), .scan_rsp_ready(scan_rsp_ready),
         .mem_valid(mem_valid), .mem_ready(mem_ready), .mem_write(mem_write),
