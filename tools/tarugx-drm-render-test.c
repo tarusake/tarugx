@@ -34,6 +34,10 @@ _Static_assert(sizeof(struct drm_tarugx_upload_gem) == 48,
                "upload GEM ABI size changed");
 _Static_assert(sizeof(struct drm_tarugx_copy_gem) == 48,
                "copy GEM ABI size changed");
+_Static_assert(sizeof(struct drm_tarugx_command4) == 96,
+               "texture command ABI size changed");
+_Static_assert(sizeof(struct drm_tarugx_submit_gem4) == 424,
+               "submit GEM4 ABI size changed");
 
 static int close_handle(int fd, uint32_t handle)
 {
@@ -142,6 +146,9 @@ int main(int argc, char **argv)
     };
     struct drm_tarugx_vram_create triangle_vram = {
         .width = 64, .height = 64, .flags = DRM_TARUGX_VRAM_DEPTH,
+    };
+    struct drm_tarugx_vram_create texture_vram = {
+        .width = 16, .height = 16,
     };
     struct drm_tarugx_vram_create dependency_vram = {
         .width = 1920, .height = 1080,
@@ -583,6 +590,28 @@ int main(int argc, char **argv)
                 .depth = 2000,
             }},
         };
+        struct drm_tarugx_submit_gem4 texture_batch = {
+            .count = 2,
+            .flags = DRM_TARUGX_SUBMIT_ASYNC,
+            .commands = {{
+                .command.command = {
+                    .opcode = DRM_TARUGX_OP_FILL,
+                    .width = 64, .height = 64,
+                    .color = 0x000000ff,
+                },
+            }, {
+                .command.command = {
+                    .opcode = DRM_TARUGX_OP_TRIANGLE,
+                    .x0 = 0, .y0 = 0,
+                    .x1 = 16 << 8, .y1 = 0,
+                    .x2 = 0, .y2 = 16 << 8,
+                    .color = 0x00ffffff,
+                },
+                .texture_flags = DRM_TARUGX_TEXTURE_ENABLE,
+                .gradient_u_x = 1 << 8,
+                .gradient_v_y = 1 << 8,
+            }},
+        };
 
         if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &triangle_vram)) {
             perror("create triangle VRAM GEM");
@@ -675,6 +704,91 @@ int main(int argc, char **argv)
             }
         }
         puts("DRM Z16 pixels PASS: fast clear, near/far test and readback");
+
+        /* Exercise the complete texture path rather than checking only a
+         * representative pixel: host GEM -> texture VRAM -> reserved read
+         * dependency -> nearest RGB565 sampling -> fenced destination write
+         * -> FPGA copy into the BAR-visible front GEM. */
+        if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &texture_vram)) {
+            perror("create texture VRAM GEM");
+            goto out_other;
+        }
+        for (uint32_t y = 0; y < texture_vram.height; y++) {
+            for (uint32_t x = 0; x < texture_vram.width; x++) {
+                upload_pixels[y * (upload_source.pitch / 2) + x] =
+                    (uint16_t)((x << 11) | (y << 5) | ((x + y) & 0x1f));
+            }
+        }
+        triangle_upload.destination_handle = texture_vram.handle;
+        triangle_upload.width = texture_vram.width;
+        triangle_upload.height = texture_vram.height;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &triangle_upload)) {
+            perror("upload RGB565 texture");
+            goto out_other;
+        }
+        texture_batch.handle = triangle_vram.handle;
+        texture_batch.texture_handle = texture_vram.handle;
+        texture_batch.out_syncobj = triangle_syncobj;
+        {
+            struct drm_tarugx_submit_gem4 invalid_texture = texture_batch;
+
+            invalid_texture.texture_handle = 0;
+            if (expect_errno(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM4,
+                             &invalid_texture, EINVAL))
+                goto out_other;
+            invalid_texture = texture_batch;
+            invalid_texture.handle = texture_vram.handle;
+            if (expect_errno(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM4,
+                             &invalid_texture, EINVAL))
+                goto out_other;
+            invalid_texture = texture_batch;
+            invalid_texture.commands[0].texture_flags =
+                DRM_TARUGX_TEXTURE_ENABLE;
+            if (expect_errno(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM4,
+                             &invalid_texture, EINVAL))
+                goto out_other;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &started);
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM4, &texture_batch)) {
+            perror("texture DRM_IOCTL_TARUGX_SUBMIT_GEM4");
+            goto out_other;
+        }
+        if (drmSyncobjWait(fd, &triangle_syncobj, 1,
+                           INT64_MAX, 0, NULL)) {
+            perror("texture drmSyncobjWait");
+            goto out_other;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &returned);
+        if (ioctl(fd, DRM_IOCTL_TARUGX_COPY_GEM, &triangle_copy)) {
+            perror("copy texture result into BAR-visible GEM");
+            goto out_other;
+        }
+        for (uint32_t y = 0; y < triangle_copy.height; y++) {
+            for (uint32_t x = 0; x < triangle_copy.width; x++) {
+                uint16_t expected = x + y < 15 ?
+                    (uint16_t)((x << 11) | (y << 5) |
+                               ((x + y) & 0x1f)) : 0x001f;
+                uint16_t observed = vram_pixels[
+                    (triangle_copy.destination_y + y) * 1920 +
+                    triangle_copy.destination_x + x];
+
+                if (observed != expected) {
+                    fprintf(stderr,
+                            "texture mismatch at %u,%u: %#x != %#x\n",
+                            x, y, observed, expected);
+                    goto out_other;
+                }
+            }
+        }
+        printf("DRM RGB565 texture pixels PASS: all 512 readback pixels, "
+               "nearest UV sampling and fence in %.3f ms\n",
+               (returned.tv_sec - started.tv_sec) * 1000.0 +
+               (returned.tv_nsec - started.tv_nsec) / 1000000.0);
+        if (close_handle(fd, texture_vram.handle)) {
+            perror("close texture VRAM GEM");
+            goto out_other;
+        }
+        texture_vram.handle = 0;
         drmSyncobjDestroy(fd, triangle_syncobj);
         triangle_syncobj = 0;
         if (close_handle(fd, triangle_vram.handle)) {
