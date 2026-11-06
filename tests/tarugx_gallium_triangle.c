@@ -18,6 +18,7 @@
 
 #define WIDTH 1920
 #define HEIGHT 1080
+#define PIPELINE_TRIANGLES 8
 
 static GLuint
 compile_shader(GLenum type, const char *source)
@@ -161,6 +162,7 @@ main(int argc, char **argv)
     unsigned i;
     int software_fallback = 0;
     int batch = 0;
+    int pipeline = 0;
     int indexed = 0;
     int gradient = 0;
     int cull_mode = 0;
@@ -169,6 +171,8 @@ main(int argc, char **argv)
     int depth_test = 0;
     int depth_one = 0;
     GLsizei vertex_count;
+    GLfloat pipeline_positions[PIPELINE_TRIANGLES * 6];
+    GLfloat pipeline_colors[PIPELINE_TRIANGLES * 12];
     int position_location;
     int depth_location;
     int color_location;
@@ -178,7 +182,7 @@ main(int argc, char **argv)
 
     if (argc < 2 || argc > 4) {
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
-                        "[--software|--batch|--indexed|--gradient|"
+                        "[--software|--batch|--pipeline|--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
                         "--cull-front-cw|--scissor|--depth|--depth-one]\n",
                 argv[0]);
@@ -199,6 +203,8 @@ main(int argc, char **argv)
             software_fallback = 1;
         } else if (!strcmp(argv[3], "--batch")) {
             batch = 1;
+        } else if (!strcmp(argv[3], "--pipeline")) {
+            pipeline = 1;
         } else if (!strcmp(argv[3], "--indexed")) {
             indexed = 1;
         } else if (!strcmp(argv[3], "--gradient")) {
@@ -291,12 +297,22 @@ main(int argc, char **argv)
     }
     glClear(GL_COLOR_BUFFER_BIT |
             (depth_test ? GL_DEPTH_BUFFER_BIT : 0));
+    if (pipeline) {
+        for (i = 0; i < PIPELINE_TRIANGLES; i++) {
+            memcpy(pipeline_positions + i * 6, positions,
+                   6 * sizeof(*positions));
+            memcpy(pipeline_colors + i * 12, colors,
+                   12 * sizeof(*colors));
+        }
+    }
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
-                          batch ? batch_positions : positions);
+                          pipeline ? pipeline_positions :
+                          (batch ? batch_positions : positions));
     glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0,
                           depth_test ? depth_colors :
+                          (pipeline ? pipeline_colors :
                           (batch ? batch_colors :
-                          (gradient ? gradient_colors : colors)));
+                          (gradient ? gradient_colors : colors))));
     if (depth_test) {
         glVertexAttribPointer(depth_location, 1, GL_FLOAT, GL_FALSE, 0,
                               depth_values);
@@ -312,7 +328,8 @@ main(int argc, char **argv)
         glScissor(800, 0, 320, HEIGHT);
         glEnable(GL_SCISSOR_TEST);
     }
-    vertex_count = depth_test && !depth_one ? 6 : (batch ? 12 : 3);
+    vertex_count = pipeline ? PIPELINE_TRIANGLES * 3 :
+        (depth_test && !depth_one ? 6 : (batch ? 12 : 3));
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
     for (i = 0; i < iterations; i++) {
         if (indexed)
@@ -344,6 +361,8 @@ main(int argc, char **argv)
         path = "softpipe";
     else if (batch)
         path = "fpga-batch";
+    else if (pipeline)
+        path = "fpga-pipeline";
     else if (indexed)
         path = "fpga-indexed";
     else if (gradient)
@@ -364,7 +383,8 @@ main(int argc, char **argv)
            pixels[(HEIGHT / 2) * (stride / 2) + 760],
            pixels[(HEIGHT / 2) * (stride / 2) + 1080],
            stride, path, iterations,
-           iterations * (depth_test ? 2 : (batch ? 4 : 1)), draw_ms);
+           iterations * (pipeline ? PIPELINE_TRIANGLES :
+                         (depth_test ? 2 : (batch ? 4 : 1))), draw_ms);
     if (batch)
         printf("top_left=%04x\ntop_right=%04x\n"
                "bottom_left=%04x\nbottom_right=%04x\n",
@@ -381,7 +401,7 @@ main(int argc, char **argv)
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
         (depth_test &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x07e0) ||
-        (!batch && !gradient && !depth_test &&
+        (!batch && !pipeline && !gradient && !depth_test &&
          ((cull_mode == GL_FRONT) == front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
         (cull_mode && ((cull_mode == GL_FRONT) != front_face_cw) &&
@@ -395,7 +415,9 @@ main(int argc, char **argv)
           pixels[198 * (stride / 2) + 1440] != 0xffff ||
           pixels[738 * (stride / 2) + 480] != 0xf800 ||
           pixels[738 * (stride / 2) + 1440] != 0x07e0)) ||
-        pixels[0] != 0x001f) {
+        (pipeline &&
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
+        (!pipeline && pixels[0] != 0x001f)) {
         fputs("RGB565 readback mismatch\n", stderr);
         goto out;
     }

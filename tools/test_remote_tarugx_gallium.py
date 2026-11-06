@@ -68,7 +68,9 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
             ('depth-one', ['1', '--depth-one'],
              ('path=fpga-depth-one', 'center=07e0'), 3),
             ('depth', ['1', '--depth'],
-             ('path=fpga-depth', 'center=07e0'), 4)):
+             ('path=fpga-depth', 'center=07e0'), 4),
+            ('pipeline', ['1', '--pipeline'],
+             ('path=fpga-pipeline', 'center=f800', 'triangles=8'), 9)):
         commands_before = int(counters.read_text())
         result = subprocess.run([str(binary), str(cards[0]), *arguments],
                                 capture_output=True, text=True,
