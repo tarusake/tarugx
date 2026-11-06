@@ -149,6 +149,25 @@ if {$video_1080p_vendor} { set output_dir [file join $repo build gowin_framebuff
 if {$video_1080p_scanout} { set output_dir [file join $repo build gowin_framebuffer_1080p_scanout] }
 if {$video_720p} { set output_dir [file join $repo build gowin_framebuffer_720p] }
 
+# Resolve implementation strategies before creating a project so automation
+# rejects typos without invoking the vendor tools.
+set place_option 2
+if {[info exists ::env(TARUGX_PLACE_OPTION)]} {
+    set place_option $::env(TARUGX_PLACE_OPTION)
+}
+if {$place_option ni {0 1 2 3 4}} {
+    error "TARUGX_PLACE_OPTION must be 0, 1, 2 (timing), 3, or 4"
+}
+set route_option 1
+if {[info exists ::env(TARUGX_ROUTE_OPTION)]} {
+    set route_option $::env(TARUGX_ROUTE_OPTION)
+}
+if {$route_option ni {1 2}} {
+    error "TARUGX_ROUTE_OPTION must be 1 (timing) or 2 (fast)"
+}
+puts "Gowin place option: $place_option"
+puts "Gowin route option: $route_option"
+
 create_project -name tarugx -dir $output_dir \
     -pn GW5AST-LV138PG484AC2/I1 -device_version B -force
 
@@ -309,26 +328,10 @@ set_option -use_cpu_as_gpio 1
 # alternative numbered placements, which are useful when a dense design lands
 # in a poor local minimum.  Keep the verified default while making the choice
 # explicit and reproducible in build logs.
-set place_option 2
-if {[info exists ::env(TARUGX_PLACE_OPTION)]} {
-    set place_option $::env(TARUGX_PLACE_OPTION)
-}
-if {$place_option ni {0 1 2 3 4}} {
-    error "TARUGX_PLACE_OPTION must be 0, 1, 2 (timing), 3, or 4"
-}
-puts "Gowin place option: $place_option"
 set_option -place_option $place_option
 # Gowin documents route option 1 as timing-priority; option 2 only shortens
 # routing runtime.  TaruGX runs the PCIe and DDR user paths at their 100 MHz
 # limit, so prefer timing closure over a faster build.
-set route_option 1
-if {[info exists ::env(TARUGX_ROUTE_OPTION)]} {
-    set route_option $::env(TARUGX_ROUTE_OPTION)
-}
-if {$route_option ni {1 2}} {
-    error "TARUGX_ROUTE_OPTION must be 1 (timing) or 2 (fast)"
-}
-puts "Gowin route option: $route_option"
 set_option -route_option $route_option
 set_option -clock_route_order 1
 # SUG1220: keep the hard-UPAR handshake loop close to the SerDes block.

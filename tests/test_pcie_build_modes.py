@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BuildModes(unittest.TestCase):
-    def run_mode(self, *, por=False, generated=True, rom=False, **flags):
+    def run_mode(self, *, por=False, generated=True, rom=False,
+                 place_option=None, route_option=None, **flags):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
             for name in ("pcie_controller", "upar_arbiter", "src/gowin_pll"):
@@ -20,11 +21,17 @@ class BuildModes(unittest.TestCase):
             for name in ("pcie_controller/pcie_controller.v", "upar_arbiter/upar_arbiter.v",
                          "src/gowin_pll/gowin_pll.v"):
                 (tmp / name).write_text("// mock IP\n")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("TARUGX_PCIE_")}
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith("TARUGX_PCIE_")
+                   and k not in ("TARUGX_PLACE_OPTION", "TARUGX_ROUTE_OPTION")}
             env["SIPEED_PCIE_GEN2_DIR"] = str(tmp)
             if generated:
                 env["TARUGX_PCIE_GENERATED_DIR"] = str(tmp)
             env.update({"TARUGX_PCIE_" + k: str(v) for k, v in flags.items()})
+            if place_option is not None:
+                env["TARUGX_PLACE_OPTION"] = str(place_option)
+            if route_option is not None:
+                env["TARUGX_ROUTE_OPTION"] = str(route_option)
             # Abort at the first tool command: no project or bitstream is created.
             script = ('proc create_project {args} {error "VALIDATED_TOOL_BOUNDARY"}\n'
                       'if {[catch {source scripts/gowin_build_framebuffer.tcl} msg]} '
@@ -32,7 +39,7 @@ class BuildModes(unittest.TestCase):
             result = subprocess.run(["tclsh"], input=script, text=True,
                                     capture_output=True, env=env, cwd=ROOT, timeout=10)
             self.assertEqual(result.returncode, 1)
-            return result.stderr
+            return result.stdout + result.stderr
 
     def test_accept_explicit_modes(self):
         for flags, por in (({}, False), ({"POR_RELEASE_TEST": 1}, True),
@@ -42,6 +49,20 @@ class BuildModes(unittest.TestCase):
                            ({"PHY_RECOVERY_EXPERIMENT": 1, "ROM_PROBE": 1, "ROM_DIAGNOSTIC": 1, "RAW_BAR_PROBE": 1}, True)):
             with self.subTest(flags=flags):
                 self.assertIn("VALIDATED_TOOL_BOUNDARY", self.run_mode(por=por, **flags))
+
+    def test_implementation_strategy_validation(self):
+        for option in range(5):
+            with self.subTest(place_option=option):
+                error = self.run_mode(place_option=option)
+                self.assertIn(f"Gowin place option: {option}", error)
+                self.assertIn("VALIDATED_TOOL_BOUNDARY", error)
+        self.assertIn("TARUGX_PLACE_OPTION must be", self.run_mode(place_option=5))
+        for option in (1, 2):
+            with self.subTest(route_option=option):
+                error = self.run_mode(route_option=option)
+                self.assertIn(f"Gowin route option: {option}", error)
+                self.assertIn("VALIDATED_TOOL_BOUNDARY", error)
+        self.assertIn("TARUGX_ROUTE_OPTION must be", self.run_mode(route_option=0))
 
     def test_auto_rom_measured_csr(self):
         flags=dict(PHY_RECOVERY_EXPERIMENT=1,ROM_PROBE=1,ROM_DIAGNOSTIC=1,RAW_BAR_PROBE=1,AUTO_ROM=1)
