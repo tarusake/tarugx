@@ -6,3 +6,7 @@ veryl build
 verilator --binary --timing --assert -Wno-TIMESCALEMOD --top-module fill_engine_tb \
  --Mdir build/fill_engine_test build/render/fill_engine.sv tests/fill_engine_tb.sv
 build/fill_engine_test/Vfill_engine_tb
+verilator --binary --timing --assert -Wno-TIMESCALEMOD \
+ --top-module fill_engine_rgb565_tb --Mdir build/fill_engine_rgb565_test \
+ build/render/fill_engine.sv tests/fill_engine_rgb565_tb.sv
+build/fill_engine_rgb565_test/Vfill_engine_rgb565_tb

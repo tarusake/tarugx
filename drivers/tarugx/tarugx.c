@@ -569,14 +569,29 @@ static void tgx_program_render(struct tarugx *tgx,
 			       const struct tarugx_depth_state *depth,
 			       const struct drm_tarugx_command *command)
 {
-	if (command->opcode == DRM_TARUGX_OP_FILL) {
-		writel(destination_base + command->dst_y * destination_pitch +
+	if (command->opcode == DRM_TARUGX_OP_FILL ||
+	    command->opcode == DRM_TARUGX_OP_DEPTH_CLEAR) {
+		u32 base = destination_base;
+		u32 color = command->color;
+
+		if (command->opcode == DRM_TARUGX_OP_DEPTH_CLEAR) {
+			u16 z = depth->depth;
+
+			base = depth_base;
+			/* The fill engine converts RGB888 to RGB565.  Expanding each
+			 * Z16 field into the corresponding high RGB bits preserves all
+			 * sixteen depth bits exactly. */
+			color = ((z & GENMASK(15, 11)) << 8) |
+				((z & GENMASK(10, 5)) << 5) |
+				((z & GENMASK(4, 0)) << 3);
+		}
+		writel(base + command->dst_y * destination_pitch +
 		       command->dst_x * tgx->cpp,
 		       tgx->regs + TGX_REG_FILL_ADDR);
 		writel(destination_pitch, tgx->regs + TGX_REG_FILL_STRIDE);
 		writel((command->height << 16) | command->width,
 		       tgx->regs + TGX_REG_FILL_SIZE);
-		writel(command->color, tgx->regs + TGX_REG_FILL_COLOR);
+		writel(color, tgx->regs + TGX_REG_FILL_COLOR);
 	} else if (command->opcode == DRM_TARUGX_OP_BLIT) {
 		writel(source_base + command->src_y * source_pitch +
 		       command->src_x * tgx->cpp,
@@ -830,6 +845,8 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 			ret = hw_fence ? 0 : -ENOMEM;
 		}
 		for (; !ret && submitted < job->count; submitted++) {
+			u32 opcode;
+
 			status = readl(tgx->regs + TGX_REG_QUEUE_STATUS);
 			if (!(status & TGX_QUEUE_READY)) {
 				ret = -EBUSY;
@@ -843,7 +860,10 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 					   &job->commands[submitted]);
 			fence = tgx_next_render_fence(tgx);
 			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
-			writel(job->commands[submitted].opcode,
+			opcode = job->commands[submitted].opcode ==
+				 DRM_TARUGX_OP_DEPTH_CLEAR ? DRM_TARUGX_OP_FILL :
+				 job->commands[submitted].opcode;
+			writel(opcode,
 			       tgx->regs + TGX_REG_QUEUE_SUBMIT);
 			readl(tgx->regs + TGX_REG_QUEUE_SUBMIT);
 			status = readl(tgx->regs + TGX_REG_QUEUE_STATUS) &
@@ -1554,6 +1574,18 @@ static bool tgx_command3d_valid(const struct tarugx *tgx,
 	const u32 valid_flags = DRM_TARUGX_DEPTH_ENABLE |
 		DRM_TARUGX_DEPTH_WRITE | DRM_TARUGX_DEPTH_FUNC_MASK;
 
+	if (command->command.opcode == DRM_TARUGX_OP_DEPTH_CLEAR)
+		return tgx->depth_available && !command->command.flags &&
+			!command->command.src_x && !command->command.src_y &&
+			!command->command.color && !command->command.gradient_r &&
+			!command->command.gradient_g &&
+			!command->command.gradient_b && !command->depth_flags &&
+			command->depth <= U16_MAX && !command->gradient_z_x &&
+			!command->gradient_z_y &&
+			tgx_rect_valid(command->command.dst_x,
+				       command->command.dst_y,
+				       command->command.width,
+				       command->command.height, width, height);
 	if (!tgx_command_valid(tgx, &command->command, width, height) ||
 	    command->depth_flags & ~valid_flags || command->depth > U16_MAX ||
 	    command->gradient_z_x < -0x800000 ||

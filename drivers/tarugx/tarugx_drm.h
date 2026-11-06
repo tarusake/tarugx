@@ -33,6 +33,9 @@ struct drm_tarugx_blit {
 #define DRM_TARUGX_OP_FILL 1
 #define DRM_TARUGX_OP_BLIT 2
 #define DRM_TARUGX_OP_TRIANGLE 3
+/* GEM3-only Z16 rectangle clear.  The value is supplied in command3d.depth;
+ * hardware executes it through the existing 16-bit fill datapath. */
+#define DRM_TARUGX_OP_DEPTH_CLEAR 4
 #define DRM_TARUGX_MAX_COMMANDS 4
 #define DRM_TARUGX_SUBMIT_ASYNC (1U << 0)
 

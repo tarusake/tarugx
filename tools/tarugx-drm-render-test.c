@@ -141,7 +141,7 @@ int main(int argc, char **argv)
         .width = 64, .height = 64,
     };
     struct drm_tarugx_vram_create triangle_vram = {
-        .width = 64, .height = 64,
+        .width = 64, .height = 64, .flags = DRM_TARUGX_VRAM_DEPTH,
     };
     struct drm_tarugx_vram_create dependency_vram = {
         .width = 1920, .height = 1080,
@@ -542,6 +542,47 @@ int main(int argc, char **argv)
             .height = 16,
         };
         struct drm_tarugx_submit_gem2 invalid_triangle = triangle_batch;
+        struct drm_tarugx_submit_gem3 depth_batch = {
+            .count = 4,
+            .flags = DRM_TARUGX_SUBMIT_ASYNC,
+            .commands = {{
+                .command = {
+                    .opcode = DRM_TARUGX_OP_FILL,
+                    .width = 64, .height = 64,
+                    .color = 0x000000ff,
+                },
+            }, {
+                .command = {
+                    .opcode = DRM_TARUGX_OP_DEPTH_CLEAR,
+                    .width = 64, .height = 64,
+                },
+                .depth = UINT16_MAX,
+            }, {
+                .command = {
+                    .opcode = DRM_TARUGX_OP_TRIANGLE,
+                    .x0 = 0, .y0 = 0,
+                    .x1 = 16 << 8, .y1 = 0,
+                    .x2 = 0, .y2 = 16 << 8,
+                    .color = 0x0000ff00,
+                },
+                .depth_flags = DRM_TARUGX_DEPTH_ENABLE |
+                    DRM_TARUGX_DEPTH_WRITE |
+                    (1U << DRM_TARUGX_DEPTH_FUNC_SHIFT),
+                .depth = 1000,
+            }, {
+                .command = {
+                    .opcode = DRM_TARUGX_OP_TRIANGLE,
+                    .x0 = 0, .y0 = 0,
+                    .x1 = 16 << 8, .y1 = 0,
+                    .x2 = 0, .y2 = 16 << 8,
+                    .color = 0x00ff0000,
+                },
+                .depth_flags = DRM_TARUGX_DEPTH_ENABLE |
+                    DRM_TARUGX_DEPTH_WRITE |
+                    (1U << DRM_TARUGX_DEPTH_FUNC_SHIFT),
+                .depth = 2000,
+            }},
+        };
 
         if (ioctl(fd, DRM_IOCTL_TARUGX_VRAM_CREATE, &triangle_vram)) {
             perror("create triangle VRAM GEM");
@@ -603,6 +644,37 @@ int main(int argc, char **argv)
                 }
             }
         }
+        depth_batch.handle = triangle_vram.handle;
+        depth_batch.out_syncobj = triangle_syncobj;
+        if (ioctl(fd, DRM_IOCTL_TARUGX_SUBMIT_GEM3, &depth_batch)) {
+            perror("depth DRM_IOCTL_TARUGX_SUBMIT_GEM3");
+            goto out_other;
+        }
+        if (drmSyncobjWait(fd, &triangle_syncobj, 1,
+                           INT64_MAX, 0, NULL)) {
+            perror("depth drmSyncobjWait");
+            goto out_other;
+        }
+        if (ioctl(fd, DRM_IOCTL_TARUGX_COPY_GEM, &triangle_copy)) {
+            perror("copy depth result into BAR-visible GEM");
+            goto out_other;
+        }
+        for (uint32_t y = 0; y < triangle_copy.height; y++) {
+            for (uint32_t x = 0; x < triangle_copy.width; x++) {
+                uint16_t expected = x + y < 15 ? 0x07e0 : 0x001f;
+                uint16_t observed = vram_pixels[
+                    (triangle_copy.destination_y + y) * 1920 +
+                    triangle_copy.destination_x + x];
+
+                if (observed != expected) {
+                    fprintf(stderr,
+                            "depth mismatch at %u,%u: %#x != %#x\n",
+                            x, y, observed, expected);
+                    goto out_other;
+                }
+            }
+        }
+        puts("DRM Z16 pixels PASS: fast clear, near/far test and readback");
         drmSyncobjDestroy(fd, triangle_syncobj);
         triangle_syncobj = 0;
         if (close_handle(fd, triangle_vram.handle)) {

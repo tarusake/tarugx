@@ -167,6 +167,7 @@ main(int argc, char **argv)
     int front_face_cw = 0;
     int scissor_mode = 0;
     int depth_test = 0;
+    int depth_one = 0;
     GLsizei vertex_count;
     int position_location;
     int depth_location;
@@ -179,7 +180,7 @@ main(int argc, char **argv)
         fprintf(stderr, "usage: %s /dev/dri/cardN [iterations] "
                         "[--software|--batch|--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
-                        "--cull-front-cw|--scissor|--depth]\n",
+                        "--cull-front-cw|--scissor|--depth|--depth-one]\n",
                 argv[0]);
         return 2;
     }
@@ -216,6 +217,9 @@ main(int argc, char **argv)
             scissor_mode = 1;
         } else if (!strcmp(argv[3], "--depth")) {
             depth_test = 1;
+        } else if (!strcmp(argv[3], "--depth-one")) {
+            depth_test = 1;
+            depth_one = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -308,7 +312,7 @@ main(int argc, char **argv)
         glScissor(800, 0, 320, HEIGHT);
         glEnable(GL_SCISSOR_TEST);
     }
-    vertex_count = depth_test ? 6 : (batch ? 12 : 3);
+    vertex_count = depth_test && !depth_one ? 6 : (batch ? 12 : 3);
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
     for (i = 0; i < iterations; i++) {
         if (indexed)
@@ -351,7 +355,7 @@ main(int argc, char **argv)
     else if (scissor_mode)
         path = "fpga-scissor";
     else if (depth_test)
-        path = "fpga-depth";
+        path = depth_one ? "fpga-depth-one" : "fpga-depth";
     printf("renderer=%s\ncenter=%04x\ncorner=%04x\n"
            "scissor_outside=%04x\nscissor_inside=%04x\nstride=%u\n"
            "path=%s\ndraws=%u\ntriangles=%u\ndraw_ms=%.3f\n",

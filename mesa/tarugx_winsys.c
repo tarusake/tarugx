@@ -270,36 +270,30 @@ tarugx_winsys_submit_color_depth_clear(
     const struct tarugx_winsys_surface *surface,
     uint32_t color, uint16_t depth)
 {
-    struct tarugx_winsys_triangle triangles[2];
-    uint32_t right;
-    uint32_t bottom;
-    uint32_t depth_flags = DRM_TARUGX_DEPTH_ENABLE |
-                           DRM_TARUGX_DEPTH_WRITE |
-                           (7U << DRM_TARUGX_DEPTH_FUNC_SHIFT);
+    struct drm_tarugx_submit_gem3 submit;
 
-    if (!winsys || !surface || !surface->depth || !surface->width ||
-        !surface->height || surface->width > INT32_MAX / 256 ||
-        surface->height > INT32_MAX / 256)
+    if (!winsys || winsys->fd < 0 || !surface || !surface->handle ||
+        !surface->depth || !surface->width || !surface->height ||
+        !winsys->submit_syncobj)
         return false;
-    right = surface->width << 8;
-    bottom = surface->height << 8;
-    triangles[0] = (struct tarugx_winsys_triangle) {
-        .x0 = 0, .y0 = 0,
-        .x1 = right, .y1 = 0,
-        .x2 = 0, .y2 = bottom,
-        .color = color,
-        .depth_flags = depth_flags,
-        .depth = depth,
+    if (!tarugx_winsys_submit_fill(winsys, surface, color) ||
+        !tarugx_winsys_wait(winsys, INT64_MAX))
+        return false;
+    submit = (struct drm_tarugx_submit_gem3) {
+        .handle = surface->handle,
+        .count = 1,
+        .flags = DRM_TARUGX_SUBMIT_ASYNC,
+        .out_syncobj = winsys->submit_syncobj,
+        .commands = {{
+            .command = {
+                .opcode = DRM_TARUGX_OP_DEPTH_CLEAR,
+                .width = surface->width,
+                .height = surface->height,
+            },
+            .depth = depth,
+        }},
     };
-    triangles[1] = (struct tarugx_winsys_triangle) {
-        .x0 = right, .y0 = 0,
-        .x1 = right, .y1 = bottom,
-        .x2 = 0, .y2 = bottom,
-        .color = color,
-        .depth_flags = depth_flags,
-        .depth = depth,
-    };
-    return tarugx_winsys_submit_triangles(winsys, surface, triangles, 2);
+    return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM3, &submit) == 0;
 }
 
 bool
