@@ -53,6 +53,11 @@ module render_memory_arbiter (
     out_rsp_error : input  logic     ,
 ) {
     var issuing       : logic         ;
+    var pending_valid : logic         ;
+    var pending_write : logic         ;
+    var pending_addr  : logic<24>     ;
+    var pending_wdata : logic<256>    ;
+    var pending_wstrb : logic<32>     ;
     var preferred     : logic<2>      ;
     var owners        : logic<2>   [8];
     var writes        : logic      [8];
@@ -91,7 +96,10 @@ module render_memory_arbiter (
     // Keep posted writes pipelined, but do not let a following read overtake
     // their actual DDR commit. The response pipeline preserves command order,
     // yet the native write response is generated when the command is accepted.
-    let capacity: logic = (count <: 8) && (!issuing || out_ready)
+    // A second command register keeps admission independent of downstream
+    // ready.  This cuts the scanout/DDR backpressure path into all render
+    // engines while retaining one accepted request per clock.
+    let capacity: logic = (count <: 8) && !pending_valid
         && !((write_count != 0) && read_waiting);
     assign cpu_ready      = capacity && choose_cpu;
     assign fill_ready     = capacity && choose_fill;
@@ -99,6 +107,8 @@ module render_memory_arbiter (
     assign triangle_ready = capacity && choose_triangle;
     let push: logic = (cpu_valid && cpu_ready) || (fill_valid && fill_ready)
         || (blit_valid && blit_ready) || (triangle_valid && triangle_ready);
+    let load_output : logic = push && (!issuing || issue_accept);
+    let load_pending: logic = push && issuing && !issue_accept;
     assign out_valid      = issuing;
     assign cpu_rsp_valid  = response_valid && (response_owner == 0);
     assign fill_rsp_valid = response_valid && (response_owner == 1);
@@ -121,6 +131,11 @@ module render_memory_arbiter (
     always_ff {
         if_reset {
             issuing        = 0;
+            pending_valid  = 0;
+            pending_write  = 0;
+            pending_addr   = 0;
+            pending_wdata  = 0;
+            pending_wstrb  = 0;
             preferred      = 0;
             owners         = '{default: '0};
             writes         = '{default: '0};
@@ -138,16 +153,27 @@ module render_memory_arbiter (
             response_error = 0;
         } else {
             if issue_accept {
-                issuing = 0;
+                if pending_valid {
+                    issuing       = 1;
+                    out_write     = pending_write;
+                    out_addr      = pending_addr;
+                    out_wdata     = pending_wdata;
+                    out_wstrb     = pending_wstrb;
+                    pending_valid = 0;
+                } else {
+                    issuing = 0;
+                }
             }
             if push {
-                issuing     = 1;
                 owners[tail] = if choose_cpu ? 2'd0 : if choose_fill ? 2'd1
                     : if choose_blit ? 2'd2 : 2'd3;
                 writes[tail] = selected_write;
                 tail         = tail + 3'd1;
                 preferred    = if choose_cpu ? 2'd1 : if choose_fill ? 2'd2
                     : if choose_blit ? 2'd3 : 2'd0;
+            }
+            if load_output {
+                issuing     = 1;
                 out_write    = if choose_cpu ? cpu_write : if choose_fill ? 1'b1
                     : if choose_blit ? blit_write : triangle_write;
                 out_addr     = if choose_cpu ? cpu_addr : if choose_fill ? fill_addr
@@ -155,6 +181,15 @@ module render_memory_arbiter (
                 out_wdata    = if choose_cpu ? cpu_wdata : if choose_fill ? fill_wdata
                     : if choose_blit ? blit_wdata : triangle_wdata;
                 out_wstrb    = if choose_cpu ? cpu_wstrb : if choose_fill ? fill_wstrb
+                    : if choose_blit ? blit_wstrb : triangle_wstrb;
+            } else if load_pending {
+                pending_valid = 1;
+                pending_write = selected_write;
+                pending_addr  = if choose_cpu ? cpu_addr : if choose_fill ? fill_addr
+                    : if choose_blit ? blit_addr : triangle_addr;
+                pending_wdata = if choose_cpu ? cpu_wdata : if choose_fill ? fill_wdata
+                    : if choose_blit ? blit_wdata : triangle_wdata;
+                pending_wstrb = if choose_cpu ? cpu_wstrb : if choose_fill ? fill_wstrb
                     : if choose_blit ? blit_wstrb : triangle_wstrb;
             }
             if push && selected_write && !(pop && head_write) {
