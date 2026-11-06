@@ -59,7 +59,7 @@ find_rgb565_config(EGLDisplay display, int depth_test)
         eglGetConfigAttrib(display, configs[i], EGL_DEPTH_SIZE, &depth_size);
         if ((uint32_t)visual == DRM_FORMAT_RGB565 &&
             (renderable & EGL_OPENGL_ES2_BIT) &&
-            (surfaces & EGL_WINDOW_BIT) && (!depth_test || depth_size >= 16))
+            (surfaces & EGL_WINDOW_BIT) && (!depth_test || depth_size == 16))
             return configs[i];
     }
     return NULL;

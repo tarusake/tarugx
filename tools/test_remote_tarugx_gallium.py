@@ -61,19 +61,24 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
         'MESA_LOADER_DRIVER_OVERRIDE': 'tarugx',
         'XDG_RUNTIME_DIR': '/tmp',
     }})
-    for name, arguments, expected in (
+    counters = Path('/sys/bus/pci/devices/0000:01:00.0/render_commands')
+    for name, arguments, expected, expected_commands in (
             ('gradient', ['1', '--gradient'],
-             ('path=fpga-gradient', 'corner=001f')),
+             ('path=fpga-gradient', 'corner=001f'), 2),
             ('depth-one', ['1', '--depth-one'],
-             ('path=fpga-depth-one', 'center=07e0')),
+             ('path=fpga-depth-one', 'center=07e0'), 3),
             ('depth', ['1', '--depth'],
-             ('path=fpga-depth', 'center=07e0'))):
+             ('path=fpga-depth', 'center=07e0'), 4)):
+        commands_before = int(counters.read_text())
         result = subprocess.run([str(binary), str(cards[0]), *arguments],
                                 capture_output=True, text=True,
                                 timeout=30, env=environment)
+        commands_after = int(counters.read_text())
+        command_delta = commands_after - commands_before
         if result.returncode:
             print(result.stdout, end='')
             print(result.stderr, end='')
+            print(f'hardware_commands={{command_delta}}')
             print(f'TARUGX_GALLIUM_{{name.upper()}}_FAILED')
             raise SystemExit(0)
         output = result.stdout.strip().splitlines()
@@ -82,7 +87,14 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
             print(result.stdout, end='')
             print(f'TARUGX_GALLIUM_{{name.upper()}}_OUTPUT_FAILED')
             raise SystemExit(0)
+        if command_delta != expected_commands:
+            print(result.stdout, end='')
+            print(f'hardware_commands={{command_delta}} '
+                  f'expected={{expected_commands}}')
+            print(f'TARUGX_GALLIUM_{{name.upper()}}_COMMANDS_FAILED')
+            raise SystemExit(0)
         print(f'Gallium {{name}} PASS')
+        print(f'hardware_commands={{command_delta}}')
         print(result.stdout, end='')
 """
     output = Backend().remote(remote, "test TaruGX Gallium hardware paths", 120)
