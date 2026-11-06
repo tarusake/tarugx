@@ -292,7 +292,8 @@ main(int argc, char **argv)
                         "--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
                         "--cull-front-cw|--scissor|--depth|--depth-one|"
-                        "--texture|--display-demo|--cube|--cube-software]\n",
+                        "--texture|--texture-software|--display-demo|"
+                        "--cube|--cube-software]\n",
                 argv[0]);
         return 2;
     }
@@ -340,6 +341,9 @@ main(int argc, char **argv)
             depth_one = 1;
         } else if (!strcmp(argv[3], "--texture")) {
             textured = 1;
+        } else if (!strcmp(argv[3], "--texture-software")) {
+            textured = 1;
+            software_fallback = 1;
         } else if (!strcmp(argv[3], "--display-demo")) {
             depth_test = 1;
             display_demo = 1;
@@ -624,7 +628,7 @@ main(int argc, char **argv)
         goto out;
     path = "fpga";
     if (software_fallback)
-        path = "softpipe";
+        path = textured ? "softpipe-texture" : "softpipe";
     else if (batch)
         path = "fpga-batch";
     else if (pipeline)
