@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+/// Nearest-neighbour RGB565 sampler for affine 16.8 texel coordinates.
+///
+/// Coordinates outside the image clamp to its edge.  One 256-bit DDR line
+/// read is outstanding at a time; output remains stable under backpressure.
+module texture_sampler (
+    clk             : input  clock            ,
+    rst_n           : input  reset            ,
+    clear           : input  logic            ,
+    texture_base    : input  logic<32>        ,
+    texture_stride  : input  logic<32>        ,
+    texture_width   : input  logic<16>        ,
+    texture_height  : input  logic<16>        ,
+    sample_valid    : input  logic            ,
+    sample_ready    : output logic            ,
+    sample_u        : input  signed logic<24> ,
+    sample_v        : input  signed logic<24> ,
+    color_valid     : output logic            ,
+    color_ready     : input  logic            ,
+    color           : output logic<32>        ,
+    busy            : output logic            ,
+    fault           : output logic            ,
+    mem_valid       : output logic            ,
+    mem_ready       : input  logic            ,
+    mem_write       : output logic            ,
+    mem_addr        : output logic<24>        ,
+    mem_wdata       : output logic<256>       ,
+    mem_wstrb       : output logic<32>        ,
+    mem_rsp_valid   : input  logic            ,
+    mem_rsp_ready   : output logic            ,
+    mem_rsp_data    : input  logic<256>       ,
+    mem_rsp_error   : input  logic            ,
+) {
+    enum State: logic<3> {
+        Idle,
+        Clamp,
+        RowAddress,
+        PixelAddress,
+        ReadIssue,
+        ReadWait,
+        Present,
+        Fault,
+    }
+    var state: State;
+    var base: logic<32>;
+    var stride: logic<32>;
+    var width: logic<16>;
+    var height: logic<16>;
+    var config_ok: logic;
+    var pending_u: signed logic<24>;
+    var pending_v: signed logic<24>;
+    var texel_x: logic<16>;
+    var texel_y: logic<16>;
+    var row_offset: logic<64>;
+    var word_addr: logic<24>;
+    var lane: logic<4>;
+    var pixel: logic<16>;
+
+    let row_bytes: logic<64> = (texture_width as 64) * 64'd2;
+    let config_end: logic<64> = (texture_base as 64)
+        + (((texture_height as 64) - 64'd1) * (texture_stride as 64))
+        + row_bytes;
+    let configuration_valid: logic = (texture_width != 0)
+        && (texture_height != 0) && !texture_base[0] && !texture_stride[0]
+        && ((texture_stride as 64) >= row_bytes)
+        && (config_end <= 64'h01000000);
+    let calculated_row_offset: logic<64> =
+        (texel_y as 64) * (stride as 64);
+    let texel_address: logic<64> = (base as 64) + row_offset
+        + ((texel_x as 64) * 64'd2);
+
+    function expand5 (value: input logic<5>) -> logic<8> {
+        return {value, value[4:2]};
+    }
+    function expand6 (value: input logic<6>) -> logic<8> {
+        return {value, value[5:4]};
+    }
+
+    assign sample_ready  = state == State::Idle;
+    assign color_valid   = state == State::Present;
+    assign busy          = (state != State::Idle) && (state != State::Fault);
+    assign fault         = state == State::Fault;
+    assign mem_valid     = state == State::ReadIssue;
+    assign mem_write     = 0;
+    assign mem_addr      = word_addr;
+    assign mem_wdata     = 0;
+    assign mem_wstrb     = 0;
+    assign mem_rsp_ready = state == State::ReadWait;
+    assign color = {8'hff, expand5(pixel[15:11]),
+        expand6(pixel[10:5]), expand5(pixel[4:0])};
+
+    always_ff {
+        if_reset {
+            state       = State::Idle;
+            base        = 0;
+            stride      = 0;
+            width       = 0;
+            height      = 0;
+            config_ok   = 0;
+            pending_u   = 0;
+            pending_v   = 0;
+            texel_x     = 0;
+            texel_y     = 0;
+            row_offset  = 0;
+            word_addr   = 0;
+            lane        = 0;
+            pixel       = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if sample_valid {
+                        pending_u = sample_u;
+                        pending_v = sample_v;
+                        state = if config_ok ? State::Clamp : State::Fault;
+                    }
+                }
+                State::Clamp: {
+                    texel_x = if pending_u <: 0 ? 0
+                        : if pending_u[23:8] >= width ? width - 16'd1
+                        : pending_u[23:8];
+                    texel_y = if pending_v <: 0 ? 0
+                        : if pending_v[23:8] >= height ? height - 16'd1
+                        : pending_v[23:8];
+                    state = State::RowAddress;
+                }
+                State::RowAddress: {
+                    row_offset = calculated_row_offset;
+                    state = State::PixelAddress;
+                }
+                State::PixelAddress: {
+                    if (texel_address + 64'd2) <= 64'h01000000 {
+                        word_addr = {texel_address[23:5], 5'b0};
+                        lane = texel_address[4:1];
+                        state = State::ReadIssue;
+                    } else {
+                        state = State::Fault;
+                    }
+                }
+                State::ReadIssue: {
+                    if mem_ready { state = State::ReadWait; }
+                }
+                State::ReadWait: {
+                    if mem_rsp_valid {
+                        if mem_rsp_error {
+                            state = State::Fault;
+                        } else {
+                            pixel = mem_rsp_data[(lane as 8) * 8'd16+:16];
+                            state = State::Present;
+                        }
+                    }
+                }
+                State::Present: {
+                    if color_ready { state = State::Idle; }
+                }
+                State::Fault: {}
+                default: { state = State::Fault; }
+            }
+            if clear {
+                state = State::Idle;
+                base = texture_base;
+                stride = texture_stride;
+                width = texture_width;
+                height = texture_height;
+                config_ok = configuration_valid;
+            }
+        }
+    }
+}
