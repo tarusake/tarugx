@@ -56,6 +56,10 @@ module pcie_dma_read_engine #(
         Fail,
     }
     var state             : State     ;
+    // External request admission must not depend directly on the encoded FSM
+    // bits; that path crosses the framebuffer arbiter and response CDC FIFO.
+    #[sv("syn_preserve=1")]
+    var run_active        : logic     ;
     var issue_host        : logic<64> ;
     var issue_vram        : logic<32> ;
     var length_bytes      : logic<32> ;
@@ -182,7 +186,7 @@ module pcie_dma_read_engine #(
     // deadlock the single repacking buffer.
     assign cpl_ready        = (state == State::Run) && !completion_pending
         && (!chunk_pending || (!chunk_flush && (chunk_left <= 5'd8)));
-    assign fb_req_valid     = (state == State::Run) && chunk_pending
+    assign fb_req_valid     = run_active && chunk_pending
         && ((chunk_left >= (boundary_words as 5)) || chunk_flush)
         && (fb_outstanding <: 8);
     assign fb_req_addr      = write_vram;
@@ -202,7 +206,7 @@ module pcie_dma_read_engine #(
     // Fail drains them before returning Idle.  The state decode is therefore
     // redundant and only lengthens the response-FIFO ready/clock-enable path.
     assign fb_rsp_ready     = fb_outstanding != 0;
-    assign fb_window_full   = (state == State::Run) && chunk_pending
+    assign fb_window_full   = run_active && chunk_pending
         && (fb_outstanding >= 8);
     let fb_request_accept: logic = fb_req_valid && fb_req_ready;
     let fb_response_accept: logic = fb_rsp_valid && fb_rsp_ready;
@@ -210,6 +214,7 @@ module pcie_dma_read_engine #(
     always_ff {
         if_reset {
             state              = State::Idle;
+            run_active         = 0;
             issue_host         = 0;
             issue_vram         = 0;
             length_bytes       = 0;
@@ -275,6 +280,7 @@ module pcie_dma_read_engine #(
             } else if (state == State::Run) && (timeout_counter >= TIMEOUT_CYCLES - 1) {
                 error = 1;
                 error_code = 4'd8;
+                run_active = 0;
                 state = State::Fail;
             } else if state == State::Run {
                 timeout_counter = timeout_counter + 1;
@@ -293,6 +299,7 @@ module pcie_dma_read_engine #(
                     fb_outstanding     = 0;
                     error              = 0;
                     error_code         = 0;
+                    run_active         = 0;
                     state              = State::ValidateCapture;
                 }
                 State::ValidateCapture: {
@@ -302,10 +309,12 @@ module pcie_dma_read_engine #(
                 }
                 State::ValidateResolve: {
                     if command_basic_ok && command_bounds_ok {
+                        run_active = 1;
                         state = State::Run;
                     } else {
                         error = 1;
                         error_code = 4'd1;
+                        run_active = 0;
                         state = State::Fail;
                     }
                 }
@@ -356,22 +365,27 @@ module pcie_dma_read_engine #(
                         if !completion_matched {
                             error = 1;
                             error_code = 4'd2;
+                            run_active = 0;
                             state = State::Fail;
                         } else if completion_error {
                             error = 1;
                             error_code = 4'd3;
+                            run_active = 0;
                             state = State::Fail;
                         } else if !completion_has_data || (completion_length == 0) {
                             error = 1;
                             error_code = 4'd4;
+                            run_active = 0;
                             state = State::Fail;
                         } else if (completion_length as 7) >: completion_remaining {
                             error = 1;
                             error_code = 4'd5;
+                            run_active = 0;
                             state = State::Fail;
                         } else if completion_lower != completion_expected_lower {
                             error = 1;
                             error_code = 4'd6;
+                            run_active = 0;
                             state = State::Fail;
                         } else {
                             if !chunk_pending {
@@ -413,12 +427,14 @@ module pcie_dma_read_engine #(
                         if fb_rsp_error {
                             error = 1;
                             error_code = 4'd7;
+                            run_active = 0;
                             state = State::Fail;
                         }
                     }
 
                     if (issue_remaining_dw == 0) && !request_pending && (slot_valid == 0)
                         && !completion_pending && !chunk_pending && (fb_outstanding == 0) {
+                        run_active = 0;
                         state = State::Finish;
                     }
                 }
@@ -428,6 +444,7 @@ module pcie_dma_read_engine #(
                     state = State::Idle;
                 }
                 State::Fail: {
+                    run_active      = 0;
                     slot_valid      = 0;
                     request_pending = 0;
                     completion_pending = 0;
@@ -440,6 +457,7 @@ module pcie_dma_read_engine #(
                 default: {
                     error = 1;
                     error_code = 4'd9;
+                    run_active = 0;
                     state = State::Fail;
                 }
             }

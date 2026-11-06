@@ -73,7 +73,11 @@ module fill_engine #(
     assign cmd_ready     = state == State::Idle;
     assign busy          = state != State::Idle;
     assign mem_valid     = request_valid;
-    assign mem_rsp_ready = state == State::Wait;
+    // Only the response to this engine's single accepted request can be
+    // routed back here, and it cannot arrive before the Issue handshake.
+    // Keeping ready asserted removes a full combinational backpressure path
+    // through both render arbiters and the DDR adapter.
+    assign mem_rsp_ready = 1'b1;
     assign mem_addr      = word_addr;
 
     always_comb {
