@@ -292,7 +292,7 @@ main(int argc, char **argv)
                         "--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
                         "--cull-front-cw|--scissor|--depth|--depth-one|"
-                        "--texture|--display-demo|--cube]\n",
+                        "--texture|--display-demo|--cube|--cube-software]\n",
                 argv[0]);
         return 2;
     }
@@ -346,6 +346,10 @@ main(int argc, char **argv)
         } else if (!strcmp(argv[3], "--cube")) {
             depth_test = 1;
             cube_demo = 1;
+        } else if (!strcmp(argv[3], "--cube-software")) {
+            depth_test = 1;
+            cube_demo = 1;
+            software_fallback = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
