@@ -78,6 +78,12 @@ tarugx_winsys_supports_depth(const struct tarugx_winsys *winsys)
     return tarugx_winsys_has_cap(winsys, DRM_TARUGX_CAP_Z16);
 }
 
+bool
+tarugx_winsys_supports_texture(const struct tarugx_winsys *winsys)
+{
+    return tarugx_winsys_has_cap(winsys, DRM_TARUGX_CAP_TEXTURE_RGB565);
+}
+
 void
 tarugx_winsys_close(struct tarugx_winsys *winsys)
 {
@@ -235,6 +241,59 @@ tarugx_winsys_submit_triangles(
         };
     }
     return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM2,
+                    &submit) == 0;
+}
+
+bool
+tarugx_winsys_submit_textured_triangles(
+    struct tarugx_winsys *winsys,
+    const struct tarugx_winsys_surface *surface,
+    const struct tarugx_winsys_surface *texture,
+    const struct tarugx_winsys_triangle *triangles,
+    uint32_t count)
+{
+    struct drm_tarugx_submit_gem4 submit = {0};
+    uint32_t i;
+
+    if (!winsys || winsys->fd < 0 || !surface || !surface->handle ||
+        !texture || !texture->handle || !texture->width || !texture->height ||
+        !triangles || !count || count > TARUGX_MAX_BATCH_TRIANGLES ||
+        !winsys->submit_syncobj || !tarugx_winsys_supports_texture(winsys))
+        return false;
+    submit.handle = surface->handle;
+    submit.texture_handle = texture->handle;
+    submit.count = count;
+    submit.flags = DRM_TARUGX_SUBMIT_ASYNC;
+    submit.out_syncobj = winsys->submit_syncobj;
+    for (i = 0; i < count; i++) {
+        struct drm_tarugx_command4 *output = &submit.commands[i];
+
+        output->command.command = (struct drm_tarugx_command) {
+            .opcode = DRM_TARUGX_OP_TRIANGLE,
+            .x0 = triangles[i].x0,
+            .y0 = triangles[i].y0,
+            .x1 = triangles[i].x1,
+            .y1 = triangles[i].y1,
+            .x2 = triangles[i].x2,
+            .y2 = triangles[i].y2,
+            .color = triangles[i].color,
+            .gradient_r = triangles[i].gradient_r,
+            .gradient_g = triangles[i].gradient_g,
+            .gradient_b = triangles[i].gradient_b,
+        };
+        output->command.depth_flags = triangles[i].depth_flags;
+        output->command.depth = triangles[i].depth;
+        output->command.gradient_z_x = triangles[i].gradient_z_x;
+        output->command.gradient_z_y = triangles[i].gradient_z_y;
+        output->texture_flags = DRM_TARUGX_TEXTURE_ENABLE;
+        output->u = triangles[i].u;
+        output->v = triangles[i].v;
+        output->gradient_u_x = triangles[i].gradient_u_x;
+        output->gradient_u_y = triangles[i].gradient_u_y;
+        output->gradient_v_x = triangles[i].gradient_v_x;
+        output->gradient_v_y = triangles[i].gradient_v_y;
+    }
+    return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_SUBMIT_GEM4,
                     &submit) == 0;
 }
 

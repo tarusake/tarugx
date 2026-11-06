@@ -39,6 +39,12 @@ struct tarugx_winsys_triangle {
     uint16_t depth;
     int32_t gradient_z_x;
     int32_t gradient_z_y;
+    int32_t u;
+    int32_t v;
+    int32_t gradient_u_x;
+    int32_t gradient_u_y;
+    int32_t gradient_v_x;
+    int32_t gradient_v_y;
 };
 
 bool tarugx_winsys_open(struct tarugx_winsys *winsys, int fd);
@@ -48,6 +54,7 @@ bool tarugx_winsys_has_cap(const struct tarugx_winsys *winsys,
 bool tarugx_winsys_supports_triangle_interpolation(
     const struct tarugx_winsys *winsys);
 bool tarugx_winsys_supports_depth(const struct tarugx_winsys *winsys);
+bool tarugx_winsys_supports_texture(const struct tarugx_winsys *winsys);
 bool tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
                                   uint32_t width, uint32_t height,
                                   struct tarugx_winsys_surface *surface);
@@ -63,6 +70,12 @@ bool tarugx_winsys_submit_triangle(
 bool tarugx_winsys_submit_triangles(
     struct tarugx_winsys *winsys,
     const struct tarugx_winsys_surface *surface,
+    const struct tarugx_winsys_triangle *triangles,
+    uint32_t count);
+bool tarugx_winsys_submit_textured_triangles(
+    struct tarugx_winsys *winsys,
+    const struct tarugx_winsys_surface *surface,
+    const struct tarugx_winsys_surface *texture,
     const struct tarugx_winsys_triangle *triangles,
     uint32_t count);
 bool tarugx_winsys_submit_fill(struct tarugx_winsys *winsys,
