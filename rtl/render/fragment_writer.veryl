@@ -67,6 +67,15 @@ module fragment_writer (
     var pending_depth: logic<16>;
     var pending_in_bounds: logic;
     var row_offset: logic<64>;
+    // Keep the encoded control state local to this writer.  Driving the DDR
+    // request boundary directly from state replicated the state decode across
+    // the address, payload and both downstream arbiters.  Dedicated boundary
+    // registers give place-and-route a short, explicit timing cut instead.
+    #[sv("syn_preserve=1")]
+    var request_valid: logic;
+    var request_write: logic;
+    var request_addr: logic<24>;
+    var response_ready: logic;
 
     let calculated_row_offset: logic<64> =
         (pending_y as 64) * (target_stride as 64);
@@ -95,13 +104,10 @@ module fragment_writer (
     assign fragment_ready = state == State::Idle;
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
-    assign mem_valid = (state == State::DepthReadIssue)
-        || (state == State::ColorIssue) || (state == State::DepthWriteIssue);
-    assign mem_write = state != State::DepthReadIssue;
-    assign mem_rsp_ready = (state == State::DepthReadWait)
-        || (state == State::ColorWait) || (state == State::DepthWriteWait);
-    assign mem_addr = if (state == State::DepthReadIssue)
-        || (state == State::DepthWriteIssue) ? depth_word_addr : word_addr;
+    assign mem_valid     = request_valid;
+    assign mem_write     = request_write;
+    assign mem_rsp_ready = response_ready;
+    assign mem_addr      = request_addr;
 
     always_comb {
         mem_wdata = 0;
@@ -135,6 +141,10 @@ module fragment_writer (
             pending_depth = 0;
             pending_in_bounds = 0;
             row_offset = 0;
+            request_valid = 0;
+            request_write = 0;
+            request_addr = 0;
+            response_ready = 0;
             writes    = 0;
         } else {
             case state {
@@ -164,6 +174,11 @@ module fragment_writer (
                             depth_word_addr = {depth_address[23:5], 5'b0};
                             depth_lane = depth_address[4:1];
                             depth_value = pending_depth;
+                            request_valid = 1;
+                            request_write = !depth_active;
+                            request_addr = if depth_active ?
+                                {depth_address[23:5], 5'b0} :
+                                {pixel_address[23:5], 5'b0};
                             state = if depth_active ? State::DepthReadIssue
                                 : State::ColorIssue;
                         } else {
@@ -171,16 +186,22 @@ module fragment_writer (
                         }
                 }
                 State::DepthReadIssue: {
-                    if mem_ready {
+                    if request_valid && mem_ready {
+                        request_valid = 0;
+                        response_ready = 1;
                         state = State::DepthReadWait;
                     }
                 }
                 State::DepthReadWait: {
-                    if mem_rsp_valid {
+                    if mem_rsp_valid && response_ready {
+                        response_ready = 0;
                         if mem_rsp_error {
                             state = State::Fault;
                         } else if depth_pass(depth_compare, depth_value,
                             mem_rsp_data[(depth_lane as 8) * 8'd16+:16]) {
+                            request_valid = 1;
+                            request_write = 1;
+                            request_addr = word_addr;
                             state = State::ColorIssue;
                         } else {
                             state  = State::Idle;
@@ -188,15 +209,23 @@ module fragment_writer (
                     }
                 }
                 State::ColorIssue: {
-                    if mem_ready { state = State::ColorWait; }
+                    if request_valid && mem_ready {
+                        request_valid = 0;
+                        response_ready = 1;
+                        state = State::ColorWait;
+                    }
                 }
                 State::ColorWait: {
-                    if mem_rsp_valid {
+                    if mem_rsp_valid && response_ready {
+                        response_ready = 0;
                         if mem_rsp_error {
                             state = State::Fault;
                         } else if depth_active && depth_write_active {
                             lane  = depth_lane;
                             pixel = depth_value;
+                            request_valid = 1;
+                            request_write = 1;
+                            request_addr = depth_word_addr;
                             state = State::DepthWriteIssue;
                         } else {
                             writes = writes + 32'd1;
@@ -205,10 +234,15 @@ module fragment_writer (
                     }
                 }
                 State::DepthWriteIssue: {
-                    if mem_ready { state = State::DepthWriteWait; }
+                    if request_valid && mem_ready {
+                        request_valid = 0;
+                        response_ready = 1;
+                        state = State::DepthWriteWait;
+                    }
                 }
                 State::DepthWriteWait: {
-                    if mem_rsp_valid {
+                    if mem_rsp_valid && response_ready {
+                        response_ready = 0;
                         if mem_rsp_error {
                             state = State::Fault;
                         } else {
@@ -221,10 +255,14 @@ module fragment_writer (
                     if clear {
                         state  = State::Idle;
                         writes = 0;
+                        request_valid = 0;
+                        response_ready = 0;
                     }
                 }
                 default: {
                     state = State::Fault;
+                    request_valid = 0;
+                    response_ready = 0;
                 }
             }
             if clear && (state != State::Fault) {
