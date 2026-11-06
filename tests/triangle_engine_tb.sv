@@ -11,6 +11,10 @@ module triangle_engine_tb;
  logic [31:0] cmd_depth_base=0;logic [2:0] cmd_depth_func=7;
  logic [15:0] cmd_depth=0;
  logic signed [23:0] cmd_gradient_z_x=0,cmd_gradient_z_y=0;
+ logic cmd_texture_enable=0;logic [31:0] cmd_texture_base=0,cmd_texture_stride=0;
+ logic [15:0] cmd_texture_width=0,cmd_texture_height=0;
+ logic signed [23:0] cmd_u=0,cmd_v=0,cmd_gradient_u_x=0,cmd_gradient_u_y=0;
+ logic signed [23:0] cmd_gradient_v_x=0,cmd_gradient_v_y=0;
  logic [31:0] test_gradient_r=0,test_gradient_g=0,test_gradient_b=0;
  logic mem_valid,mem_ready=0,mem_write;logic [23:0] mem_addr;logic [255:0] mem_wdata,mem_rsp_data=0;
  logic [31:0] mem_wstrb;logic mem_rsp_valid=0,mem_rsp_ready,mem_rsp_error=0;
@@ -52,7 +56,11 @@ module triangle_engine_tb;
     tick();@(negedge clk);mem_rsp_error=0;mem_rsp_valid=0;
     local_requests++;requests++;
    end else tick();
-   cycles++;if(cycles>4000)$fatal(1,"triangle engine timeout");
+   cycles++;if(cycles>4000)begin
+    $display("timeout requests=%0d writes=%0d mem_valid=%0d mem_write=%0d rsp_ready=%0d error=%0d",
+     local_requests,local_writes,mem_valid,mem_write,mem_rsp_ready,error);
+    $fatal(1,"triangle engine timeout");
+   end
   end
   assert(error==expect_error)else $fatal(1,"completion error mismatch");
   if(!expect_error)begin
@@ -110,6 +118,18 @@ module triangle_engine_tb;
    end
   end
  endtask
+ task verify_textured_triangle;
+  for(int y=0;y<8;y++)for(int x=0;x<8;x++)begin
+   int address,texture_address;bit covered;
+   address=32'h100+y*16+x*2;texture_address=32'h400+y*8+x*2;
+   covered=(x+y)<3;
+   if(covered)assert({memory[address+1],memory[address]}
+    =={memory[texture_address+1],memory[texture_address]})
+    else $fatal(1,"texture pixel mismatch %0d,%0d",x,y);
+   else assert(memory[address]==8'ha5&&memory[address+1]==8'ha5)
+    else $fatal(1,"texture changed outside pixel %0d,%0d",x,y);
+  end
+ endtask
  initial begin
   foreach(memory[i])memory[i]=8'ha5;
   repeat(3)tick();@(negedge clk);rst_n=1;
@@ -154,6 +174,21 @@ module triangle_engine_tb;
   assert(writes==0)else $fatal(1,"failed write counted as complete");
   command(0,0,4*256,0,0,4*256,32'h000000ff);
   assert(writes==6&&!error)else $fatal(1,"recovery command failed");
+  foreach(memory[i])memory[i]=8'ha5;
+  for(int y=0;y<4;y++)for(int x=0;x<4;x++)begin
+   logic [15:0] texel;
+   texel={5'(x*5),6'(y*10),5'(x+y)};
+   memory[32'h400+y*8+x*2]=texel[7:0];
+   memory[32'h401+y*8+x*2]=texel[15:8];
+  end
+  cmd_texture_enable=1;cmd_texture_base=32'h400;cmd_texture_stride=8;
+  cmd_texture_width=4;cmd_texture_height=4;cmd_u=0;cmd_v=0;
+  cmd_gradient_u_x=24'sd256;cmd_gradient_u_y=0;
+  cmd_gradient_v_x=0;cmd_gradient_v_y=24'sd256;
+  command(0,0,4*256,0,0,4*256,32'h00ffffff);
+  assert(writes==6&&!error)else $fatal(1,"textured command failed");
+  verify_textured_triangle();
+  cmd_texture_enable=0;
   @(negedge clk);cmd_valid=1;tick();@(negedge clk);cmd_valid=0;
   while(!mem_valid)tick();rst_n=0;tick();
   assert(cmd_ready&&!busy&&!done&&!mem_valid)else $fatal(1,"reset failed");

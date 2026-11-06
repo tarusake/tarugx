@@ -26,6 +26,17 @@ module triangle_engine (
     cmd_depth: input logic<16>             ,
     cmd_gradient_z_x: input signed logic<24>,
     cmd_gradient_z_y: input signed logic<24>,
+    cmd_texture_enable: input logic          ,
+    cmd_texture_base: input logic<32>        ,
+    cmd_texture_stride: input logic<32>      ,
+    cmd_texture_width: input logic<16>       ,
+    cmd_texture_height: input logic<16>      ,
+    cmd_u: input signed logic<24>            ,
+    cmd_v: input signed logic<24>            ,
+    cmd_gradient_u_x: input signed logic<24> ,
+    cmd_gradient_u_y: input signed logic<24> ,
+    cmd_gradient_v_x: input signed logic<24> ,
+    cmd_gradient_v_y: input signed logic<24> ,
     busy         : output logic            ,
     done         : output logic            ,
     error        : output logic            ,
@@ -71,8 +82,20 @@ module triangle_engine (
     var depth: logic<16>;
     var gradient_z_x: signed logic<24>;
     var gradient_z_y: signed logic<24>;
+    var texture_enable: logic;
+    var texture_base: logic<32>;
+    var texture_stride: logic<32>;
+    var texture_width: logic<16>;
+    var texture_height: logic<16>;
+    var texture_u: signed logic<24>;
+    var texture_v: signed logic<24>;
+    var gradient_u_x: signed logic<24>;
+    var gradient_u_y: signed logic<24>;
+    var gradient_v_x: signed logic<24>;
+    var gradient_v_y: signed logic<24>;
     var target_end_checked: logic<64>;
     var depth_end_checked: logic<64>;
+    var texture_end_checked: logic<64>;
     var target_shape_ok: logic;
     var depth_shape_ok: logic;
     var validated: logic;
@@ -89,6 +112,36 @@ module triangle_engine (
     var fragment_depth: logic<16>;
     var fragment_u: signed logic<24>;
     var fragment_v: signed logic<24>;
+    var texture_input_ready: logic;
+    var texture_output_valid: logic;
+    var texture_output_x: logic<16>;
+    var texture_output_y: logic<16>;
+    var texture_output_depth: logic<16>;
+    var texture_output_color: logic<32>;
+    var texture_stage_busy: logic;
+    var texture_stage_fault: logic;
+    var texture_mem_valid: logic;
+    var texture_mem_ready: logic;
+    var texture_mem_write: logic;
+    var texture_mem_addr: logic<24>;
+    var texture_mem_wdata: logic<256>;
+    var texture_mem_wstrb: logic<32>;
+    var texture_mem_rsp_valid: logic;
+    var texture_mem_rsp_ready: logic;
+    var writer_fragment_valid: logic;
+    var writer_fragment_ready: logic;
+    var writer_fragment_x: logic<16>;
+    var writer_fragment_y: logic<16>;
+    var writer_fragment_depth: logic<16>;
+    var writer_fragment_color: logic<32>;
+    var writer_mem_valid: logic;
+    var writer_mem_ready: logic;
+    var writer_mem_write: logic;
+    var writer_mem_addr: logic<24>;
+    var writer_mem_wdata: logic<256>;
+    var writer_mem_wstrb: logic<32>;
+    var writer_mem_rsp_valid: logic;
+    var writer_mem_rsp_ready: logic;
     var writer_busy: logic;
     var writer_fault: logic;
     let raster_launch: logic = state == State::Launch;
@@ -99,14 +152,23 @@ module triangle_engine (
         + (((height as 64) - 64'd1) * (stride as 64)) + target_row_bytes;
     let depth_end: logic<64> = (depth_base as 64)
         + (((height as 64) - 64'd1) * (stride as 64)) + target_row_bytes;
+    let texture_row_bytes: logic<64> = (texture_width as 64) * 64'd2;
+    let texture_end: logic<64> = (texture_base as 64)
+        + (((texture_height as 64) - 64'd1) * (texture_stride as 64))
+        + texture_row_bytes;
     let target_shape_valid: logic = (width != 0) && (height != 0)
         && !base[0] && !stride[0] && ((stride as 64) >= target_row_bytes);
     let depth_shape_valid: logic = !depth_write_enable || depth_enable;
+    let texture_shape_valid: logic = !texture_enable || ((texture_width != 0)
+        && (texture_height != 0) && !texture_base[0] && !texture_stride[0]
+        && ((texture_stride as 64) >= texture_row_bytes));
     let target_validated: logic = target_shape_ok
         && (target_end_checked <= 64'h01000000)
         && depth_shape_ok
         && (!depth_enable || (!depth_base[0]
-            && (depth_end_checked <= 64'h01000000)));
+            && (depth_end_checked <= 64'h01000000)))
+        && texture_shape_valid
+        && (!texture_enable || (texture_end_checked <= 64'h01000000));
 
     inst raster: triangle_rasterizer (
         clk,
@@ -129,12 +191,12 @@ module triangle_engine (
         cmd_depth      : depth,
         cmd_gradient_z_x: gradient_z_x,
         cmd_gradient_z_y: gradient_z_y,
-        cmd_u          : 0,
-        cmd_v          : 0,
-        cmd_gradient_u_x: 0,
-        cmd_gradient_u_y: 0,
-        cmd_gradient_v_x: 0,
-        cmd_gradient_v_y: 0,
+        cmd_u          : texture_u,
+        cmd_v          : texture_v,
+        cmd_gradient_u_x: gradient_u_x,
+        cmd_gradient_u_y: gradient_u_y,
+        cmd_gradient_v_x: gradient_v_x,
+        cmd_gradient_v_y: gradient_v_y,
         busy          : raster_busy,
         done          : raster_done,
         error         : raster_error,
@@ -146,6 +208,40 @@ module triangle_engine (
         fragment_depth,
         fragment_u,
         fragment_v,
+    );
+    inst texture_stage: texture_fragment_stage (
+        clk,
+        rst_n,
+        clear          : writer_clear,
+        texture_base,
+        texture_stride,
+        texture_width,
+        texture_height,
+        input_valid    : fragment_valid && texture_enable && writer_fragment_ready,
+        input_ready    : texture_input_ready,
+        input_x        : fragment_x,
+        input_y        : fragment_y,
+        input_depth    : fragment_depth,
+        input_u        : fragment_u,
+        input_v        : fragment_v,
+        output_valid   : texture_output_valid,
+        output_ready   : writer_fragment_ready,
+        output_x       : texture_output_x,
+        output_y       : texture_output_y,
+        output_depth   : texture_output_depth,
+        output_color   : texture_output_color,
+        busy           : texture_stage_busy,
+        fault          : texture_stage_fault,
+        mem_valid      : texture_mem_valid,
+        mem_ready      : texture_mem_ready,
+        mem_write      : texture_mem_write,
+        mem_addr       : texture_mem_addr,
+        mem_wdata      : texture_mem_wdata,
+        mem_wstrb      : texture_mem_wstrb,
+        mem_rsp_valid  : texture_mem_rsp_valid,
+        mem_rsp_ready  : texture_mem_rsp_ready,
+        mem_rsp_data,
+        mem_rsp_error,
     );
     inst writer: fragment_writer (
         clk,
@@ -160,29 +256,52 @@ module triangle_engine (
         depth_write_enable,
         depth_base,
         depth_func,
-        fragment_valid,
-        fragment_ready,
-        fragment_x,
-        fragment_y,
-        fragment_color,
-        fragment_depth,
+        fragment_valid : writer_fragment_valid,
+        fragment_ready : writer_fragment_ready,
+        fragment_x     : writer_fragment_x,
+        fragment_y     : writer_fragment_y,
+        fragment_color : writer_fragment_color,
+        fragment_depth : writer_fragment_depth,
         busy           : writer_busy,
         fault          : writer_fault,
         writes,
-        mem_valid,
-        mem_ready,
-        mem_write,
-        mem_addr,
-        mem_wdata,
-        mem_wstrb,
-        mem_rsp_valid,
-        mem_rsp_ready,
+        mem_valid      : writer_mem_valid,
+        mem_ready      : writer_mem_ready,
+        mem_write      : writer_mem_write,
+        mem_addr       : writer_mem_addr,
+        mem_wdata      : writer_mem_wdata,
+        mem_wstrb      : writer_mem_wstrb,
+        mem_rsp_valid  : writer_mem_rsp_valid,
+        mem_rsp_ready  : writer_mem_rsp_ready,
         mem_rsp_data,
         mem_rsp_error,
     );
 
     assign cmd_ready = state == State::Idle;
     assign busy = (state != State::Idle) && (state != State::Finish);
+    assign fragment_ready = if texture_enable ?
+        (texture_input_ready && writer_fragment_ready)
+        : writer_fragment_ready;
+    assign writer_fragment_valid = if texture_enable ? texture_output_valid
+        : fragment_valid;
+    assign writer_fragment_x = if texture_enable ? texture_output_x : fragment_x;
+    assign writer_fragment_y = if texture_enable ? texture_output_y : fragment_y;
+    assign writer_fragment_depth = if texture_enable ? texture_output_depth
+        : fragment_depth;
+    assign writer_fragment_color = if texture_enable ? texture_output_color
+        : fragment_color;
+    let texture_memory_active: logic = texture_enable && texture_stage_busy;
+    assign mem_valid = if texture_memory_active ? texture_mem_valid : writer_mem_valid;
+    assign mem_write = if texture_memory_active ? texture_mem_write : writer_mem_write;
+    assign mem_addr = if texture_memory_active ? texture_mem_addr : writer_mem_addr;
+    assign mem_wdata = if texture_memory_active ? texture_mem_wdata : writer_mem_wdata;
+    assign mem_wstrb = if texture_memory_active ? texture_mem_wstrb : writer_mem_wstrb;
+    assign mem_rsp_ready = if texture_memory_active ? texture_mem_rsp_ready
+        : writer_mem_rsp_ready;
+    assign texture_mem_ready = mem_ready && texture_memory_active;
+    assign writer_mem_ready = mem_ready && !texture_memory_active;
+    assign texture_mem_rsp_valid = mem_rsp_valid && texture_memory_active;
+    assign writer_mem_rsp_valid = mem_rsp_valid && !texture_memory_active;
 
     always_ff {
         if_reset {
@@ -208,8 +327,20 @@ module triangle_engine (
             depth           = 0;
             gradient_z_x    = 0;
             gradient_z_y    = 0;
+            texture_enable  = 0;
+            texture_base    = 0;
+            texture_stride  = 0;
+            texture_width   = 0;
+            texture_height  = 0;
+            texture_u       = 0;
+            texture_v       = 0;
+            gradient_u_x    = 0;
+            gradient_u_y    = 0;
+            gradient_v_x    = 0;
+            gradient_v_y    = 0;
             target_end_checked = 0;
             depth_end_checked = 0;
+            texture_end_checked = 0;
             target_shape_ok = 0;
             depth_shape_ok  = 0;
             validated       = 0;
@@ -243,6 +374,17 @@ module triangle_engine (
                         depth           = cmd_depth;
                         gradient_z_x    = cmd_gradient_z_x;
                         gradient_z_y    = cmd_gradient_z_y;
+                        texture_enable  = cmd_texture_enable;
+                        texture_base    = cmd_texture_base;
+                        texture_stride  = cmd_texture_stride;
+                        texture_width   = cmd_texture_width;
+                        texture_height  = cmd_texture_height;
+                        texture_u       = cmd_u;
+                        texture_v       = cmd_v;
+                        gradient_u_x    = cmd_gradient_u_x;
+                        gradient_u_y    = cmd_gradient_u_y;
+                        gradient_v_x    = cmd_gradient_v_x;
+                        gradient_v_y    = cmd_gradient_v_y;
                         failed          = 0;
                         raster_finished = 0;
                         error           = 0;
@@ -253,6 +395,7 @@ module triangle_engine (
                 State::ValidateCapture: {
                     target_end_checked = target_end;
                     depth_end_checked  = depth_end;
+                    texture_end_checked = texture_end;
                     target_shape_ok    = target_shape_valid;
                     depth_shape_ok     = depth_shape_valid;
                     state              = State::ValidateResolve;
@@ -273,11 +416,11 @@ module triangle_engine (
                     if raster_done {
                         raster_finished = 1;
                     }
-                    if raster_error || writer_fault {
+                    if raster_error || writer_fault || texture_stage_fault {
                         failed = 1;
                         state  = State::Finish;
                     } else if (raster_finished || raster_done)
-                        && !writer_busy && !fragment_valid {
+                        && !writer_busy && !fragment_valid && !texture_stage_busy {
                         state = State::Finish;
                     }
                 }
