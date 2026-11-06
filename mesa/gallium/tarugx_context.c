@@ -21,7 +21,7 @@
 
 #define TARUGX_MAX_SCREENS 8
 #define TARUGX_MAX_CONTEXTS 16
-#define TARUGX_VERTEX_FLOATS 8
+#define TARUGX_VERTEX_FLOATS 12
 #define TARUGX_CLIP_MAX_VERTICES 8
 #define TARUGX_CLIP_MAX_TRIANGLES (TARUGX_CLIP_MAX_VERTICES - 2)
 #define TARUGX_MAX_INFLIGHT_BATCHES 32
@@ -47,6 +47,7 @@ struct tarugx_context_state {
                   const struct pipe_scissor_state *,
                   const union pipe_color_union *, double, unsigned);
     void (*destroy)(struct pipe_context *);
+    struct tarugx_winsys_surface texture;
 };
 
 static pthread_mutex_t tarugx_state_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -105,7 +106,8 @@ tarugx_target_surface(struct tarugx_context_state *state,
 
 static bool
 tarugx_draw_state_supported(struct tarugx_context_state *state,
-                            const struct tarugx_winsys_surface *surface)
+                            const struct tarugx_winsys_surface *surface,
+                            bool textured)
 {
     const struct softpipe_context *softpipe = state->softpipe;
     const struct pipe_rasterizer_state *rasterizer = softpipe->rasterizer;
@@ -126,10 +128,71 @@ tarugx_draw_state_supported(struct tarugx_context_state *state,
              softpipe->framebuffer.zsbuf->format == PIPE_FORMAT_Z16_UNORM &&
              softpipe->framebuffer.zsbuf->width == surface->width &&
              softpipe->framebuffer.zsbuf->height == surface->height)) &&
-           !depth->stencil[0].enabled &&
-           !depth->alpha_enabled && softpipe->vertex_info.num_attribs == 2 &&
+           !depth->stencil[0].enabled && !depth->alpha_enabled &&
+           softpipe->vertex_info.num_attribs == (textured ? 3 : 2) &&
            softpipe->vertex_info.attrib[0].emit == EMIT_4F &&
-           softpipe->vertex_info.attrib[1].emit == EMIT_4F;
+           softpipe->vertex_info.attrib[1].emit == EMIT_4F &&
+           (!textured || softpipe->vertex_info.attrib[2].emit == EMIT_4F);
+}
+
+static bool
+tarugx_texture_state(struct tarugx_context_state *state,
+                     struct tarugx_winsys_surface **texture,
+                     float *u_scale, float *v_scale)
+{
+    struct softpipe_context *softpipe = state->softpipe;
+    struct pipe_sampler_view *view;
+    const struct pipe_sampler_state *sampler;
+    struct winsys_handle handle = { .type = WINSYS_HANDLE_TYPE_KMS };
+    struct pipe_resource *resource;
+
+    *texture = NULL;
+    *u_scale = 1.0f;
+    *v_scale = 1.0f;
+    if (!softpipe->num_sampler_views[PIPE_SHADER_FRAGMENT] &&
+        !softpipe->num_samplers[PIPE_SHADER_FRAGMENT])
+        return true;
+    if (softpipe->num_sampler_views[PIPE_SHADER_FRAGMENT] != 1 ||
+        softpipe->num_samplers[PIPE_SHADER_FRAGMENT] != 1 ||
+        !tarugx_winsys_supports_texture(&state->winsys))
+        return false;
+    view = softpipe->sampler_views[PIPE_SHADER_FRAGMENT][0];
+    sampler = softpipe->samplers[PIPE_SHADER_FRAGMENT][0];
+    if (!view || !sampler || view->format != PIPE_FORMAT_B5G6R5_UNORM ||
+        view->target != PIPE_TEXTURE_2D || view->u.tex.first_level ||
+        view->u.tex.last_level || view->u.tex.first_layer ||
+        view->u.tex.last_layer ||
+        sampler->min_img_filter != PIPE_TEX_FILTER_NEAREST ||
+        sampler->mag_img_filter != PIPE_TEX_FILTER_NEAREST ||
+        sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
+        sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE ||
+        sampler->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+        return false;
+    resource = view->texture;
+    if (!resource || !resource->width0 || !resource->height0 ||
+        (resource->width0 & 1) || resource->depth0 != 1 ||
+        resource->array_size != 1 || resource->last_level ||
+        !state->context->screen->resource_get_handle(
+            state->context->screen, state->context, resource, &handle,
+            0))
+        return false;
+    if (!state->texture.handle || state->texture.width != resource->width0 ||
+        state->texture.height != resource->height0) {
+        tarugx_winsys_surface_destroy(&state->winsys, &state->texture);
+        if (!tarugx_winsys_texture_create(&state->winsys, resource->width0,
+                                          resource->height0,
+                                          &state->texture))
+            return false;
+    }
+    if (!tarugx_winsys_upload_texture(&state->winsys, handle.handle,
+                                      &state->texture))
+        return false;
+    if (!sampler->unnormalized_coords) {
+        *u_scale = resource->width0;
+        *v_scale = resource->height0;
+    }
+    *texture = &state->texture;
+    return true;
 }
 
 static bool
@@ -255,6 +318,7 @@ tarugx_interpolated_channel(const float *v0, const float *v1,
 static bool
 tarugx_prepare_triangle(struct tarugx_context_state *state,
                         const struct tarugx_winsys_surface *surface,
+                        bool textured, float u_scale, float v_scale,
                         const float *v0, const float *v1, const float *v2,
                         struct tarugx_winsys_triangle *triangle)
 {
@@ -316,12 +380,15 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
     sample_y = (minimum_y < 0 ? 0 : minimum_y >> 8) + 0.5;
     if (sample_x >= surface->width || sample_y >= surface->height)
         return false;
-    v0 = (const float[8]) { x0 / 256.0f, y0 / 256.0f,
-                            v0[2], v0[3], v0[4], v0[5], v0[6], v0[7] };
-    v1 = (const float[8]) { x1 / 256.0f, y1 / 256.0f,
-                            v1[2], v1[3], v1[4], v1[5], v1[6], v1[7] };
-    v2 = (const float[8]) { x2 / 256.0f, y2 / 256.0f,
-                            v2[2], v2[3], v2[4], v2[5], v2[6], v2[7] };
+    v0 = (const float[12]) { x0 / 256.0f, y0 / 256.0f,
+                             v0[2], v0[3], v0[4], v0[5], v0[6], v0[7],
+                             v0[8], v0[9], v0[10], v0[11] };
+    v1 = (const float[12]) { x1 / 256.0f, y1 / 256.0f,
+                             v1[2], v1[3], v1[4], v1[5], v1[6], v1[7],
+                             v1[8], v1[9], v1[10], v1[11] };
+    v2 = (const float[12]) { x2 / 256.0f, y2 / 256.0f,
+                             v2[2], v2[3], v2[4], v2[5], v2[6], v2[7],
+                             v2[8], v2[9], v2[10], v2[11] };
     determinant = ((double)v1[0] - v0[0]) * ((double)v2[1] - v0[1]) -
                   ((double)v2[0] - v0[0]) * ((double)v1[1] - v0[1]);
     if (!isfinite(determinant) || fabs(determinant) < 1.0 / 65536.0)
@@ -363,6 +430,36 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
         triangle->depth_flags = DRM_TARUGX_DEPTH_ENABLE |
             (depth_state->depth_writemask ? DRM_TARUGX_DEPTH_WRITE : 0) |
             (depth_func << DRM_TARUGX_DEPTH_FUNC_SHIFT);
+    }
+    if (textured) {
+        double u0 = v0[8] * u_scale;
+        double u1 = v1[8] * u_scale;
+        double u2 = v2[8] * u_scale;
+        double v0_tex = v0[9] * v_scale;
+        double v1_tex = v1[9] * v_scale;
+        double v2_tex = v2[9] * v_scale;
+        double du_dx = ((u1 - u0) * (v2[1] - v0[1]) -
+                        (u2 - u0) * (v1[1] - v0[1])) / determinant;
+        double du_dy = ((v1[0] - v0[0]) * (u2 - u0) -
+                        (v2[0] - v0[0]) * (u1 - u0)) / determinant;
+        double dv_dx = ((v1_tex - v0_tex) * (v2[1] - v0[1]) -
+                        (v2_tex - v0_tex) * (v1[1] - v0[1])) /
+                       determinant;
+        double dv_dy = ((v1[0] - v0[0]) * (v2_tex - v0_tex) -
+                        (v2[0] - v0[0]) * (v1_tex - v0_tex)) /
+                       determinant;
+        double initial_u = u0 + du_dx * (sample_x - v0[0]) +
+                           du_dy * (sample_y - v0[1]);
+        double initial_v = v0_tex + dv_dx * (sample_x - v0[0]) +
+                           dv_dy * (sample_y - v0[1]);
+
+        if (!tarugx_fixed_16_8(initial_u, &triangle->u) ||
+            !tarugx_fixed_16_8(initial_v, &triangle->v) ||
+            !tarugx_pack_depth_gradient(du_dx, &triangle->gradient_u_x) ||
+            !tarugx_pack_depth_gradient(du_dy, &triangle->gradient_u_y) ||
+            !tarugx_pack_depth_gradient(dv_dx, &triangle->gradient_v_x) ||
+            !tarugx_pack_depth_gradient(dv_dy, &triangle->gradient_v_y))
+            return false;
     }
     return true;
 }
@@ -473,7 +570,10 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
 {
     const float *vertices;
     struct tarugx_winsys_surface surface;
+    struct tarugx_winsys_surface *texture;
     struct tarugx_winsys_triangle *triangles;
+    float u_scale;
+    float v_scale;
     unsigned triangle_count;
     unsigned prepared_count = 0;
     unsigned maximum_triangles;
@@ -482,7 +582,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     unsigned i;
 
     if (!tarugx_target_surface(state, &surface) ||
-        !tarugx_draw_state_supported(state, &surface))
+        !tarugx_texture_state(state, &texture, &u_scale, &v_scale) ||
+        !tarugx_draw_state_supported(state, &surface, texture != NULL))
         return false;
     switch (state->primitive) {
     case MESA_PRIM_TRIANGLES:
@@ -501,7 +602,7 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     }
     vertices = state->backend->map_vertices(state->backend);
     stride = state->softpipe->vertex_info.size;
-    if (!vertices || stride < 8)
+    if (!vertices || stride < (texture ? 12 : 8))
         return false;
     if (triangle_count > UINT_MAX / TARUGX_CLIP_MAX_TRIANGLES)
         return false;
@@ -554,7 +655,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
         for (clipped_index = 1; clipped_index + 1 < clipped_count;
              clipped_index++) {
             if (prepared_count >= maximum_triangles ||
-                !tarugx_prepare_triangle(state, &surface, clipped[0],
+                !tarugx_prepare_triangle(state, &surface, texture != NULL,
+                                         u_scale, v_scale, clipped[0],
                                          clipped[clipped_index],
                                          clipped[clipped_index + 1],
                                          &triangles[prepared_count])) {
@@ -570,8 +672,14 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
         unsigned batch_count = MIN2(TARUGX_MAX_BATCH_TRIANGLES,
                                     prepared_count - i);
 
-        if (!tarugx_winsys_submit_triangles(&state->winsys, &surface,
-                                            triangles + i, batch_count)) {
+        bool submitted = texture ?
+            tarugx_winsys_submit_textured_triangles(
+                &state->winsys, &surface, texture, triangles + i,
+                batch_count) :
+            tarugx_winsys_submit_triangles(
+                &state->winsys, &surface, triangles + i, batch_count);
+
+        if (!submitted) {
             if (inflight_batches)
                 tarugx_winsys_wait(&state->winsys, INT64_MAX);
             free(triangles);
@@ -684,6 +792,7 @@ tarugx_context_destroy(struct pipe_context *context)
     saved.backend->draw_elements = saved.draw_elements;
     context->clear = saved.clear;
     context->destroy = saved.destroy;
+    tarugx_winsys_surface_destroy(&saved.winsys, &saved.texture);
     tarugx_winsys_close(&saved.winsys);
     saved.destroy(context);
 }
