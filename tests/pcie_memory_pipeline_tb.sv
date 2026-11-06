@@ -12,20 +12,20 @@ module pcie_memory_pipeline_tb;
  logic fill_busy,fill_done,fill_error,fill_start;logic [127:0] fill_command;
  logic blit_busy,blit_done,blit_error,blit_start;logic [159:0] blit_command;
  logic triangle_busy,triangle_done,triangle_error,triangle_start;
- logic [31:0] triangle_writes;logic [495:0] triangle_command;
+ logic [31:0] triangle_writes;logic [735:0] triangle_command;
  logic queue_ready,queue_active,queue_error,queue_submit,queue_clear_error;
  logic [2:0] queue_level;logic [31:0] queue_completed,queue_error_fence;
- logic [529:0] queue_command;
+ logic [769:0] queue_command;
  logic [31:0] display_ctrl,display_color,display_mode,fb_base,fb_stride;
  logic fb_req_valid,fb_req_ready,fb_req_write,fb_rsp_valid,fb_rsp_ready,fb_rsp_error;
  logic [31:0] fb_req_addr,fb_rsp_rdata;logic [255:0] fb_req_wdata;logic [31:0] fb_req_wstrb;
  tarugx_pcie_gpu_path pcie(.*);
  logic queue_dispatch_valid,queue_dispatch_ready,queue_completion_valid,queue_completion_error;
- logic [529:0] queue_dispatch_command;
+ logic [769:0] queue_dispatch_command;
  logic queued_fill_start,queued_blit_start,queued_triangle_start;
  logic fill_cdc_ready,blit_cdc_ready,triangle_cdc_ready;
  logic [127:0] queued_fill_command;logic [159:0] queued_blit_command;
- logic [495:0] queued_triangle_command;
+ logic [735:0] queued_triangle_command;
  tarugx_render_command_queue render_queue(
   .clk(clk),.rst_n(rst),.enqueue_valid(queue_submit),.enqueue_ready(queue_ready),.enqueue_command(queue_command),
   .dispatch_valid(queue_dispatch_valid),.dispatch_ready(queue_dispatch_ready),.dispatch_command(queue_dispatch_command),
@@ -109,8 +109,8 @@ module pcie_memory_pipeline_tb;
   .mem_rsp_valid(blit_mem_rsp_valid),.mem_rsp_ready(blit_mem_rsp_ready),
   .mem_rsp_data(blit_mem_rsp_data),.mem_rsp_error(blit_mem_rsp_error));
  logic triangle_cmd_valid,triangle_cmd_ready,triangle_engine_done,triangle_engine_error;
- logic [495:0] triangle_mem_command;
- tarugx_render_command_cdc #(.WIDTH(496)) triangle_cdc(
+ logic [735:0] triangle_mem_command;
+ tarugx_render_command_cdc #(.WIDTH(736)) triangle_cdc(
   .src_clk(clk),.src_rst_n(rst),.src_valid(triangle_start||queued_triangle_start),
   .src_ready(triangle_cdc_ready),
   .src_command(triangle_start?triangle_command:queued_triangle_command),

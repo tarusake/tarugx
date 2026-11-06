@@ -64,9 +64,9 @@ module tarugx_framebuffer_top #(
     fill_start      : output logic     ,
     blit_command    : output logic<160>,
     blit_start      : output logic     ,
-    triangle_command: output logic<496>,
+    triangle_command: output logic<736>,
     triangle_start  : output logic     ,
-    queue_command   : output logic<530>,
+    queue_command   : output logic<770>,
     queue_submit    : output logic     ,
     queue_clear_error: output logic    ,
 ) {

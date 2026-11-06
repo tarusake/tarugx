@@ -53,9 +53,9 @@ module gpu_registers #(
     fill_start     : output logic     ,
     blit_command   : output logic<160>,
     blit_start     : output logic     ,
-    triangle_command: output logic<496>,
+    triangle_command: output logic<736>,
     triangle_start : output logic     ,
-    queue_command  : output logic<530>,
+    queue_command  : output logic<770>,
     queue_submit   : output logic     ,
     queue_clear_error: output logic   ,
     dma_host_address: output logic<64>,
@@ -95,6 +95,16 @@ module gpu_registers #(
     var   triangle_depth_config: logic<32>;
     var   triangle_gradient_z_x: logic<32>;
     var   triangle_gradient_z_y: logic<32>;
+    var   triangle_texture_config: logic<32>;
+    var   triangle_texture_base: logic<32>;
+    var   triangle_texture_stride: logic<32>;
+    var   triangle_texture_size: logic<32>;
+    var   triangle_u: logic<32>;
+    var   triangle_v: logic<32>;
+    var   triangle_gradient_u_x: logic<32>;
+    var   triangle_gradient_u_y: logic<32>;
+    var   triangle_gradient_v_x: logic<32>;
+    var   triangle_gradient_v_y: logic<32>;
     var   triangle_done_sticky: logic    ;
     var   triangle_error_sticky: logic   ;
     var   queue_fence       : logic<32>;
@@ -106,7 +116,12 @@ module gpu_registers #(
 
     assign fill_command = {fill_color, fill_size, fill_stride, fill_addr};
     assign blit_command = {blit_size, blit_dst_stride, blit_src_stride, blit_dst, blit_src};
-    assign triangle_command = {triangle_gradient_z_y, triangle_gradient_z_x,
+    assign triangle_command = {triangle_gradient_v_y[23:0],
+        triangle_gradient_v_x[23:0], triangle_gradient_u_y[23:0],
+        triangle_gradient_u_x[23:0], triangle_v[23:0], triangle_u[23:0],
+        triangle_texture_size, triangle_texture_stride, triangle_texture_base,
+        triangle_gradient_z_y[31:25], triangle_texture_config[0],
+        triangle_gradient_z_y[23:0], triangle_gradient_z_x,
         triangle_depth_config, triangle_depth_base,
         triangle_gradient_b, triangle_gradient_g,
         triangle_gradient_r, triangle_color, triangle_y2[23:0], triangle_x2[23:0],
@@ -204,6 +219,16 @@ module gpu_registers #(
                 14'h0051: rsp_rdata = triangle_depth_config;
                 14'h0052: rsp_rdata = triangle_gradient_z_x;
                 14'h0053: rsp_rdata = triangle_gradient_z_y;
+                14'h0054: rsp_rdata = triangle_texture_config;
+                14'h0055: rsp_rdata = triangle_texture_base;
+                14'h0056: rsp_rdata = triangle_texture_stride;
+                14'h0057: rsp_rdata = triangle_texture_size;
+                14'h0058: rsp_rdata = triangle_u;
+                14'h0059: rsp_rdata = triangle_v;
+                14'h005a: rsp_rdata = triangle_gradient_u_x;
+                14'h005b: rsp_rdata = triangle_gradient_u_y;
+                14'h005c: rsp_rdata = triangle_gradient_v_x;
+                14'h005d: rsp_rdata = triangle_gradient_v_y;
                 default : {
                     rsp_rdata = 32'b0;
                     rsp_error = 1'b1;
@@ -256,11 +281,21 @@ module gpu_registers #(
             triangle_depth_config = 32'b0;
             triangle_gradient_z_x = 32'b0;
             triangle_gradient_z_y = 32'b0;
+            triangle_texture_config = 32'b0;
+            triangle_texture_base = 32'b0;
+            triangle_texture_stride = 32'b0;
+            triangle_texture_size = 32'b0;
+            triangle_u = 32'b0;
+            triangle_v = 32'b0;
+            triangle_gradient_u_x = 32'b0;
+            triangle_gradient_u_y = 32'b0;
+            triangle_gradient_v_x = 32'b0;
+            triangle_gradient_v_y = 32'b0;
             triangle_start      = 1'b0;
             triangle_done_sticky = 1'b0;
             triangle_error_sticky = 1'b0;
             queue_fence       = 32'b0;
-            queue_command     = 530'b0;
+            queue_command     = 770'b0;
             queue_pending     = 1'b0;
             queue_overflow    = 1'b0;
             queue_clear_error = 1'b0;
@@ -333,9 +368,9 @@ module gpu_registers #(
                     14'h0029: if req_wstrb[0] && (req_wdata[1:0] != 0) {
                         if !queue_pending || queue_ready {
                             queue_command = if req_wdata[1:0] == 2'd1
-                                ? {368'b0, fill_command, queue_fence, 2'd1}
+                                ? {608'b0, fill_command, queue_fence, 2'd1}
                                 : if req_wdata[1:0] == 2'd2
-                                ? {336'b0, blit_command, queue_fence, 2'd2}
+                                ? {576'b0, blit_command, queue_fence, 2'd2}
                                 : {triangle_command, queue_fence, req_wdata[1:0]};
                             queue_pending = 1'b1;
                         } else {
@@ -391,6 +426,26 @@ module gpu_registers #(
                         triangle_gradient_z_x, req_wdata, req_wstrb);
                     14'h0053: triangle_gradient_z_y = merge_bytes(
                         triangle_gradient_z_y, req_wdata, req_wstrb);
+                    14'h0054: triangle_texture_config = merge_bytes(
+                        triangle_texture_config, req_wdata, req_wstrb);
+                    14'h0055: triangle_texture_base = merge_bytes(
+                        triangle_texture_base, req_wdata, req_wstrb);
+                    14'h0056: triangle_texture_stride = merge_bytes(
+                        triangle_texture_stride, req_wdata, req_wstrb);
+                    14'h0057: triangle_texture_size = merge_bytes(
+                        triangle_texture_size, req_wdata, req_wstrb);
+                    14'h0058: triangle_u = merge_bytes(
+                        triangle_u, req_wdata, req_wstrb);
+                    14'h0059: triangle_v = merge_bytes(
+                        triangle_v, req_wdata, req_wstrb);
+                    14'h005a: triangle_gradient_u_x = merge_bytes(
+                        triangle_gradient_u_x, req_wdata, req_wstrb);
+                    14'h005b: triangle_gradient_u_y = merge_bytes(
+                        triangle_gradient_u_y, req_wdata, req_wstrb);
+                    14'h005c: triangle_gradient_v_x = merge_bytes(
+                        triangle_gradient_v_x, req_wdata, req_wstrb);
+                    14'h005d: triangle_gradient_v_y = merge_bytes(
+                        triangle_gradient_v_y, req_wdata, req_wstrb);
                     14'h004a: if req_wstrb[0] && req_wdata[0] && !triangle_busy {
                         triangle_start        = 1'b1;
                         triangle_done_sticky  = 1'b0;
