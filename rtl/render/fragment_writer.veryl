@@ -106,11 +106,11 @@ module fragment_writer (
     always_comb {
         mem_wdata = 0;
         mem_wstrb = 0;
-        if state == State::DepthWriteIssue {
-            mem_wdata[(depth_lane as 8) * 8'd16+:16] = depth_value;
-            mem_wstrb[(depth_lane as 5) * 5'd2+:2] = 2'b11;
-        } else if state == State::ColorIssue {
-            mem_wdata[(lane as 8) * 8'd16+:16] = pixel;
+        // Read requests ignore the write payload.  Color and depth writes
+        // share these registers, avoiding a state-controlled mux replicated
+        // across the full 256-bit DDR data bus.
+        mem_wdata[(lane as 8) * 8'd16+:16] = pixel;
+        if mem_write {
             mem_wstrb[(lane as 5) * 5'd2+:2] = 2'b11;
         }
     }
@@ -195,6 +195,8 @@ module fragment_writer (
                         if mem_rsp_error {
                             state = State::Fault;
                         } else if depth_active && depth_write_active {
+                            lane  = depth_lane;
+                            pixel = depth_value;
                             state = State::DepthWriteIssue;
                         } else {
                             writes = writes + 32'd1;
