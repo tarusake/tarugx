@@ -61,13 +61,6 @@ module fragment_writer (
     var depth_target_base: logic<32>;
     var depth_compare: logic<3>;
     var target_ok: logic;
-    // A triangle keeps these values stable, but latching them at launch makes
-    // that contract explicit and cuts the cross-module paths from the command
-    // registers into every fragment's address and bounds logic.
-    var target_base_latched: logic<32>;
-    var target_stride_latched: logic<32>;
-    var target_width_latched: logic<16>;
-    var target_height_latched: logic<16>;
     var pending_x: logic<16>;
     var pending_y: logic<16>;
     var pending_color: logic<32>;
@@ -84,14 +77,13 @@ module fragment_writer (
     var response_ready: logic;
 
     let calculated_row_offset: logic<64> =
-        (pending_y as 64) * (target_stride_latched as 64);
+        (pending_y as 64) * (target_stride as 64);
     let column_offset: logic<64> = (pending_x as 64) * 64'd2;
-    let pixel_address: logic<64> = (target_base_latched as 64)
-        + row_offset + column_offset;
+    let pixel_address: logic<64> = (target_base as 64) + row_offset + column_offset;
     let depth_address: logic<64> = (depth_target_base as 64)
         + row_offset + column_offset;
-    let fragment_in_bounds: logic = (fragment_x <: target_width_latched)
-        && (fragment_y <: target_height_latched);
+    let fragment_in_bounds: logic = (fragment_x <: target_width)
+        && (fragment_y <: target_height);
     let fragment_ok: logic = target_ok && pending_in_bounds
         && ((pixel_address + 64'd2) <= 64'h01000000)
         && (!depth_active || ((depth_address + 64'd2) <= 64'h01000000));
@@ -145,10 +137,6 @@ module fragment_writer (
             depth_target_base = 0;
             depth_compare = 0;
             target_ok = 0;
-            target_base_latched = 0;
-            target_stride_latched = 0;
-            target_width_latched = 0;
-            target_height_latched = 0;
             pending_x = 0;
             pending_y = 0;
             pending_color = 0;
@@ -285,10 +273,6 @@ module fragment_writer (
             }
             if clear {
                 target_ok = target_validated;
-                target_base_latched = target_base;
-                target_stride_latched = target_stride;
-                target_width_latched = target_width;
-                target_height_latched = target_height;
                 depth_active = depth_enable;
                 depth_write_active = depth_write_enable;
                 depth_target_base = depth_base;
