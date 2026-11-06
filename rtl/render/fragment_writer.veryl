@@ -41,7 +41,6 @@ module fragment_writer (
         Idle,
         RowAddress,
         PixelAddress,
-        BoundsCheck,
         DepthReadIssue,
         DepthReadWait,
         ColorIssue,
@@ -68,7 +67,6 @@ module fragment_writer (
     var pending_depth: logic<16>;
     var pending_in_bounds: logic;
     var row_offset: logic<64>;
-    var address_ok: logic;
     // Keep the encoded control state local to this writer.  Driving the DDR
     // request boundary directly from state replicated the state decode across
     // the address, payload and both downstream arbiters.  Dedicated boundary
@@ -145,7 +143,6 @@ module fragment_writer (
             pending_depth = 0;
             pending_in_bounds = 0;
             row_offset = 0;
-            address_ok = 0;
             request_valid = 0;
             request_addr = 0;
             response_ready = 0;
@@ -185,11 +182,7 @@ module fragment_writer (
                         request_addr = if depth_active ?
                             {depth_address[23:5], 5'b0} :
                             {pixel_address[23:5], 5'b0};
-                        address_ok = fragment_ok;
-                        state = State::BoundsCheck;
-                }
-                State::BoundsCheck: {
-                        if address_ok {
+                        if fragment_ok {
                             request_valid = 1;
                             state = if depth_active ? State::DepthReadIssue
                                 : State::ColorIssue;
@@ -205,10 +198,6 @@ module fragment_writer (
                     }
                 }
                 State::DepthReadWait: {
-                    // Prepare the only possible next request independently of
-                    // the response.  request_valid remains the visibility
-                    // gate, so this address is harmless on error/depth fail.
-                    request_addr = word_addr;
                     if mem_rsp_valid && response_ready {
                         response_ready = 0;
                         if mem_rsp_error {
@@ -216,6 +205,7 @@ module fragment_writer (
                         } else if depth_pass(depth_compare, depth_value,
                             mem_rsp_data[(depth_lane as 8) * 8'd16+:16]) {
                             request_valid = 1;
+                            request_addr = word_addr;
                             state = State::ColorIssue;
                         } else {
                             state  = State::Idle;
@@ -230,10 +220,6 @@ module fragment_writer (
                     }
                 }
                 State::ColorWait: {
-                    // Likewise prepare the optional depth-update address every
-                    // wait cycle to avoid a response/depth predicate on all 24
-                    // request-address register enables.
-                    request_addr = depth_word_addr;
                     if mem_rsp_valid && response_ready {
                         response_ready = 0;
                         if mem_rsp_error {
@@ -242,6 +228,7 @@ module fragment_writer (
                             lane  = depth_lane;
                             pixel = depth_value;
                             request_valid = 1;
+                            request_addr = depth_word_addr;
                             state = State::DepthWriteIssue;
                         } else {
                             writes = writes + 32'd1;
