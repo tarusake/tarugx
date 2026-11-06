@@ -23,6 +23,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_exec.h>
 #include <drm/drm_fbdev_generic.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
@@ -96,6 +97,7 @@ struct tarugx {
 	bool triangle_available;
 	bool triangle_interpolation_available;
 	bool depth_available;
+	bool texture_available;
 	u32 gpu_version;
 	bool active_fb_base_available;
 	bool legacy_single_buffer;
@@ -157,6 +159,20 @@ struct tarugx_depth_state {
 	s32 gradient_y;
 };
 
+struct tarugx_texture_state {
+	bool enabled;
+	u32 base;
+	u32 pitch;
+	u16 width;
+	u16 height;
+	s32 u;
+	s32 v;
+	s32 gradient_u_x;
+	s32 gradient_u_y;
+	s32 gradient_v_x;
+	s32 gradient_v_y;
+};
+
 struct tarugx_sched_job {
 	struct drm_sched_job base;
 	struct tarugx *tgx;
@@ -170,6 +186,8 @@ struct tarugx_sched_job {
 	u32 height;
 	u32 depth_base;
 	struct tarugx_depth_state depth[DRM_TARUGX_MAX_COMMANDS];
+	struct tarugx_texture_state texture[DRM_TARUGX_MAX_COMMANDS];
+	struct drm_gem_object *texture_gem;
 };
 
 struct tarugx_dma_fence {
@@ -223,6 +241,7 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_GPU_VERSION_TRIANGLE 0x00010004
 #define TGX_GPU_VERSION_TRIANGLE_INTERPOLATION 0x00010005
 #define TGX_GPU_VERSION_Z16 0x00010006
+#define TGX_GPU_VERSION_TEXTURE_RGB565 0x00010007
 #define TGX_IRQ_VBLANK BIT(0)
 #define TGX_IRQ_RENDER BIT(1)
 #define TGX_REG_FILL_ADDR 0x60
@@ -261,6 +280,16 @@ static const struct drm_gem_object_funcs tgx_prime_object_funcs;
 #define TGX_REG_TRIANGLE_DEPTH_CONFIG 0x144
 #define TGX_REG_TRIANGLE_GRADIENT_Z_X 0x148
 #define TGX_REG_TRIANGLE_GRADIENT_Z_Y 0x14c
+#define TGX_REG_TRIANGLE_TEXTURE_CONFIG 0x150
+#define TGX_REG_TRIANGLE_TEXTURE_BASE 0x154
+#define TGX_REG_TRIANGLE_TEXTURE_STRIDE 0x158
+#define TGX_REG_TRIANGLE_TEXTURE_SIZE 0x15c
+#define TGX_REG_TRIANGLE_U 0x160
+#define TGX_REG_TRIANGLE_V 0x164
+#define TGX_REG_TRIANGLE_GRADIENT_U_X 0x168
+#define TGX_REG_TRIANGLE_GRADIENT_U_Y 0x16c
+#define TGX_REG_TRIANGLE_GRADIENT_V_X 0x170
+#define TGX_REG_TRIANGLE_GRADIENT_V_Y 0x174
 #define TGX_QUEUE_LEVEL GENMASK(2, 0)
 #define TGX_QUEUE_READY BIT(3)
 #define TGX_QUEUE_ACTIVE BIT(4)
@@ -568,6 +597,7 @@ static void tgx_program_render(struct tarugx *tgx,
 			       u32 destination_width, u32 destination_height,
 			       u32 depth_base,
 			       const struct tarugx_depth_state *depth,
+			       const struct tarugx_texture_state *texture,
 			       const struct drm_tarugx_command *command)
 {
 	if (command->opcode == DRM_TARUGX_OP_FILL ||
@@ -639,6 +669,30 @@ static void tgx_program_render(struct tarugx *tgx,
 			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_X);
 			writel(config ? (u32)depth->gradient_y & GENMASK(23, 0) : 0,
 			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_Z_Y);
+		}
+		if (tgx->texture_available) {
+			u32 enabled = texture && texture->enabled;
+
+			writel(enabled, tgx->regs + TGX_REG_TRIANGLE_TEXTURE_CONFIG);
+			writel(enabled ? texture->base : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_TEXTURE_BASE);
+			writel(enabled ? texture->pitch : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_TEXTURE_STRIDE);
+			writel(enabled ? ((u32)texture->height << 16) |
+			       texture->width : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_TEXTURE_SIZE);
+			writel(enabled ? (u32)texture->u & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_U);
+			writel(enabled ? (u32)texture->v & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_V);
+			writel(enabled ? (u32)texture->gradient_u_x & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_U_X);
+			writel(enabled ? (u32)texture->gradient_u_y & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_U_Y);
+			writel(enabled ? (u32)texture->gradient_v_x & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_V_X);
+			writel(enabled ? (u32)texture->gradient_v_y & GENMASK(23, 0) : 0,
+			       tgx->regs + TGX_REG_TRIANGLE_GRADIENT_V_Y);
 		}
 	}
 }
@@ -774,7 +828,7 @@ static int tgx_execute_commands(struct tarugx *tgx,
 		tgx_program_render(tgx, source_base, source_pitch,
 				   destination_base, destination_pitch,
 				   destination_width, destination_height,
-				   0, NULL,
+				   0, NULL, NULL,
 				   &commands[submitted]);
 		fence = tgx_next_render_fence(tgx);
 		writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -858,6 +912,7 @@ static struct dma_fence *tgx_sched_run_job(struct drm_sched_job *sched_job)
 					   job->width, job->height,
 					   job->depth_base,
 					   &job->depth[submitted],
+					   &job->texture[submitted],
 					   &job->commands[submitted]);
 			fence = tgx_next_render_fence(tgx);
 			writel(fence, tgx->regs + TGX_REG_QUEUE_FENCE);
@@ -915,6 +970,7 @@ static void tgx_sched_free_job(struct drm_sched_job *sched_job)
 
 	drm_sched_job_cleanup(sched_job);
 	dma_fence_put(job->input_fence);
+	drm_gem_object_put(job->texture_gem);
 	drm_gem_object_put(job->gem);
 	atomic_dec(&job->tgx->render_sched_jobs);
 	kfree(job);
@@ -1627,6 +1683,34 @@ static bool tgx_command3d_valid(const struct tarugx *tgx,
 	return true;
 }
 
+static bool tgx_s24_valid(s32 value)
+{
+	return value >= -0x800000 && value <= 0x7fffff;
+}
+
+static bool tgx_command4_valid(const struct tarugx *tgx,
+			       const struct drm_tarugx_command4 *command,
+			       u32 width, u32 height)
+{
+	const struct drm_tarugx_command *base = &command->command.command;
+	u32 flags = command->texture_flags;
+
+	if (!tgx_command3d_valid(tgx, &command->command, width, height) ||
+	    command->pad || flags & ~DRM_TARUGX_TEXTURE_ENABLE)
+		return false;
+	if (!(flags & DRM_TARUGX_TEXTURE_ENABLE))
+		return !command->u && !command->v && !command->gradient_u_x &&
+			!command->gradient_u_y && !command->gradient_v_x &&
+			!command->gradient_v_y;
+	return tgx->texture_available &&
+		base->opcode == DRM_TARUGX_OP_TRIANGLE &&
+		tgx_s24_valid(command->u) && tgx_s24_valid(command->v) &&
+		tgx_s24_valid(command->gradient_u_x) &&
+		tgx_s24_valid(command->gradient_u_y) &&
+		tgx_s24_valid(command->gradient_v_x) &&
+		tgx_s24_valid(command->gradient_v_y);
+}
+
 static int tgx_ioctl_submit_gem3(struct drm_device *drm, void *data,
 				 struct drm_file *file)
 {
@@ -1797,6 +1881,253 @@ out:
 		dma_fence_chain_free(out_chain);
 	dma_fence_put(in_fence);
 	drm_gem_object_put(gem);
+	kfree(job);
+	if (out_syncobj)
+		drm_syncobj_put(out_syncobj);
+	return ret;
+}
+
+static int tgx_ioctl_submit_gem4(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	struct tarugx *tgx = container_of(drm, struct tarugx, drm);
+	struct drm_tarugx_submit_gem4 *args = data;
+	struct tarugx_sched_job *job = NULL;
+	struct tarugx_vram_object *destination, *texture = NULL;
+	struct drm_gem_object *destination_gem = NULL, *texture_gem = NULL;
+	struct drm_syncobj *out_syncobj = NULL;
+	struct dma_fence_chain *out_chain = NULL;
+	struct dma_fence *in_fence = NULL, *dependency, *finished;
+	struct drm_exec exec;
+	bool gate_held = false, job_initialized = false, exec_initialized = false;
+	bool uses_texture = false;
+	u32 entity_index, i;
+	int ret;
+
+	if (!args->count || args->count > DRM_TARUGX_MAX_COMMANDS ||
+	    args->flags != DRM_TARUGX_SUBMIT_ASYNC ||
+	    (args->in_point && !args->in_syncobj) ||
+	    (args->out_point && !args->out_syncobj))
+		return -EINVAL;
+	if (!tgx->render_sched_initialized || !tgx->texture_available)
+		return -EOPNOTSUPP;
+	if (args->out_syncobj) {
+		out_syncobj = drm_syncobj_find(file, args->out_syncobj);
+		if (!out_syncobj)
+			return -ENOENT;
+	}
+	destination_gem = drm_gem_object_lookup(file, args->handle);
+	if (!destination_gem) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (destination_gem->funcs != &tgx_vram_object_funcs) {
+		ret = -EINVAL;
+		goto out;
+	}
+	destination = container_of(destination_gem,
+				   struct tarugx_vram_object, base);
+	for (i = 0; i < args->count; i++) {
+		if (!tgx_command4_valid(tgx, &args->commands[i],
+					 destination->width, destination->height)) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if ((args->commands[i].command.command.opcode ==
+		     DRM_TARUGX_OP_DEPTH_CLEAR ||
+		     args->commands[i].command.depth_flags) &&
+		    !destination->depth) {
+			ret = -EINVAL;
+			goto out;
+		}
+		uses_texture |= args->commands[i].texture_flags &
+				DRM_TARUGX_TEXTURE_ENABLE;
+	}
+	if (uses_texture != !!args->texture_handle) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (uses_texture) {
+		texture_gem = drm_gem_object_lookup(file, args->texture_handle);
+		if (!texture_gem) {
+			ret = -ENOENT;
+			goto out;
+		}
+		if (texture_gem == destination_gem ||
+		    texture_gem->funcs != &tgx_vram_object_funcs) {
+			ret = -EINVAL;
+			goto out;
+		}
+		texture = container_of(texture_gem,
+				       struct tarugx_vram_object, base);
+		if (!texture->width || !texture->height ||
+		    texture->width > U16_MAX || texture->height > U16_MAX ||
+		    texture->pitch < texture->width * tgx->cpp ||
+		    (texture->node.start | texture->pitch) & 1) {
+			ret = -EINVAL;
+			goto out;
+		}
+	}
+	job = kzalloc(sizeof(*job), GFP_KERNEL);
+	if (!job) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	job->tgx = tgx;
+	job->gem = destination_gem;
+	job->texture_gem = texture_gem;
+	job->count = args->count;
+	job->vram_base = destination->node.start;
+	job->pitch = destination->pitch;
+	job->width = destination->width;
+	job->height = destination->height;
+	job->depth_base = destination->depth ?
+		destination->node.start + destination->depth_offset : 0;
+	for (i = 0; i < args->count; i++) {
+		const struct drm_tarugx_command4 *source = &args->commands[i];
+		struct tarugx_texture_state *state = &job->texture[i];
+
+		job->commands[i] = source->command.command;
+		job->depth[i].flags = source->command.depth_flags;
+		job->depth[i].depth = source->command.depth;
+		job->depth[i].gradient_x = source->command.gradient_z_x;
+		job->depth[i].gradient_y = source->command.gradient_z_y;
+		if (source->texture_flags & DRM_TARUGX_TEXTURE_ENABLE) {
+			state->enabled = true;
+			state->base = texture->node.start;
+			state->pitch = texture->pitch;
+			state->width = texture->width;
+			state->height = texture->height;
+			state->u = source->u;
+			state->v = source->v;
+			state->gradient_u_x = source->gradient_u_x;
+			state->gradient_u_y = source->gradient_u_y;
+			state->gradient_v_x = source->gradient_v_x;
+			state->gradient_v_y = source->gradient_v_y;
+		}
+	}
+	entity_index = (u32)atomic_inc_return(&tgx->render_entity_next) - 1;
+	entity_index %= tgx->render_entity_count;
+	ret = drm_sched_job_init(&job->base,
+				 &tgx->render_entities[entity_index], 1, tgx);
+	if (ret)
+		goto out;
+	job_initialized = true;
+	if (args->in_syncobj) {
+		ret = drm_syncobj_find_fence(file, args->in_syncobj,
+					     args->in_point, 0, &in_fence);
+		if (ret)
+			goto out;
+		job->input_fence = dma_fence_get(in_fence);
+		dependency = in_fence;
+		in_fence = NULL;
+		ret = drm_sched_job_add_dependency(&job->base, dependency);
+		if (ret)
+			goto out;
+	}
+	if (args->out_point) {
+		out_chain = dma_fence_chain_alloc();
+		if (!out_chain) {
+			ret = -ENOMEM;
+			goto out;
+		}
+	}
+	mutex_lock(&tgx->render_submit_lock);
+	if (tgx->render_async_valid && tgx->render_async_owner == file) {
+		ret = tgx_reap_async(tgx, 0);
+		if (tgx->render_async_completed)
+			tgx_clear_async(tgx);
+		if (ret && ret != -EAGAIN)
+			goto out_unlock_gate4;
+	}
+	if (tgx->removing) {
+		ret = -ENODEV;
+	} else if (tgx->render_async_valid) {
+		ret = -EBUSY;
+	} else {
+		i = atomic_inc_return(&tgx->render_sched_jobs);
+		if (i > TGX_RENDER_JOB_LIMIT) {
+			atomic_dec(&tgx->render_sched_jobs);
+			ret = -EBUSY;
+		} else {
+			if (i > atomic64_read(&tgx->render_sched_peak))
+				atomic64_set(&tgx->render_sched_peak, i);
+			gate_held = true;
+			ret = 0;
+		}
+	}
+out_unlock_gate4:
+	mutex_unlock(&tgx->render_submit_lock);
+	if (ret)
+		goto out;
+
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT, 0);
+	exec_initialized = true;
+	drm_exec_until_all_locked(&exec) {
+		ret = drm_exec_prepare_obj(&exec, destination_gem, 1);
+		drm_exec_retry_on_contention(&exec);
+		if (ret)
+			goto out;
+		if (texture_gem) {
+			ret = drm_exec_prepare_obj(&exec, texture_gem, 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out;
+		}
+	}
+	ret = drm_sched_job_add_resv_dependencies(&job->base,
+						 destination_gem->resv,
+						 DMA_RESV_USAGE_WRITE);
+	if (ret)
+		goto out;
+	if (texture_gem) {
+		ret = drm_sched_job_add_resv_dependencies(&job->base,
+						 texture_gem->resv,
+						 DMA_RESV_USAGE_READ);
+		if (ret)
+			goto out;
+	}
+	drm_sched_job_arm(&job->base);
+	finished = &job->base.s_fence->finished;
+	dma_resv_add_fence(destination_gem->resv, finished,
+			   DMA_RESV_USAGE_WRITE);
+	if (texture_gem)
+		dma_resv_add_fence(texture_gem->resv, finished,
+				   DMA_RESV_USAGE_READ);
+	if (out_syncobj) {
+		if (args->out_point) {
+			drm_syncobj_add_point(out_syncobj, out_chain, finished,
+					      args->out_point);
+			out_chain = NULL;
+		} else {
+			drm_syncobj_replace_fence(out_syncobj, finished);
+		}
+	}
+	drm_exec_fini(&exec);
+	exec_initialized = false;
+	mutex_lock(&tgx->render_submit_lock);
+	drm_sched_entity_push_job(&job->base);
+	mutex_unlock(&tgx->render_submit_lock);
+	destination_gem = NULL;
+	texture_gem = NULL;
+	job = NULL;
+	job_initialized = false;
+	gate_held = false;
+	ret = 0;
+out:
+	if (exec_initialized)
+		drm_exec_fini(&exec);
+	if (job_initialized)
+		drm_sched_job_cleanup(&job->base);
+	if (job)
+		dma_fence_put(job->input_fence);
+	if (gate_held)
+		atomic_dec(&tgx->render_sched_jobs);
+	if (out_chain)
+		dma_fence_chain_free(out_chain);
+	dma_fence_put(in_fence);
+	drm_gem_object_put(texture_gem);
+	drm_gem_object_put(destination_gem);
 	kfree(job);
 	if (out_syncobj)
 		drm_syncobj_put(out_syncobj);
@@ -2036,6 +2367,8 @@ static int tgx_ioctl_get_param(struct drm_device *drm, void *data,
 			args->value |= DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION;
 		if (tgx->depth_available)
 			args->value |= DRM_TARUGX_CAP_Z16;
+		if (tgx->texture_available)
+			args->value |= DRM_TARUGX_CAP_TEXTURE_RGB565;
 		return 0;
 	default:
 		return -EINVAL;
@@ -3264,6 +3597,8 @@ static const struct drm_ioctl_desc tgx_ioctls[] = {
 			  DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(TARUGX_VRAM_INFO, tgx_ioctl_vram_info,
 			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TARUGX_SUBMIT_GEM4, tgx_ioctl_submit_gem4,
+			  DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
 static struct drm_gem_object *
@@ -3444,6 +3779,7 @@ static int tgx_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	tgx->triangle_interpolation_available =
 		gpu_version >= TGX_GPU_VERSION_TRIANGLE_INTERPOLATION;
 	tgx->depth_available = gpu_version >= TGX_GPU_VERSION_Z16;
+	tgx->texture_available = gpu_version >= TGX_GPU_VERSION_TEXTURE_RGB565;
 	dev_info(&pdev->dev,
 		 "GPU version %u.%u, %ux%u, 32-bit active FB base %s\n",
 		 gpu_version >> 16, gpu_version & 0xffff,

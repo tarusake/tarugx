@@ -176,6 +176,35 @@ struct drm_tarugx_submit_gem3 {
 	struct drm_tarugx_command3d commands[DRM_TARUGX_MAX_COMMANDS];
 };
 
+#define DRM_TARUGX_TEXTURE_ENABLE (1U << 0)
+
+/* Texture-capable triangle command.  A batch uses one texture GEM selected
+ * by submit_gem4.texture_handle.  UV values and gradients are signed 16.8
+ * texel coordinates restricted to the hardware's signed 24-bit range. */
+struct drm_tarugx_command4 {
+	struct drm_tarugx_command3d command;
+	__u32 texture_flags;
+	__s32 u;
+	__s32 v;
+	__s32 gradient_u_x;
+	__s32 gradient_u_y;
+	__s32 gradient_v_x;
+	__s32 gradient_v_y;
+	__u32 pad;
+};
+
+struct drm_tarugx_submit_gem4 {
+	__u32 handle;
+	__u32 texture_handle;
+	__u32 count;
+	__u32 flags;
+	__u32 in_syncobj;
+	__u32 out_syncobj;
+	__u64 in_point;
+	__u64 out_point;
+	struct drm_tarugx_command4 commands[DRM_TARUGX_MAX_COMMANDS];
+};
+
 /* Copy a validated RGB565 rectangle from a DMA-coherent host dumb GEM into a
  * TaruGX VRAM GEM.  Coordinates and width must preserve the FPGA DMA engine's
  * 32-bit transfer alignment. */
@@ -214,6 +243,7 @@ struct drm_tarugx_copy_gem {
 #define DRM_TARUGX_CAP_TRIANGLE (1ULL << 0)
 #define DRM_TARUGX_CAP_TRIANGLE_INTERPOLATION (1ULL << 1)
 #define DRM_TARUGX_CAP_Z16 (1ULL << 2)
+#define DRM_TARUGX_CAP_TEXTURE_RGB565 (1ULL << 3)
 
 struct drm_tarugx_get_param {
 	__u32 param;
@@ -233,6 +263,7 @@ struct drm_tarugx_get_param {
 #define DRM_TARUGX_GET_PARAM 0x09
 #define DRM_TARUGX_SUBMIT_GEM3 0x0a
 #define DRM_TARUGX_VRAM_INFO 0x0b
+#define DRM_TARUGX_SUBMIT_GEM4 0x0c
 
 #define DRM_IOCTL_TARUGX_FILL \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_FILL, struct drm_tarugx_fill)
@@ -266,5 +297,8 @@ struct drm_tarugx_get_param {
 #define DRM_IOCTL_TARUGX_VRAM_INFO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_VRAM_INFO, \
 		 struct drm_tarugx_vram_info)
+#define DRM_IOCTL_TARUGX_SUBMIT_GEM4 \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_TARUGX_SUBMIT_GEM4, \
+		 struct drm_tarugx_submit_gem4)
 
 #endif
