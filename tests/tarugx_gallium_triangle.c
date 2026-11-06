@@ -79,6 +79,21 @@ main(int argc, char **argv)
     static const char fragment_source[] =
         "varying lowp vec4 v_color;\n"
         "void main() { gl_FragColor = v_color; }\n";
+    static const char textured_vertex_source[] =
+        "attribute vec2 position;\n"
+        "attribute float depth;\n"
+        "attribute vec4 color;\n"
+        "attribute vec2 texcoord;\n"
+        "varying lowp vec4 v_color;\n"
+        "varying mediump vec2 v_texcoord;\n"
+        "void main() { gl_Position = vec4(position, depth, 1.0);"
+        " v_color = color; v_texcoord = texcoord; }\n";
+    static const char textured_fragment_source[] =
+        "uniform sampler2D texture0;\n"
+        "varying lowp vec4 v_color;\n"
+        "varying mediump vec2 v_texcoord;\n"
+        "void main() { gl_FragColor = texture2D(texture0, v_texcoord) *"
+        " v_color; }\n";
     static const GLfloat positions[] = {
         -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
         -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
@@ -103,6 +118,20 @@ main(int argc, char **argv)
         0.25f, 0.25f, 0.25f, 1.0f,
         0.75f, 0.25f, 0.25f, 1.0f,
         0.50f, 0.75f, 0.25f, 1.0f,
+    };
+    static const GLfloat texture_colors[] = {
+        1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,
+    };
+    static const GLfloat texture_coordinates[] = {
+        0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f,
+    };
+    static const uint16_t texture_pixels[16] = {
+        0xf800, 0x07e0, 0x001f, 0xffff,
+        0x07e0, 0x001f, 0xffff, 0xf800,
+        0x001f, 0xffff, 0xffe0, 0x07ff,
+        0xffff, 0xf800, 0x07e0, 0x001f,
     };
     static const GLfloat depth_values[] = {
         -0.6f, -0.6f, -0.6f,
@@ -161,6 +190,7 @@ main(int argc, char **argv)
     GLuint vertex_shader;
     GLuint fragment_shader;
     GLuint program;
+    GLuint texture_object = 0;
     uint16_t *pixels = MAP_FAILED;
     uint32_t handle;
     uint32_t stride;
@@ -182,12 +212,14 @@ main(int argc, char **argv)
     int scissor_mode = 0;
     int depth_test = 0;
     int depth_one = 0;
+    int textured = 0;
     GLsizei vertex_count;
     GLfloat pipeline_positions[PIPELINE_TRIANGLES * 6];
     GLfloat pipeline_colors[PIPELINE_TRIANGLES * 12];
     int position_location;
     int depth_location;
     int color_location;
+    int texcoord_location;
     const char *path;
     int fd = -1;
     int result = 1;
@@ -197,7 +229,8 @@ main(int argc, char **argv)
                         "[--software|--batch|--pipeline|--strip|--fan|"
                         "--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
-                        "--cull-front-cw|--scissor|--depth|--depth-one]\n",
+                        "--cull-front-cw|--scissor|--depth|--depth-one|"
+                        "--texture]\n",
                 argv[0]);
         return 2;
     }
@@ -243,6 +276,8 @@ main(int argc, char **argv)
         } else if (!strcmp(argv[3], "--depth-one")) {
             depth_test = 1;
             depth_one = 1;
+        } else if (!strcmp(argv[3], "--texture")) {
+            textured = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -284,8 +319,12 @@ main(int argc, char **argv)
     if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
         !eglMakeCurrent(display, surface, surface, context))
         goto out;
-    vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_source);
-    fragment_shader = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+    vertex_shader = compile_shader(GL_VERTEX_SHADER,
+                                   textured ? textured_vertex_source :
+                                   vertex_source);
+    fragment_shader = compile_shader(GL_FRAGMENT_SHADER,
+                                     textured ? textured_fragment_source :
+                                     fragment_source);
     if (!vertex_shader || !fragment_shader)
         goto out;
     program = glCreateProgram();
@@ -296,6 +335,7 @@ main(int argc, char **argv)
     position_location = glGetAttribLocation(program, "position");
     depth_location = glGetAttribLocation(program, "depth");
     color_location = glGetAttribLocation(program, "color");
+    texcoord_location = glGetAttribLocation(program, "texcoord");
     glViewport(0, 0, WIDTH, HEIGHT);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
@@ -318,6 +358,17 @@ main(int argc, char **argv)
     }
     glClear(GL_COLOR_BUFFER_BIT |
             (depth_test ? GL_DEPTH_BUFFER_BIT : 0));
+    if (textured) {
+        glGenTextures(1, &texture_object);
+        glBindTexture(GL_TEXTURE_2D, texture_object);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 4, 4, 0, GL_RGB,
+                     GL_UNSIGNED_SHORT_5_6_5, texture_pixels);
+        glUniform1i(glGetUniformLocation(program, "texture0"), 0);
+    }
     if (pipeline) {
         for (i = 0; i < PIPELINE_TRIANGLES; i++) {
             memcpy(pipeline_positions + i * 6, positions,
@@ -335,7 +386,13 @@ main(int argc, char **argv)
                           depth_test ? depth_colors :
                           (pipeline ? pipeline_colors :
                           (batch ? batch_colors :
-                          (gradient ? gradient_colors : colors))));
+                          (gradient ? gradient_colors :
+                          (textured ? texture_colors : colors)))));
+    if (textured) {
+        glVertexAttribPointer(texcoord_location, 2, GL_FLOAT, GL_FALSE, 0,
+                              texture_coordinates);
+        glEnableVertexAttribArray(texcoord_location);
+    }
     if (depth_test) {
         glVertexAttribPointer(depth_location, 1, GL_FLOAT, GL_FALSE, 0,
                               depth_values);
@@ -397,6 +454,8 @@ main(int argc, char **argv)
         path = "fpga-indexed";
     else if (gradient)
         path = "fpga-gradient";
+    else if (textured)
+        path = "fpga-texture";
     else if (cull_mode == GL_BACK)
         path = front_face_cw ? "fpga-cull-back-cw" : "fpga-cull-back";
     else if (cull_mode == GL_FRONT)
@@ -432,7 +491,9 @@ main(int argc, char **argv)
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
         (depth_test &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x07e0) ||
-        (!batch && !pipeline && !gradient && !depth_test &&
+        (textured &&
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xffe0) ||
+        (!batch && !pipeline && !gradient && !depth_test && !textured &&
          ((cull_mode == GL_FRONT) == front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||
         (cull_mode && ((cull_mode == GL_FRONT) != front_face_cw) &&
@@ -459,6 +520,8 @@ out:
     if (buffer)
         gbm_surface_release_buffer(gbm_surface, buffer);
     if (display != EGL_NO_DISPLAY) {
+        if (context != EGL_NO_CONTEXT && texture_object)
+            glDeleteTextures(1, &texture_object);
         eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                        EGL_NO_CONTEXT);
         if (context != EGL_NO_CONTEXT)
