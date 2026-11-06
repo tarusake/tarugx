@@ -31,6 +31,7 @@ main(int argc, char **argv)
         .color = 0x00ff0000,
     }};
     int fd;
+    unsigned queued;
     int result = 1;
 
     if (argc != 2) {
@@ -63,6 +64,19 @@ main(int argc, char **argv)
         fputs("TaruGX winsys fence wait failed\n", stderr);
         goto out_surface;
     }
+    /* Same-GEM reservation fences must serialize scheduler jobs even when
+     * userspace replaces the binary syncobj with each newer completion. */
+    for (queued = 0; queued < 8; queued++) {
+        if (!tarugx_winsys_submit_triangles(&winsys, &surface,
+                                            triangles, 2)) {
+            fputs("TaruGX winsys pipelined submit failed\n", stderr);
+            goto out_surface;
+        }
+    }
+    if (!tarugx_winsys_wait(&winsys, INT64_MAX)) {
+        fputs("TaruGX winsys pipelined fence wait failed\n", stderr);
+        goto out_surface;
+    }
     if (tarugx_winsys_supports_depth(&winsys)) {
         if (!surface.depth || !surface.depth_offset) {
             fputs("TaruGX Z16 surface allocation missing\n", stderr);
@@ -89,7 +103,8 @@ main(int argc, char **argv)
         }
     }
     printf("TaruGX Mesa winsys PASS: gpu=%u.%u caps=0x%016llx; "
-           "VRAM resource, fill/color/Z triangle, color/Z clear and fence\n",
+           "VRAM resource, fill/color/Z triangle, 8-job pipeline, "
+           "color/Z clear and fence\n",
            winsys.gpu_version >> 16, winsys.gpu_version & 0xffff,
            (unsigned long long)winsys.caps);
     result = 0;
