@@ -73,7 +73,6 @@ module fragment_writer (
     // registers give place-and-route a short, explicit timing cut instead.
     #[sv("syn_preserve=1")]
     var request_valid: logic;
-    var request_write: logic;
     var request_addr: logic<24>;
     var response_ready: logic;
 
@@ -105,7 +104,10 @@ module fragment_writer (
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
     assign mem_valid     = request_valid;
-    assign mem_write     = request_write;
+    // Only the depth fetch is a read.  This single control bit does not need a
+    // preserved boundary register; keeping it as a local decode avoids a
+    // conditional-enable path into that register.
+    assign mem_write     = state != State::DepthReadIssue;
     assign mem_rsp_ready = response_ready;
     assign mem_addr      = request_addr;
 
@@ -142,7 +144,6 @@ module fragment_writer (
             pending_in_bounds = 0;
             row_offset = 0;
             request_valid = 0;
-            request_write = 0;
             request_addr = 0;
             response_ready = 0;
             writes    = 0;
@@ -163,22 +164,26 @@ module fragment_writer (
                     state = State::PixelAddress;
                 }
                 State::PixelAddress: {
+                        // Capture address results regardless of the bounds
+                        // decision.  They are observable only when
+                        // request_valid is asserted, and unconditional writes
+                        // prevent fragment_ok from becoming a wide register-CE
+                        // network fed by the address arithmetic.
+                        word_addr = {pixel_address[23:5], 5'b0};
+                        lane      = pixel_address[4:1];
+                        pixel     = {
+                            pending_color[23:19],
+                            pending_color[15:10],
+                            pending_color[7:3]
+                        };
+                        depth_word_addr = {depth_address[23:5], 5'b0};
+                        depth_lane = depth_address[4:1];
+                        depth_value = pending_depth;
+                        request_addr = if depth_active ?
+                            {depth_address[23:5], 5'b0} :
+                            {pixel_address[23:5], 5'b0};
                         if fragment_ok {
-                            word_addr = {pixel_address[23:5], 5'b0};
-                            lane      = pixel_address[4:1];
-                            pixel     = {
-                                pending_color[23:19],
-                                pending_color[15:10],
-                                pending_color[7:3]
-                            };
-                            depth_word_addr = {depth_address[23:5], 5'b0};
-                            depth_lane = depth_address[4:1];
-                            depth_value = pending_depth;
                             request_valid = 1;
-                            request_write = !depth_active;
-                            request_addr = if depth_active ?
-                                {depth_address[23:5], 5'b0} :
-                                {pixel_address[23:5], 5'b0};
                             state = if depth_active ? State::DepthReadIssue
                                 : State::ColorIssue;
                         } else {
@@ -200,7 +205,6 @@ module fragment_writer (
                         } else if depth_pass(depth_compare, depth_value,
                             mem_rsp_data[(depth_lane as 8) * 8'd16+:16]) {
                             request_valid = 1;
-                            request_write = 1;
                             request_addr = word_addr;
                             state = State::ColorIssue;
                         } else {
@@ -224,7 +228,6 @@ module fragment_writer (
                             lane  = depth_lane;
                             pixel = depth_value;
                             request_valid = 1;
-                            request_write = 1;
                             request_addr = depth_word_addr;
                             state = State::DepthWriteIssue;
                         } else {
