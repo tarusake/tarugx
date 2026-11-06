@@ -8,8 +8,11 @@ module triangle_rasterizer_tb;
  logic [31:0] cmd_gradient_r=0,cmd_gradient_g=0,cmd_gradient_b=0;
  logic [15:0] cmd_depth=0;
  logic signed [23:0] cmd_gradient_z_x=0,cmd_gradient_z_y=0;
+ logic signed [23:0] cmd_u=0,cmd_v=0,cmd_gradient_u_x=0,cmd_gradient_u_y=0;
+ logic signed [23:0] cmd_gradient_v_x=0,cmd_gradient_v_y=0;
  logic busy,done,error,fragment_valid,fragment_ready=0;
  logic [15:0] fragment_x,fragment_y,fragment_depth;logic [31:0] fragment_color;
+ logic signed [23:0] fragment_u,fragment_v;
  bit expected[0:255],seen[0:255];int active_width,active_height,fragments;
  logic [31:0] test_color=32'h12ab34cd;
  logic [31:0] test_gradient_r=0,test_gradient_g=0,test_gradient_b=0;
@@ -76,6 +79,7 @@ module triangle_rasterizer_tb;
   input bit expect_error=0);
   int cycles=0;logic [15:0] held_x,held_y,held_depth;
   logic [31:0] held_color;bit holding=0;
+  logic signed [23:0] held_u,held_v;
   build_expected(x0,y0,x1,y1,x2,y2,width,height);
   active_width=width;active_height=height;fragments=0;
   @(negedge clk);assert(cmd_ready)else $fatal(1,"command not ready");
@@ -90,10 +94,12 @@ module triangle_rasterizer_tb;
    fragment_ready=(cycles%3)!=0;
    if(fragment_valid&&!fragment_ready)begin
     if(holding)assert(fragment_x==held_x&&fragment_y==held_y
-     &&fragment_color==held_color&&fragment_depth==held_depth)
+     &&fragment_color==held_color&&fragment_depth==held_depth
+     &&fragment_u==held_u&&fragment_v==held_v)
      else $fatal(1,"fragment changed under backpressure");
     held_x=fragment_x;held_y=fragment_y;held_color=fragment_color;
     held_depth=fragment_depth;holding=1;
+    held_u=fragment_u;held_v=fragment_v;
    end else if(fragment_valid&&fragment_ready)begin
     holding=0;
     assert(int'(fragment_x)<active_width && int'(fragment_y)<active_height)
@@ -104,6 +110,10 @@ module triangle_rasterizer_tb;
     assert(fragment_depth==expected_depth(fragment_x,fragment_y))
      else $fatal(1,"depth mismatch %0d,%0d expected=%04x got=%04x",
       fragment_x,fragment_y,expected_depth(fragment_x,fragment_y),fragment_depth);
+    assert(fragment_u==cmd_u+$signed(cmd_gradient_u_x)*fragment_x
+     +$signed(cmd_gradient_u_y)*fragment_y) else $fatal(1,"U mismatch");
+    assert(fragment_v==cmd_v+$signed(cmd_gradient_v_x)*fragment_x
+     +$signed(cmd_gradient_v_y)*fragment_y) else $fatal(1,"V mismatch");
     assert(expected[int'(fragment_y)*active_width+int'(fragment_x)])
      else $fatal(1,"unexpected fragment %0d,%0d",fragment_x,fragment_y);
     assert(!seen[int'(fragment_y)*active_width+int'(fragment_x)])
@@ -131,7 +141,12 @@ module triangle_rasterizer_tb;
   test_color=32'h12ab34cd;
   test_gradient_r=0;test_gradient_g=0;test_gradient_b=0;
   test_depth=16'd100;test_gradient_z_x=24'sd256;test_gradient_z_y=24'sd512;
+  cmd_u=24'sh000180;cmd_v=-24'sh000080;
+  cmd_gradient_u_x=24'sd256;cmd_gradient_u_y=24'sd32;
+  cmd_gradient_v_x=-24'sd64;cmd_gradient_v_y=24'sd256;
   command(0,0,4*256,0,0,4*256,4,4);
+  cmd_u=0;cmd_v=0;cmd_gradient_u_x=0;cmd_gradient_u_y=0;
+  cmd_gradient_v_x=0;cmd_gradient_v_y=0;
   test_depth=16'hfffe;test_gradient_z_x=24'sd512;test_gradient_z_y=0;
   command(0,0,4*256,0,0,4*256,4,4);
   test_depth=16'd1;test_gradient_z_x=-24'sd512;test_gradient_z_y=0;

@@ -28,6 +28,14 @@ module triangle_rasterizer (
     cmd_depth      : input  logic<16>        ,
     cmd_gradient_z_x: input signed logic<24>,
     cmd_gradient_z_y: input signed logic<24>,
+    // Texture coordinates are signed 16.8 texel positions evaluated at the
+    // first clipped bounding-box sample, with signed 16.8 pixel gradients.
+    cmd_u          : input  signed logic<24> ,
+    cmd_v          : input  signed logic<24> ,
+    cmd_gradient_u_x: input signed logic<24> ,
+    cmd_gradient_u_y: input signed logic<24> ,
+    cmd_gradient_v_x: input signed logic<24> ,
+    cmd_gradient_v_y: input signed logic<24> ,
     busy           : output logic            ,
     done           : output logic            ,
     error          : output logic            ,
@@ -37,6 +45,8 @@ module triangle_rasterizer (
     fragment_y     : output logic<16>        ,
     fragment_color : output logic<32>        ,
     fragment_depth : output logic<16>        ,
+    fragment_u     : output signed logic<24> ,
+    fragment_v     : output signed logic<24> ,
 ) {
     enum State: logic<5> {
         Idle,
@@ -94,6 +104,14 @@ module triangle_rasterizer (
     var gradient_z_y: signed logic<24>;
     var row_z: signed logic<32>;
     var current_z: signed logic<32>;
+    var row_u: signed logic<24>;
+    var row_v: signed logic<24>;
+    var current_u: signed logic<24>;
+    var current_v: signed logic<24>;
+    var gradient_u_x: signed logic<24>;
+    var gradient_u_y: signed logic<24>;
+    var gradient_v_x: signed logic<24>;
+    var gradient_v_y: signed logic<24>;
     var start_x: logic<16>;
     var start_y: logic<16>;
     var end_x  : logic<16>;
@@ -222,6 +240,8 @@ module triangle_rasterizer (
     assign fragment_color = {color[31:24], clamp_color(current_r),
         clamp_color(current_g), clamp_color(current_b)};
     assign fragment_depth = clamp_depth(current_z);
+    assign fragment_u = current_u;
+    assign fragment_v = current_v;
 
     always_ff {
         if_reset {
@@ -252,6 +272,14 @@ module triangle_rasterizer (
             gradient_z_y   = 0;
             row_z          = 0;
             current_z      = 0;
+            row_u          = 0;
+            row_v          = 0;
+            current_u      = 0;
+            current_v      = 0;
+            gradient_u_x   = 0;
+            gradient_u_y   = 0;
+            gradient_v_x   = 0;
+            gradient_v_y   = 0;
             start_x       = 0;
             start_y       = 0;
             end_x         = 0;
@@ -314,6 +342,12 @@ module triangle_rasterizer (
                         depth         = cmd_depth;
                         gradient_z_x  = cmd_gradient_z_x;
                         gradient_z_y  = cmd_gradient_z_y;
+                        current_u     = cmd_u;
+                        current_v     = cmd_v;
+                        gradient_u_x  = cmd_gradient_u_x;
+                        gradient_u_y  = cmd_gradient_u_y;
+                        gradient_v_x  = cmd_gradient_v_x;
+                        gradient_v_y  = cmd_gradient_v_y;
                         error         = 0;
                         state         = State::AreaLoad;
                     }
@@ -400,6 +434,8 @@ module triangle_rasterizer (
                         current_b = {9'b0, color[7:0], 7'b0};
                         row_z = {8'b0, depth, 8'b0};
                         current_z = {8'b0, depth, 8'b0};
+                        row_u = current_u;
+                        row_v = current_v;
                         state = State::Edge0Load;
                 }
                 State::Edge0Load: {
@@ -490,6 +526,8 @@ module triangle_rasterizer (
                     current_g = current_g + extend_gradient(gradient_g_x);
                     current_b = current_b + extend_gradient(gradient_b_x);
                     current_z = current_z + extend_depth_gradient(gradient_z_x);
+                    current_u = current_u + gradient_u_x;
+                    current_v = current_v + gradient_v_x;
                     state = State::Evaluate;
                 }
                 State::AdvanceRow: {
@@ -509,6 +547,10 @@ module triangle_rasterizer (
                     current_b = row_b + extend_gradient(gradient_b_y);
                     row_z = row_z + extend_depth_gradient(gradient_z_y);
                     current_z = row_z + extend_depth_gradient(gradient_z_y);
+                    row_u = row_u + gradient_u_y;
+                    row_v = row_v + gradient_v_y;
+                    current_u = row_u + gradient_u_y;
+                    current_v = row_v + gradient_v_y;
                     state = State::Evaluate;
                 }
                 State::Finish: {
