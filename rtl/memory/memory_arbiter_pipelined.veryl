@@ -140,14 +140,17 @@ module memory_arbiter_pipelined (
                 output_valid = 1;
                 output_write = !choose_scan && cpu_write;
                 output_addr  = if choose_scan ? scan_addr : cpu_addr;
-                output_wdata = if choose_scan ? 256'b0 : cpu_wdata;
-                output_wstrb = if choose_scan ? 32'b0 : cpu_wstrb;
+                // Scanout commands are reads, so their write payload is
+                // ignored.  Carrying the CPU payload unconditionally avoids
+                // a scanout-control mux replicated across all 288 bits.
+                output_wdata = cpu_wdata;
+                output_wstrb = cpu_wstrb;
             } else if load_pending {
                 pending_valid = 1;
                 pending_write = !choose_scan && cpu_write;
                 pending_addr  = if choose_scan ? scan_addr : cpu_addr;
-                pending_wdata = if choose_scan ? 256'b0 : cpu_wdata;
-                pending_wstrb = if choose_scan ? 32'b0 : cpu_wstrb;
+                pending_wdata = cpu_wdata;
+                pending_wstrb = cpu_wstrb;
             }
             if pop {
                 cpu_response_valid  = !owners[head];
