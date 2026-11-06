@@ -73,6 +73,8 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
              ('path=fpga-strip', 'center=f800', 'triangles=2'), 3),
             ('fan', ['1', '--fan'],
              ('path=fpga-fan', 'center=f800', 'triangles=4'), 5),
+            ('texture', ['1', '--texture'],
+             ('path=fpga-texture', 'center=ffe0', 'triangles=1'), 2),
             ('pipeline', ['1', '--pipeline'],
              ('path=fpga-pipeline', 'center=f800', 'triangles=8'), 9)):
         commands_before = int(counters.read_text())
@@ -102,6 +104,23 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
         print(f'Gallium {{name}} PASS')
         print(f'hardware_commands={{command_delta}}')
         print(result.stdout, end='')
+    for name, mode, expected_path in (
+            ('texture-hardware', '--texture', 'path=fpga-texture'),
+            ('texture-software', '--texture-software',
+             'path=softpipe-texture')):
+        result = subprocess.run([str(binary), str(cards[0]), '10', mode],
+                                capture_output=True, text=True,
+                                timeout=60, env=environment)
+        if (result.returncode or expected_path not in result.stdout or
+                'center=ffe0' not in result.stdout):
+            print(result.stdout, end='')
+            print(result.stderr, end='')
+            print(f'TARUGX_GALLIUM_{{name.upper()}}_FAILED')
+            raise SystemExit(0)
+        draw_ms = next(line.split('=', 1)[1]
+                       for line in result.stdout.splitlines()
+                       if line.startswith('draw_ms='))
+        print(f'Gallium {{name}} PASS: 10 draws in {{draw_ms}} ms')
 """
     output = Backend().remote(remote, "test TaruGX Gallium hardware paths", 120)
     print(output, end="")
