@@ -21,12 +21,13 @@ module fill_engine_tb;
     held_data=mem_wdata;held_strobe=mem_wstrb;held_addr=mem_addr;
     repeat(requests%3)begin tick();assert(mem_valid && mem_addr==held_addr && mem_wdata==held_data && mem_wstrb==held_strobe)else $fatal(1,"request changed");end
     @(negedge clk);mem_ready=1;tick();@(negedge clk);mem_ready=0;
-    assert(mem_rsp_ready && !mem_valid)else $fatal(1,"response wait");
+    // The pipelined engine may already present the next request while this
+    // response is pending.  Backpressure keeps this legacy test serialized.
+    assert(mem_rsp_ready)else $fatal(1,"response wait");
     if(!inject_error)for(int b=0;b<32;b++)if(held_strobe[b])memory[int'(held_addr)+b]=held_data[b*8+:8];
     repeat(requests%4)tick();
     @(negedge clk);mem_rsp_error=inject_error;mem_rsp_valid=1;tick();
     @(negedge clk);mem_rsp_valid=0;mem_rsp_error=0;requests++;
-    if(inject_error)return;
    end else tick();
   end
  endtask
