@@ -10,7 +10,7 @@ trap 'rm -f "$test_binary"' EXIT
 
 cc -O2 -Wall -Wextra -Werror \
     "$root/tests/tarugx_gallium_triangle.c" -o "$test_binary" \
-    $(pkg-config --cflags --libs egl glesv2 gbm libdrm)
+    $(pkg-config --cflags --libs egl glesv2 gbm libdrm) -lm
 
 result=$(env LIBGL_DRIVERS_PATH="$driver_dir" \
     MESA_LOADER_DRIVER_OVERRIDE=tarugx \

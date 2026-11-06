@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
         check=True, capture_output=True, text=True, timeout=15).stdout.split()
     compile_result = subprocess.run(
         ['cc', '-O2', '-Wall', '-Wextra', '-Werror',
-         str(source), '-o', str(binary), *flags],
+         str(source), '-o', str(binary), *flags, '-lm'],
         capture_output=True, text=True, timeout=45)
     if compile_result.returncode:
         print(compile_result.stdout, end='')

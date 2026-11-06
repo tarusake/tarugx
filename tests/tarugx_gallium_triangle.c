@@ -5,6 +5,7 @@
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,45 @@
 #define WIDTH 1920
 #define HEIGHT 1080
 #define PIPELINE_TRIANGLES 8
+
+static int
+find_display(int fd, drmModeRes **resources_out,
+             drmModeConnector **connector_out,
+             drmModeEncoder **encoder_out, drmModeCrtc **crtc_out)
+{
+    drmModeRes *resources = drmModeGetResources(fd);
+    drmModeConnector *connector = NULL;
+    drmModeEncoder *encoder = NULL;
+    drmModeCrtc *crtc = NULL;
+    int i;
+
+    if (!resources)
+        return -1;
+    for (i = 0; i < resources->count_connectors; i++) {
+        connector = drmModeGetConnector(fd, resources->connectors[i]);
+        if (connector && connector->connection == DRM_MODE_CONNECTED &&
+            connector->count_modes && connector->encoder_id)
+            break;
+        drmModeFreeConnector(connector);
+        connector = NULL;
+    }
+    if (connector)
+        encoder = drmModeGetEncoder(fd, connector->encoder_id);
+    if (encoder && encoder->crtc_id)
+        crtc = drmModeGetCrtc(fd, encoder->crtc_id);
+    if (!connector || !encoder || !crtc) {
+        drmModeFreeCrtc(crtc);
+        drmModeFreeEncoder(encoder);
+        drmModeFreeConnector(connector);
+        drmModeFreeResources(resources);
+        return -1;
+    }
+    *resources_out = resources;
+    *connector_out = connector;
+    *encoder_out = encoder;
+    *crtc_out = crtc;
+    return 0;
+}
 
 static GLuint
 compile_shader(GLenum type, const char *source)
@@ -176,11 +216,27 @@ main(int argc, char **argv)
         1.0f, 1.0f, 1.0f, 1.0f,
     };
     static const GLushort indices[] = {0, 1, 2};
+    static const GLfloat cube_vertices[8][3] = {
+        {-1, -1, -1}, { 1, -1, -1}, { 1,  1, -1}, {-1,  1, -1},
+        {-1, -1,  1}, { 1, -1,  1}, { 1,  1,  1}, {-1,  1,  1},
+    };
+    static const unsigned cube_faces[6][4] = {
+        {0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7},
+        {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0},
+    };
+    static const GLfloat cube_face_colors[6][4] = {
+        {1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1},
+        {1, 1, 0, 1}, {1, 0, 1, 1}, {0, 1, 1, 1},
+    };
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
     struct drm_mode_map_dumb map_request = {0};
     struct gbm_surface *gbm_surface = NULL;
     struct gbm_device *gbm = NULL;
     struct gbm_bo *buffer = NULL;
+    drmModeRes *resources = NULL;
+    drmModeConnector *connector = NULL;
+    drmModeEncoder *encoder = NULL;
+    drmModeCrtc *original_crtc = NULL;
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
@@ -194,6 +250,7 @@ main(int argc, char **argv)
     uint16_t *pixels = MAP_FAILED;
     uint32_t handle;
     uint32_t stride;
+    uint32_t framebuffer_id = 0;
     size_t size;
     struct timespec draw_start;
     struct timespec draw_end;
@@ -213,9 +270,14 @@ main(int argc, char **argv)
     int depth_test = 0;
     int depth_one = 0;
     int textured = 0;
+    int display_demo = 0;
+    int cube_demo = 0;
     GLsizei vertex_count;
     GLfloat pipeline_positions[PIPELINE_TRIANGLES * 6];
     GLfloat pipeline_colors[PIPELINE_TRIANGLES * 12];
+    GLfloat cube_positions[36 * 2];
+    GLfloat cube_depths[36];
+    GLfloat cube_colors[36 * 4];
     int position_location;
     int depth_location;
     int color_location;
@@ -230,7 +292,7 @@ main(int argc, char **argv)
                         "--indexed|--gradient|"
                         "--cull-back|--cull-front|--cull-back-cw|"
                         "--cull-front-cw|--scissor|--depth|--depth-one|"
-                        "--texture]\n",
+                        "--texture|--display-demo|--cube]\n",
                 argv[0]);
         return 2;
     }
@@ -278,6 +340,12 @@ main(int argc, char **argv)
             depth_one = 1;
         } else if (!strcmp(argv[3], "--texture")) {
             textured = 1;
+        } else if (!strcmp(argv[3], "--display-demo")) {
+            depth_test = 1;
+            display_demo = 1;
+        } else if (!strcmp(argv[3], "--cube")) {
+            depth_test = 1;
+            cube_demo = 1;
         } else {
             fputs("unknown mode\n", stderr);
             return 2;
@@ -378,16 +446,18 @@ main(int argc, char **argv)
         }
     }
     glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0,
-                          strip ? strip_positions :
+                          cube_demo ? cube_positions :
+                          (strip ? strip_positions :
                           (fan ? fan_positions :
                           (pipeline ? pipeline_positions :
-                          (batch ? batch_positions : positions))));
+                          (batch ? batch_positions : positions)))));
     glVertexAttribPointer(color_location, 4, GL_FLOAT, GL_FALSE, 0,
-                          depth_test ? depth_colors :
+                          cube_demo ? cube_colors :
+                          (depth_test ? depth_colors :
                           (pipeline ? pipeline_colors :
                           (batch ? batch_colors :
                           (gradient ? gradient_colors :
-                          (textured ? texture_colors : colors)))));
+                          (textured ? texture_colors : colors))))));
     if (textured) {
         glVertexAttribPointer(texcoord_location, 2, GL_FLOAT, GL_FALSE, 0,
                               texture_coordinates);
@@ -395,7 +465,7 @@ main(int argc, char **argv)
     }
     if (depth_test) {
         glVertexAttribPointer(depth_location, 1, GL_FLOAT, GL_FALSE, 0,
-                              depth_values);
+                              cube_demo ? cube_depths : depth_values);
         glEnableVertexAttribArray(depth_location);
     }
     glEnableVertexAttribArray(position_location);
@@ -412,7 +482,86 @@ main(int argc, char **argv)
         (pipeline ? PIPELINE_TRIANGLES * 3 :
         (depth_test && !depth_one ? 6 : (batch ? 12 : 3))));
     clock_gettime(CLOCK_MONOTONIC, &draw_start);
-    for (i = 0; i < iterations; i++) {
+    if (cube_demo) {
+        unsigned frame;
+
+        if (find_display(fd, &resources, &connector, &encoder,
+                         &original_crtc))
+            goto out;
+        for (frame = 0; frame < 16; frame++) {
+            GLfloat projected[8][3];
+            float angle = frame * (float)M_PI / 8.0f;
+            float sy = sinf(angle), cy = cosf(angle);
+            float sx = sinf(angle * 0.63f), cx = cosf(angle * 0.63f);
+            unsigned face;
+            unsigned output = 0;
+
+            for (i = 0; i < 8; i++) {
+                float x = cube_vertices[i][0];
+                float y = cube_vertices[i][1];
+                float z = cube_vertices[i][2];
+                float rx = cy * x + sy * z;
+                float rz = -sy * x + cy * z;
+                float ry = cx * y - sx * rz;
+                float camera_z = sx * y + cx * rz + 4.0f;
+
+                projected[i][0] = rx * 1.35f / camera_z;
+                projected[i][1] = ry * 2.4f / camera_z;
+                projected[i][2] = (camera_z - 4.0f) * 0.45f;
+            }
+            for (face = 0; face < 6; face++) {
+                static const unsigned order[6] = {0, 1, 2, 0, 2, 3};
+                unsigned corner;
+
+                for (corner = 0; corner < 6; corner++, output++) {
+                    unsigned vertex = cube_faces[face][order[corner]];
+                    unsigned component;
+
+                    cube_positions[output * 2] = projected[vertex][0];
+                    cube_positions[output * 2 + 1] = projected[vertex][1];
+                    cube_depths[output] = projected[vertex][2];
+                    for (component = 0; component < 4; component++)
+                        cube_colors[output * 4 + component] =
+                            cube_face_colors[face][component];
+                }
+            }
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glFinish();
+            if (glGetError() != GL_NO_ERROR ||
+                !eglSwapBuffers(display, surface))
+                goto out;
+            {
+                struct gbm_bo *next =
+                    gbm_surface_lock_front_buffer(gbm_surface);
+                uint32_t next_framebuffer = 0;
+                uint32_t next_handle;
+                uint32_t next_stride;
+
+                if (!next)
+                    goto out;
+                next_handle = gbm_bo_get_handle(next).u32;
+                next_stride = gbm_bo_get_stride(next);
+                if (drmModeAddFB(fd, WIDTH, HEIGHT, 16, 16, next_stride,
+                                 next_handle, &next_framebuffer) ||
+                    drmModeSetCrtc(fd, encoder->crtc_id, next_framebuffer,
+                                   0, 0, &connector->connector_id, 1,
+                                   &connector->modes[0])) {
+                    gbm_surface_release_buffer(gbm_surface, next);
+                    goto out;
+                }
+                if (framebuffer_id)
+                    drmModeRmFB(fd, framebuffer_id);
+                if (buffer)
+                    gbm_surface_release_buffer(gbm_surface, buffer);
+                buffer = next;
+                framebuffer_id = next_framebuffer;
+                handle = next_handle;
+                stride = next_stride;
+            }
+            usleep(160000);
+        }
+    } else for (i = 0; i < iterations; i++) {
         if (indexed)
             glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, indices);
         else
@@ -424,13 +573,43 @@ main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &draw_end);
     draw_ms = (draw_end.tv_sec - draw_start.tv_sec) * 1000.0 +
               (draw_end.tv_nsec - draw_start.tv_nsec) / 1000000.0;
-    if (glGetError() != GL_NO_ERROR || !eglSwapBuffers(display, surface))
-        goto out;
-    buffer = gbm_surface_lock_front_buffer(gbm_surface);
-    if (!buffer)
-        goto out;
-    handle = gbm_bo_get_handle(buffer).u32;
-    stride = gbm_bo_get_stride(buffer);
+    if (!cube_demo) {
+        if (glGetError() != GL_NO_ERROR || !eglSwapBuffers(display, surface))
+            goto out;
+        buffer = gbm_surface_lock_front_buffer(gbm_surface);
+        if (!buffer)
+            goto out;
+        handle = gbm_bo_get_handle(buffer).u32;
+        stride = gbm_bo_get_stride(buffer);
+    }
+    if (display_demo) {
+        resources = drmModeGetResources(fd);
+        if (!resources)
+            goto out;
+        for (i = 0; i < (unsigned)resources->count_connectors; i++) {
+            connector = drmModeGetConnector(fd, resources->connectors[i]);
+            if (connector && connector->connection == DRM_MODE_CONNECTED &&
+                connector->count_modes && connector->encoder_id)
+                break;
+            drmModeFreeConnector(connector);
+            connector = NULL;
+        }
+        if (!connector)
+            goto out;
+        encoder = drmModeGetEncoder(fd, connector->encoder_id);
+        if (!encoder || !encoder->crtc_id)
+            goto out;
+        original_crtc = drmModeGetCrtc(fd, encoder->crtc_id);
+        if (drmModeAddFB(fd, WIDTH, HEIGHT, 16, 16, stride, handle,
+                         &framebuffer_id) ||
+            drmModeSetCrtc(fd, encoder->crtc_id, framebuffer_id, 0, 0,
+                           &connector->connector_id, 1,
+                           &connector->modes[0]))
+            goto out;
+        puts("display_demo=10s");
+        fflush(stdout);
+        sleep(10);
+    }
     size = (size_t)stride * HEIGHT;
     map_request.handle = handle;
     if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map_request))
@@ -456,6 +635,8 @@ main(int argc, char **argv)
         path = "fpga-gradient";
     else if (textured)
         path = "fpga-texture";
+    else if (cube_demo)
+        path = "fpga-cube";
     else if (cull_mode == GL_BACK)
         path = front_face_cw ? "fpga-cull-back-cw" : "fpga-cull-back";
     else if (cull_mode == GL_FRONT)
@@ -471,8 +652,8 @@ main(int argc, char **argv)
            pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2], pixels[0],
            pixels[(HEIGHT / 2) * (stride / 2) + 760],
            pixels[(HEIGHT / 2) * (stride / 2) + 1080],
-           stride, path, iterations,
-           iterations * (strip ? 2 : (fan ? 4 :
+           stride, path, cube_demo ? 16 : iterations,
+           cube_demo ? 16 * 12 : iterations * (strip ? 2 : (fan ? 4 :
                          (pipeline ? PIPELINE_TRIANGLES :
                          (depth_test ? 2 : (batch ? 4 : 1))))), draw_ms);
     if (batch)
@@ -489,7 +670,7 @@ main(int argc, char **argv)
           ((pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] >> 5) & 63) > 34 ||
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) < 7 ||
           (pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] & 31) > 9)) ||
-        (depth_test &&
+        (depth_test && !cube_demo &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x07e0) ||
         (textured &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xffe0) ||
@@ -515,6 +696,18 @@ main(int argc, char **argv)
     }
     result = 0;
 out:
+    if (original_crtc && connector)
+        drmModeSetCrtc(fd, original_crtc->crtc_id, original_crtc->buffer_id,
+                       original_crtc->x, original_crtc->y,
+                       &connector->connector_id, 1,
+                       original_crtc->mode_valid ? &original_crtc->mode :
+                       NULL);
+    if (framebuffer_id)
+        drmModeRmFB(fd, framebuffer_id);
+    drmModeFreeCrtc(original_crtc);
+    drmModeFreeEncoder(encoder);
+    drmModeFreeConnector(connector);
+    drmModeFreeResources(resources);
     if (pixels != MAP_FAILED)
         munmap(pixels, size);
     if (buffer)
