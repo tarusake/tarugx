@@ -96,16 +96,16 @@ tarugx_winsys_close(struct tarugx_winsys *winsys)
     winsys->submit_syncobj = 0;
 }
 
-bool
-tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
-                             uint32_t width, uint32_t height,
-                             struct tarugx_winsys_surface *surface)
+static bool
+tarugx_winsys_surface_create_flags(struct tarugx_winsys *winsys,
+                                   uint32_t width, uint32_t height,
+                                   uint32_t flags,
+                                   struct tarugx_winsys_surface *surface)
 {
     struct drm_tarugx_vram_create create = {
         .width = width,
         .height = height,
-        .flags = tarugx_winsys_supports_depth(winsys) ?
-                 DRM_TARUGX_VRAM_DEPTH : 0,
+        .flags = flags,
     };
 
     if (!winsys || winsys->fd < 0 || !surface || !width || !height)
@@ -122,6 +122,29 @@ tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
         .depth = create.depth_offset != 0,
     };
     return true;
+}
+
+bool
+tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
+                             uint32_t width, uint32_t height,
+                             struct tarugx_winsys_surface *surface)
+{
+    uint32_t flags = tarugx_winsys_supports_depth(winsys) ?
+                     DRM_TARUGX_VRAM_DEPTH : 0;
+
+    return tarugx_winsys_surface_create_flags(winsys, width, height, flags,
+                                              surface);
+}
+
+bool
+tarugx_winsys_texture_create(struct tarugx_winsys *winsys,
+                             uint32_t width, uint32_t height,
+                             struct tarugx_winsys_surface *surface)
+{
+    if (!tarugx_winsys_supports_texture(winsys))
+        return false;
+    return tarugx_winsys_surface_create_flags(winsys, width, height, 0,
+                                              surface);
 }
 
 bool
@@ -156,6 +179,26 @@ tarugx_winsys_surface_destroy(struct tarugx_winsys *winsys,
     close_args = (struct drm_gem_close) { .handle = surface->handle };
     drmIoctl(winsys->fd, DRM_IOCTL_GEM_CLOSE, &close_args);
     memset(surface, 0, sizeof(*surface));
+}
+
+bool
+tarugx_winsys_upload_texture(
+    struct tarugx_winsys *winsys, uint32_t source_handle,
+    const struct tarugx_winsys_surface *texture)
+{
+    struct drm_tarugx_upload_gem upload;
+
+    if (!winsys || winsys->fd < 0 || !source_handle || !texture ||
+        !texture->handle || !texture->width || !texture->height ||
+        (texture->width & 1))
+        return false;
+    upload = (struct drm_tarugx_upload_gem) {
+        .source_handle = source_handle,
+        .destination_handle = texture->handle,
+        .width = texture->width,
+        .height = texture->height,
+    };
+    return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &upload) == 0;
 }
 
 bool

@@ -58,11 +58,17 @@ bool tarugx_winsys_supports_texture(const struct tarugx_winsys *winsys);
 bool tarugx_winsys_surface_create(struct tarugx_winsys *winsys,
                                   uint32_t width, uint32_t height,
                                   struct tarugx_winsys_surface *surface);
+bool tarugx_winsys_texture_create(struct tarugx_winsys *winsys,
+                                  uint32_t width, uint32_t height,
+                                  struct tarugx_winsys_surface *surface);
 bool tarugx_winsys_surface_query(struct tarugx_winsys *winsys,
                                  uint32_t handle,
                                  struct tarugx_winsys_surface *surface);
 void tarugx_winsys_surface_destroy(struct tarugx_winsys *winsys,
                                    struct tarugx_winsys_surface *surface);
+bool tarugx_winsys_upload_texture(
+    struct tarugx_winsys *winsys, uint32_t source_handle,
+    const struct tarugx_winsys_surface *texture);
 bool tarugx_winsys_submit_triangle(
     struct tarugx_winsys *winsys,
     const struct tarugx_winsys_surface *surface,
