@@ -481,28 +481,61 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     unsigned stride;
     unsigned i;
 
-    if (state->primitive != MESA_PRIM_TRIANGLES || count % 3 ||
-        !tarugx_target_surface(state, &surface) ||
+    if (!tarugx_target_surface(state, &surface) ||
         !tarugx_draw_state_supported(state, &surface))
         return false;
+    switch (state->primitive) {
+    case MESA_PRIM_TRIANGLES:
+        if (count % 3)
+            return false;
+        triangle_count = count / 3;
+        break;
+    case MESA_PRIM_TRIANGLE_STRIP:
+    case MESA_PRIM_TRIANGLE_FAN:
+        if (count < 3)
+            return true;
+        triangle_count = count - 2;
+        break;
+    default:
+        return false;
+    }
     vertices = state->backend->map_vertices(state->backend);
     stride = state->softpipe->vertex_info.size;
     if (!vertices || stride < 8)
         return false;
-    triangle_count = count / 3;
     if (triangle_count > UINT_MAX / TARUGX_CLIP_MAX_TRIANGLES)
         return false;
     maximum_triangles = triangle_count * TARUGX_CLIP_MAX_TRIANGLES;
     triangles = calloc(maximum_triangles, sizeof(*triangles));
     if (!triangles)
         return false;
-    for (i = 0; i < count; i += 3) {
+    for (i = 0; i < triangle_count; i++) {
         float clipped[TARUGX_CLIP_MAX_VERTICES][TARUGX_VERTEX_FLOATS];
         unsigned clipped_count;
         unsigned clipped_index;
-        unsigned a = indices ? indices[i] : start + i;
-        unsigned b = indices ? indices[i + 1] : start + i + 1;
-        unsigned c = indices ? indices[i + 2] : start + i + 2;
+        unsigned ia;
+        unsigned ib;
+        unsigned ic;
+        unsigned a;
+        unsigned b;
+        unsigned c;
+
+        if (state->primitive == MESA_PRIM_TRIANGLES) {
+            ia = i * 3;
+            ib = ia + 1;
+            ic = ia + 2;
+        } else if (state->primitive == MESA_PRIM_TRIANGLE_STRIP) {
+            ia = i + (i & 1);
+            ib = i + ((i & 1) ? 0 : 1);
+            ic = i + 2;
+        } else {
+            ia = 0;
+            ib = i + 1;
+            ic = i + 2;
+        }
+        a = indices ? indices[ia] : start + ia;
+        b = indices ? indices[ib] : start + ib;
+        c = indices ? indices[ic] : start + ic;
 
         if (!isfinite(vertices[a * stride]) ||
             !isfinite(vertices[a * stride + 1]) ||
