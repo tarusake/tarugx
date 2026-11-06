@@ -24,6 +24,7 @@
 #define TARUGX_VERTEX_FLOATS 8
 #define TARUGX_CLIP_MAX_VERTICES 8
 #define TARUGX_CLIP_MAX_TRIANGLES (TARUGX_CLIP_MAX_VERTICES - 2)
+#define TARUGX_MAX_INFLIGHT_BATCHES 32
 
 struct tarugx_screen_state {
     struct pipe_screen *screen;
@@ -476,6 +477,7 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     unsigned triangle_count;
     unsigned prepared_count = 0;
     unsigned maximum_triangles;
+    unsigned inflight_batches = 0;
     unsigned stride;
     unsigned i;
 
@@ -536,11 +538,25 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
                                     prepared_count - i);
 
         if (!tarugx_winsys_submit_triangles(&state->winsys, &surface,
-                                            triangles + i, batch_count) ||
-            !tarugx_winsys_wait(&state->winsys, INT64_MAX)) {
+                                            triangles + i, batch_count)) {
+            if (inflight_batches)
+                tarugx_winsys_wait(&state->winsys, INT64_MAX);
             free(triangles);
             return false;
         }
+        inflight_batches++;
+        if (inflight_batches == TARUGX_MAX_INFLIGHT_BATCHES) {
+            if (!tarugx_winsys_wait(&state->winsys, INT64_MAX)) {
+                free(triangles);
+                return false;
+            }
+            inflight_batches = 0;
+        }
+    }
+    if (inflight_batches &&
+        !tarugx_winsys_wait(&state->winsys, INT64_MAX)) {
+        free(triangles);
+        return false;
     }
     free(triangles);
     return true;
