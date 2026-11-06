@@ -305,7 +305,19 @@ set_option -top_module tarugx_framebuffer_gowin_top
 set_option -verilog_std sysv2017
 set_option -use_sspi_as_gpio 1
 set_option -use_cpu_as_gpio 1
-set_option -place_option 2
+# Option 2 prioritizes timing.  Gowin also exposes options 3 and 4 as
+# alternative numbered placements, which are useful when a dense design lands
+# in a poor local minimum.  Keep the verified default while making the choice
+# explicit and reproducible in build logs.
+set place_option 2
+if {[info exists ::env(TARUGX_PLACE_OPTION)]} {
+    set place_option $::env(TARUGX_PLACE_OPTION)
+}
+if {$place_option ni {0 1 2 3 4}} {
+    error "TARUGX_PLACE_OPTION must be 0, 1, 2 (timing), 3, or 4"
+}
+puts "Gowin place option: $place_option"
+set_option -place_option $place_option
 # Gowin documents route option 1 as timing-priority; option 2 only shortens
 # routing runtime.  TaruGX runs the PCIe and DDR user paths at their 100 MHz
 # limit, so prefer timing closure over a faster build.
