@@ -141,7 +141,7 @@ diff --git a/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c b/src/gallium/win
     struct drm_mode_destroy_dumb destroy_req;
 +   bool allocated = false;
     int ret;
-@@ -153,8 +157,37 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
+@@ -153,8 +157,41 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
     create_req.bpp = util_format_get_blocksizebits(format);
     create_req.width = width;
     create_req.height = height;
@@ -161,12 +161,16 @@ diff --git a/src/gallium/winsys/sw/kms-dri/kms_dri_sw_winsys.c b/src/gallium/win
 +         struct drm_tarugx_vram_create create_vram = {
 +            .width = width,
 +            .height = height,
-+            .flags = (tex_usage & PIPE_BIND_RENDER_TARGET) ?
-+                     DRM_TARUGX_VRAM_DEPTH : DRM_TARUGX_VRAM_FRONT,
++            .flags = DRM_TARUGX_VRAM_FRONT | DRM_TARUGX_VRAM_DEPTH,
 +         };
 +
-+         if (!drmIoctl(kms_sw->fd, DRM_IOCTL_TARUGX_VRAM_CREATE,
-+                       &create_vram)) {
++         if (drmIoctl(kms_sw->fd, DRM_IOCTL_TARUGX_VRAM_CREATE,
++                      &create_vram) && errno == EOPNOTSUPP) {
++            create_vram.flags = DRM_TARUGX_VRAM_FRONT;
++            drmIoctl(kms_sw->fd, DRM_IOCTL_TARUGX_VRAM_CREATE,
++                     &create_vram);
++         }
++         if (create_vram.handle) {
 +            create_req.handle = create_vram.handle;
 +            create_req.pitch = create_vram.pitch;
 +            create_req.size = create_vram.size;

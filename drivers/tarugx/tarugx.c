@@ -141,6 +141,7 @@ struct tarugx {
 struct tarugx_vram_object {
 	struct drm_gem_object base;
 	struct drm_mm_node node;
+	struct drm_mm_node depth_node;
 	u32 width;
 	u32 height;
 	u32 pitch;
@@ -1120,6 +1121,8 @@ static void tgx_vram_object_free(struct drm_gem_object *gem)
 	struct tarugx *tgx = container_of(gem->dev, struct tarugx, drm);
 
 	mutex_lock(&tgx->vram_lock);
+	if (drm_mm_node_allocated(&object->depth_node))
+		drm_mm_remove_node(&object->depth_node);
 	if (object->front)
 		tgx->front_allocated = false;
 	else if (drm_mm_node_allocated(&object->node))
@@ -1172,8 +1175,7 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 			    DRM_TARUGX_VRAM_DEPTH) || args->depth_offset)
 		return -EINVAL;
 	if (args->flags & DRM_TARUGX_VRAM_DEPTH) {
-		if (!tgx->depth_available || tgx->cpp != 2 ||
-		    args->flags & DRM_TARUGX_VRAM_FRONT)
+		if (!tgx->depth_available || tgx->cpp != 2)
 			return -EOPNOTSUPP;
 	}
 	if (args->flags & DRM_TARUGX_VRAM_FRONT) {
@@ -1189,7 +1191,8 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	if (args->flags & DRM_TARUGX_VRAM_DEPTH) {
 		if (color_size > U32_MAX || color_size > U64_MAX / 2)
 			return -EOVERFLOW;
-		size = color_size * 2;
+		if (!(args->flags & DRM_TARUGX_VRAM_FRONT))
+			size = color_size * 2;
 	}
 	if (size > tgx->vram_gem_bytes)
 		return -ENOSPC;
@@ -1201,7 +1204,8 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 	object->pitch = args->pitch;
 	object->front = args->flags & DRM_TARUGX_VRAM_FRONT;
 	object->depth = args->flags & DRM_TARUGX_VRAM_DEPTH;
-	object->depth_offset = object->depth ? (u32)color_size : 0;
+	object->depth_offset = object->depth && !object->front ?
+		(u32)color_size : 0;
 	object->base.funcs = &tgx_vram_object_funcs;
 	ret = drm_gem_object_init(drm, &object->base, size);
 	if (ret) {
@@ -1216,6 +1220,23 @@ static int tgx_ioctl_vram_create(struct drm_device *drm, void *data,
 			tgx->front_allocated = true;
 			object->node.start = 0;
 			ret = 0;
+		}
+		if (!ret && object->depth) {
+			ret = drm_mm_insert_node_generic(&tgx->vram_mm,
+						 &object->depth_node,
+						 color_size, PAGE_SIZE, 0,
+						 DRM_MM_INSERT_BEST);
+			if (!ret) {
+				if (object->depth_node.start > U32_MAX) {
+					drm_mm_remove_node(&object->depth_node);
+					ret = -EOVERFLOW;
+				} else {
+					object->depth_offset =
+						(u32)object->depth_node.start;
+				}
+			}
+			if (ret)
+				tgx->front_allocated = false;
 		}
 	} else {
 		ret = drm_mm_insert_node_generic(&tgx->vram_mm, &object->node,
