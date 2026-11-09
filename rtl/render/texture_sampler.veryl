@@ -37,7 +37,6 @@ module texture_sampler (
         Clamp,
         RowAddress,
         PixelAddress,
-        ReadIssue,
         ReadWait,
         Present,
         Fault,
@@ -142,19 +141,18 @@ module texture_sampler (
                         word_addr = {texel_address[23:5], 5'b0};
                         lane = texel_address[4:1];
                         request_valid = 1;
-                        state = State::ReadIssue;
+                        state = State::ReadWait;
                     } else {
                         state = State::Fault;
                     }
                 }
-                State::ReadIssue: {
-                    if mem_ready {
-                        request_valid = 0;
-                        state = State::ReadWait;
-                    }
-                }
                 State::ReadWait: {
-                    if mem_rsp_valid {
+                    if request_valid {
+                        if mem_ready {
+                            request_valid = 0;
+                        }
+                    } else if mem_rsp_valid {
+                        request_valid = 0;
                         if mem_rsp_error {
                             state = State::Fault;
                         } else {
