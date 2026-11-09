@@ -359,6 +359,10 @@ main(int argc, char **argv)
             return 2;
         }
     }
+    if (software_fallback && setenv("TARUGX_DISABLE_ACCEL", "1", 1)) {
+        perror("setenv TARUGX_DISABLE_ACCEL");
+        return 1;
+    }
     fd = open(argv[1], O_RDWR | O_CLOEXEC);
     if (fd < 0 || drmSetMaster(fd)) {
         perror("open/set DRM master");
@@ -681,7 +685,7 @@ main(int argc, char **argv)
         (depth_test && !cube_demo &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0x07e0) ||
         (textured &&
-         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xffe0) ||
+         pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xffff) ||
         (!batch && !pipeline && !gradient && !depth_test && !textured &&
          ((cull_mode == GL_FRONT) == front_face_cw) &&
          pixels[(HEIGHT / 2) * (stride / 2) + WIDTH / 2] != 0xf800) ||

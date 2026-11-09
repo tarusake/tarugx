@@ -67,7 +67,7 @@ bool tarugx_winsys_surface_query(struct tarugx_winsys *winsys,
 void tarugx_winsys_surface_destroy(struct tarugx_winsys *winsys,
                                    struct tarugx_winsys_surface *surface);
 bool tarugx_winsys_upload_texture(
-    struct tarugx_winsys *winsys, uint32_t source_handle,
+    struct tarugx_winsys *winsys, const void *pixels, uint32_t source_stride,
     const struct tarugx_winsys_surface *texture);
 bool tarugx_winsys_submit_triangle(
     struct tarugx_winsys *winsys,

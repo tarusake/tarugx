@@ -6,9 +6,11 @@
 #include <limits.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
+#include <xf86drmMode.h>
 
 #include "tarugx_drm.h"
 
@@ -183,22 +185,55 @@ tarugx_winsys_surface_destroy(struct tarugx_winsys *winsys,
 
 bool
 tarugx_winsys_upload_texture(
-    struct tarugx_winsys *winsys, uint32_t source_handle,
+    struct tarugx_winsys *winsys, const void *pixels, uint32_t source_stride,
     const struct tarugx_winsys_surface *texture)
 {
-    struct drm_tarugx_upload_gem upload;
+    struct drm_mode_create_dumb create = {0};
+    struct drm_mode_map_dumb map = {0};
+    struct drm_mode_destroy_dumb destroy = {0};
+    struct drm_tarugx_upload_gem upload = {0};
+    uint8_t *destination = MAP_FAILED;
+    const uint8_t *source = pixels;
+    uint32_t row_bytes;
+    uint32_t y;
+    bool result = false;
 
-    if (!winsys || winsys->fd < 0 || !source_handle || !texture ||
+    if (!winsys || winsys->fd < 0 || !pixels || !texture ||
         !texture->handle || !texture->width || !texture->height ||
-        (texture->width & 1))
+        (texture->width & 1) || texture->width > UINT32_MAX / 2)
         return false;
+    row_bytes = texture->width * 2;
+    if (source_stride < row_bytes)
+        return false;
+    create.width = texture->width;
+    create.height = texture->height;
+    create.bpp = 16;
+    if (drmIoctl(winsys->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create))
+        return false;
+    map.handle = create.handle;
+    if (drmIoctl(winsys->fd, DRM_IOCTL_MODE_MAP_DUMB, &map))
+        goto out;
+    destination = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       winsys->fd, (off_t)map.offset);
+    if (destination == MAP_FAILED)
+        goto out;
+    for (y = 0; y < texture->height; y++)
+        memcpy(destination + (uint64_t)y * create.pitch,
+               source + (uint64_t)y * source_stride, row_bytes);
     upload = (struct drm_tarugx_upload_gem) {
-        .source_handle = source_handle,
+        .source_handle = create.handle,
         .destination_handle = texture->handle,
         .width = texture->width,
         .height = texture->height,
     };
-    return drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &upload) == 0;
+    result = drmIoctl(winsys->fd, DRM_IOCTL_TARUGX_UPLOAD_GEM, &upload) == 0;
+
+out:
+    if (destination != MAP_FAILED)
+        munmap(destination, create.size);
+    destroy.handle = create.handle;
+    drmIoctl(winsys->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    return result;
 }
 
 bool

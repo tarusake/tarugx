@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Exercise the TaruGX Gallium driver and FPGA depth path on the host."""
 
+import argparse
 import base64
 from pathlib import Path
 
@@ -12,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--texture-only", action="store_true",
+        help="verify and benchmark only the Gallium RGB565 sampler path",
+    )
+    args = parser.parse_args()
     source = base64.b64encode(
         (ROOT / "tests" / "tarugx_gallium_triangle.c").read_bytes()
     ).decode("ascii")
@@ -62,7 +69,10 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
         'XDG_RUNTIME_DIR': '/tmp',
     }})
     counters = Path('/sys/bus/pci/devices/0000:01:00.0/render_commands')
-    for name, arguments, expected, expected_commands in (
+    cases = (
+            ('texture', ['1', '--texture'],
+             ('path=fpga-texture', 'center=ffff', 'triangles=1'), 2),
+        ) if {args.texture_only!r} else (
             ('gradient', ['1', '--gradient'],
              ('path=fpga-gradient', 'corner=001f'), 2),
             ('depth-one', ['1', '--depth-one'],
@@ -74,9 +84,10 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
             ('fan', ['1', '--fan'],
              ('path=fpga-fan', 'center=f800', 'triangles=4'), 5),
             ('texture', ['1', '--texture'],
-             ('path=fpga-texture', 'center=ffe0', 'triangles=1'), 2),
+             ('path=fpga-texture', 'center=ffff', 'triangles=1'), 2),
             ('pipeline', ['1', '--pipeline'],
-             ('path=fpga-pipeline', 'center=f800', 'triangles=8'), 9)):
+             ('path=fpga-pipeline', 'center=f800', 'triangles=8'), 9))
+    for name, arguments, expected, expected_commands in cases:
         commands_before = int(counters.read_text())
         result = subprocess.run([str(binary), str(cards[0]), *arguments],
                                 capture_output=True, text=True,
@@ -112,7 +123,7 @@ with tempfile.TemporaryDirectory(prefix='tarugx-gallium-test-') as directory:
                                 capture_output=True, text=True,
                                 timeout=60, env=environment)
         if (result.returncode or expected_path not in result.stdout or
-                'center=ffe0' not in result.stdout):
+                'center=ffff' not in result.stdout):
             print(result.stdout, end='')
             print(result.stderr, end='')
             print(f'TARUGX_GALLIUM_{{name.upper()}}_FAILED')

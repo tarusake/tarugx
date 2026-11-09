@@ -15,6 +15,7 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "softpipe/sp_context.h"
+#include "softpipe/sp_tile_cache.h"
 
 #include "tarugx_drm.h"
 #include "tarugx_winsys.h"
@@ -39,6 +40,7 @@ struct tarugx_context_state {
     struct softpipe_context *softpipe;
     struct vbuf_render *backend;
     struct tarugx_winsys winsys;
+    bool disable_acceleration;
     enum mesa_prim primitive;
     void (*set_primitive)(struct vbuf_render *, enum mesa_prim);
     void (*draw_arrays)(struct vbuf_render *, unsigned, unsigned);
@@ -76,6 +78,19 @@ tarugx_find_context(struct pipe_context *context, struct vbuf_render *backend)
             return &tarugx_contexts[i];
     }
     return NULL;
+}
+
+static void
+tarugx_flush_softpipe_render_cache(struct softpipe_context *softpipe)
+{
+    unsigned i;
+
+    for (i = 0; i < softpipe->framebuffer.nr_cbufs; i++)
+        if (softpipe->cbuf_cache[i])
+            sp_flush_tile_cache(softpipe->cbuf_cache[i]);
+    if (softpipe->zsbuf_cache)
+        sp_flush_tile_cache(softpipe->zsbuf_cache);
+    softpipe->dirty_render_cache = false;
 }
 
 static bool
@@ -143,8 +158,11 @@ tarugx_texture_state(struct tarugx_context_state *state,
     struct softpipe_context *softpipe = state->softpipe;
     struct pipe_sampler_view *view;
     const struct pipe_sampler_state *sampler;
-    struct winsys_handle handle = { .type = WINSYS_HANDLE_TYPE_KMS };
     struct pipe_resource *resource;
+    struct pipe_transfer *transfer = NULL;
+    struct pipe_box box;
+    const void *pixels;
+    bool uploaded;
 
     *texture = NULL;
     *u_scale = 1.0f;
@@ -171,10 +189,7 @@ tarugx_texture_state(struct tarugx_context_state *state,
     resource = view->texture;
     if (!resource || !resource->width0 || !resource->height0 ||
         (resource->width0 & 1) || resource->depth0 != 1 ||
-        resource->array_size != 1 || resource->last_level ||
-        !state->context->screen->resource_get_handle(
-            state->context->screen, state->context, resource, &handle,
-            0))
+        resource->array_size != 1 || resource->last_level)
         return false;
     if (!state->texture.handle || state->texture.width != resource->width0 ||
         state->texture.height != resource->height0) {
@@ -184,8 +199,20 @@ tarugx_texture_state(struct tarugx_context_state *state,
                                           &state->texture))
             return false;
     }
-    if (!tarugx_winsys_upload_texture(&state->winsys, handle.handle,
-                                      &state->texture))
+    box = (struct pipe_box) {
+        .width = resource->width0,
+        .height = resource->height0,
+        .depth = 1,
+    };
+    pixels = state->context->texture_map(state->context, resource, 0,
+                                         PIPE_MAP_READ, &box, &transfer);
+    if (!pixels || !transfer)
+        return false;
+    uploaded = tarugx_winsys_upload_texture(&state->winsys, pixels,
+                                             transfer->stride,
+                                             &state->texture);
+    state->context->texture_unmap(state->context, transfer);
+    if (!uploaded)
         return false;
     if (!sampler->unnormalized_coords) {
         *u_scale = resource->width0;
@@ -327,6 +354,8 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
                 tarugx_colors_equal(v0 + 4, v2 + 4);
     int32_t minimum_x;
     int32_t minimum_y;
+    int32_t maximum_x;
+    int32_t maximum_y;
     double sample_x;
     double sample_y;
     double determinant;
@@ -359,7 +388,10 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
         .y2 = y2,
         .color = tarugx_rgb888(v0 + 4),
     };
-    if (flat && !depth_enabled)
+    /* A flat color still needs the interpolation setup below when UVs are
+     * present.  Returning here would submit a textured command with all UV
+     * fields left at zero, sampling texel (0, 0) for the whole triangle. */
+    if (flat && !depth_enabled && !textured)
         return true;
     if ((!flat &&
          (!tarugx_winsys_supports_triangle_interpolation(&state->winsys) ||
@@ -376,6 +408,8 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
      * then evaluate the initial color at the first clipped pixel center. */
     minimum_x = MIN2(MIN2(x0, x1), x2);
     minimum_y = MIN2(MIN2(y0, y1), y2);
+    maximum_x = MAX2(MAX2(x0, x1), x2);
+    maximum_y = MAX2(MAX2(y0, y1), y2);
     sample_x = (minimum_x < 0 ? 0 : minimum_x >> 8) + 0.5;
     sample_y = (minimum_y < 0 ? 0 : minimum_y >> 8) + 0.5;
     if (sample_x >= surface->width || sample_y >= surface->height)
@@ -448,17 +482,48 @@ tarugx_prepare_triangle(struct tarugx_context_state *state,
         double dv_dy = ((v1[0] - v0[0]) * (v2_tex - v0_tex) -
                         (v2[0] - v0[0]) * (v1_tex - v0_tex)) /
                        determinant;
-        double initial_u = u0 + du_dx * (sample_x - v0[0]) +
-                           du_dy * (sample_y - v0[1]);
-        double initial_v = v0_tex + dv_dx * (sample_x - v0[0]) +
-                           dv_dy * (sample_y - v0[1]);
+        double quantized_du_dx;
+        double quantized_du_dy;
+        double quantized_dv_dx;
+        double quantized_dv_dy;
+        double center_x;
+        double center_y;
+        double center_u;
+        double center_v;
+        double initial_u;
+        double initial_v;
+        int32_t start_x = minimum_x < 0 ? 0 : minimum_x >> 8;
+        int32_t start_y = minimum_y < 0 ? 0 : minimum_y >> 8;
+        int32_t end_x = MIN2((int32_t)surface->width,
+                             (maximum_x + 255) >> 8);
+        int32_t end_y = MIN2((int32_t)surface->height,
+                             (maximum_y + 255) >> 8);
 
-        if (!tarugx_fixed_16_8(initial_u, &triangle->u) ||
-            !tarugx_fixed_16_8(initial_v, &triangle->v) ||
+        if (start_x >= end_x || start_y >= end_y ||
             !tarugx_pack_depth_gradient(du_dx, &triangle->gradient_u_x) ||
             !tarugx_pack_depth_gradient(du_dy, &triangle->gradient_u_y) ||
             !tarugx_pack_depth_gradient(dv_dx, &triangle->gradient_v_x) ||
             !tarugx_pack_depth_gradient(dv_dy, &triangle->gradient_v_y))
+            return false;
+        quantized_du_dx = triangle->gradient_u_x / 256.0;
+        quantized_du_dy = triangle->gradient_u_y / 256.0;
+        quantized_dv_dx = triangle->gradient_v_x / 256.0;
+        quantized_dv_dy = triangle->gradient_v_y / 256.0;
+        center_x = ((double)start_x + end_x - 1.0) * 0.5;
+        center_y = ((double)start_y + end_y - 1.0) * 0.5;
+        center_u = u0 + du_dx * (center_x + 0.5 - v0[0]) +
+                   du_dy * (center_y + 0.5 - v0[1]);
+        center_v = v0_tex + dv_dx * (center_x + 0.5 - v0[0]) +
+                   dv_dy * (center_y + 0.5 - v0[1]);
+        /* The hardware ABI stores UV gradients as signed 16.8.  Anchor the
+         * quantized plane at the bounding-box centre so rounding error is
+         * shared across both sides instead of accumulating from one edge. */
+        initial_u = center_u - quantized_du_dx * (center_x - start_x) -
+                    quantized_du_dy * (center_y - start_y);
+        initial_v = center_v - quantized_dv_dx * (center_x - start_x) -
+                    quantized_dv_dy * (center_y - start_y);
+        if (!tarugx_fixed_16_8(initial_u, &triangle->u) ||
+            !tarugx_fixed_16_8(initial_v, &triangle->v))
             return false;
     }
     return true;
@@ -581,7 +646,8 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
     unsigned stride;
     unsigned i;
 
-    if (!tarugx_target_surface(state, &surface) ||
+    if (state->disable_acceleration ||
+        !tarugx_target_surface(state, &surface) ||
         !tarugx_texture_state(state, &texture, &u_scale, &v_scale) ||
         !tarugx_draw_state_supported(state, &surface, texture != NULL))
         return false;
@@ -672,7 +738,11 @@ tarugx_draw_vertices(struct tarugx_context_state *state,
         unsigned batch_count = MIN2(TARUGX_MAX_BATCH_TRIANGLES,
                                     prepared_count - i);
 
-        bool submitted = texture ?
+        bool submitted;
+
+        if (!i)
+            tarugx_flush_softpipe_render_cache(state->softpipe);
+        submitted = texture ?
             tarugx_winsys_submit_textured_triangles(
                 &state->winsys, &surface, texture, triangles + i,
                 batch_count) :
@@ -747,9 +817,11 @@ tarugx_clear(struct pipe_context *context, unsigned buffers,
     struct tarugx_context_state *state = tarugx_find_context(context, NULL);
     struct tarugx_winsys_surface surface;
 
-    if (state && !scissor && color &&
+    if (state && !state->disable_acceleration && !scissor && color &&
         tarugx_target_surface(state, &surface)) {
         bool submitted = false;
+
+        tarugx_flush_softpipe_render_cache(state->softpipe);
 
         if (buffers == (PIPE_CLEAR_COLOR0 | PIPE_CLEAR_DEPTH) &&
             surface.depth && state->softpipe->framebuffer.zsbuf &&
@@ -832,6 +904,7 @@ tarugx_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
     state->context = context;
     state->softpipe = softpipe_context(context);
     state->backend = state->softpipe->vbuf_backend;
+    state->disable_acceleration = getenv("TARUGX_DISABLE_ACCEL") != NULL;
     state->set_primitive = state->backend->set_primitive;
     state->draw_arrays = state->backend->draw_arrays;
     state->draw_elements = state->backend->draw_elements;
