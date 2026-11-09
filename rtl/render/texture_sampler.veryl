@@ -48,7 +48,13 @@ module texture_sampler (
     var width: logic<16>;
     var height: logic<16>;
     var config_ok: logic;
+    // These registers form the physical timing boundary between the sampler
+    // control FSM and the shared DDR request/response network.  Preserve both
+    // sides so synthesis cannot fold the state decode back into that network.
+    #[sv("syn_preserve=1, syn_keep=1")]
     var request_valid: logic;
+    #[sv("syn_preserve=1, syn_keep=1")]
+    var response_ready: logic;
     var pending_u: signed logic<24>;
     var pending_v: signed logic<24>;
     var texel_x: logic<16>;
@@ -82,15 +88,15 @@ module texture_sampler (
     assign color_valid   = state == State::Present;
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
-    // Keep the FSM decode local.  This dedicated register may be replicated
-    // by Gowin for the wide DDR admission fanout without replicating or
-    // stretching the sampler state register itself.
+    // Keep all FSM decode local.  These dedicated registers may be replicated
+    // by Gowin for the wide DDR fanout without stretching the sampler state
+    // register into the memory arbiter and DDR adapter.
     assign mem_valid     = request_valid;
     assign mem_write     = 0;
     assign mem_addr      = word_addr;
     assign mem_wdata     = 0;
     assign mem_wstrb     = 0;
-    assign mem_rsp_ready = state == State::ReadWait;
+    assign mem_rsp_ready = response_ready;
     assign color = {8'hff, expand5(pixel[15:11]),
         expand6(pixel[10:5]), expand5(pixel[4:0])};
 
@@ -103,6 +109,7 @@ module texture_sampler (
             height      = 0;
             config_ok   = 0;
             request_valid = 0;
+            response_ready = 0;
             pending_u   = 0;
             pending_v   = 0;
             texel_x     = 0;
@@ -150,11 +157,13 @@ module texture_sampler (
                 State::ReadIssue: {
                     if mem_ready {
                         request_valid = 0;
+                        response_ready = 1;
                         state = State::ReadWait;
                     }
                 }
                 State::ReadWait: {
                     if mem_rsp_valid {
+                        response_ready = 0;
                         if mem_rsp_error {
                             state = State::Fault;
                         } else {
@@ -177,6 +186,7 @@ module texture_sampler (
                 height = texture_height;
                 config_ok = 0;
                 request_valid = 0;
+                response_ready = 0;
             }
         }
     }
