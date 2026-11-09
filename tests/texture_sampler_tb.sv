@@ -34,7 +34,9 @@ module texture_sampler_tb;
   // Clamp negative U and too-large V to (0,3).
   sample(-24'sh000100,24'sh000900,24'h001020,8,16'h07e0,32'hff00ff00);
   mem_ready=1;sample_u=0;sample_v=0;sample_valid=1;tick();sample_valid=0;
-  wait(mem_rsp_ready);mem_rsp_error=1;mem_rsp_valid=1;tick();mem_rsp_valid=0;mem_rsp_error=0;
+  wait(mem_valid);tick();
+  assert(mem_rsp_ready)else $fatal(1,"texture response must remain ready");
+  mem_rsp_error=1;mem_rsp_valid=1;tick();mem_rsp_valid=0;mem_rsp_error=0;
   assert(fault&&!sample_ready)else $fatal(1,"texture response error");
   configure();texture_stride=8;configure();sample_valid=1;tick();sample_valid=0;tick();
   assert(fault)else $fatal(1,"invalid texture shape");
