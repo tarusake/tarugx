@@ -40,6 +40,7 @@ module fragment_writer (
     enum State: logic<4> {
         Idle,
         RowAddress,
+        AddressCheck,
         PixelAddress,
         DepthReadIssue,
         DepthReadWait,
@@ -70,6 +71,7 @@ module fragment_writer (
     var pending_depth: logic<16>;
     var pending_in_bounds: logic;
     var row_offset: logic<64>;
+    var address_ok: logic;
 
     let calculated_row_offset: logic<64> =
         (pending_y as 64) * (target_stride as 64);
@@ -140,6 +142,7 @@ module fragment_writer (
             pending_depth = 0;
             pending_in_bounds = 0;
             row_offset = 0;
+            address_ok = 0;
             writes    = 0;
         } else {
             case state {
@@ -155,10 +158,17 @@ module fragment_writer (
                 }
                 State::RowAddress: {
                     row_offset = calculated_row_offset;
+                    state = State::AddressCheck;
+                }
+                State::AddressCheck: {
+                    // Register the full 64-bit bounds decision before it
+                    // controls the address-register enables.  This breaks the
+                    // multiplier/add/compare-to-CE path seen after routing.
+                    address_ok = fragment_ok;
                     state = State::PixelAddress;
                 }
                 State::PixelAddress: {
-                        if fragment_ok {
+                        if address_ok {
                             word_addr = {pixel_address[23:5], 5'b0};
                             lane      = pixel_address[4:1];
                             pixel     = {
