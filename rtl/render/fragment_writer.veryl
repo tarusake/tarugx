@@ -43,6 +43,7 @@ module fragment_writer (
         PixelAddress,
         DepthReadIssue,
         DepthReadWait,
+        DepthCompare,
         ColorIssue,
         ColorWait,
         DepthWriteIssue,
@@ -50,12 +51,14 @@ module fragment_writer (
         Fault,
     }
     var state: State;
+    var request_valid: logic;
     var word_addr: logic<24>;
     var lane: logic<4>;
     var pixel: logic<16>;
     var depth_word_addr: logic<24>;
     var depth_lane: logic<4>;
     var depth_value: logic<16>;
+    var stored_depth: logic<16>;
     var depth_active: logic;
     var depth_write_active: logic;
     var depth_target_base: logic<32>;
@@ -95,8 +98,8 @@ module fragment_writer (
     assign fragment_ready = state == State::Idle;
     assign busy          = (state != State::Idle) && (state != State::Fault);
     assign fault         = state == State::Fault;
-    assign mem_valid = (state == State::DepthReadIssue)
-        || (state == State::ColorIssue) || (state == State::DepthWriteIssue);
+    // Isolate the wide memory-admission fanout from the FSM state bits.
+    assign mem_valid = request_valid;
     assign mem_write = state != State::DepthReadIssue;
     assign mem_rsp_ready = (state == State::DepthReadWait)
         || (state == State::ColorWait) || (state == State::DepthWriteWait);
@@ -118,12 +121,14 @@ module fragment_writer (
     always_ff {
         if_reset {
             state     = State::Idle;
+            request_valid = 0;
             word_addr = 0;
             lane      = 0;
             pixel     = 0;
             depth_word_addr = 0;
             depth_lane = 0;
             depth_value = 0;
+            stored_depth = 0;
             depth_active = 0;
             depth_write_active = 0;
             depth_target_base = 0;
@@ -164,6 +169,7 @@ module fragment_writer (
                             depth_word_addr = {depth_address[23:5], 5'b0};
                             depth_lane = depth_address[4:1];
                             depth_value = pending_depth;
+                            request_valid = 1;
                             state = if depth_active ? State::DepthReadIssue
                                 : State::ColorIssue;
                         } else {
@@ -172,6 +178,7 @@ module fragment_writer (
                 }
                 State::DepthReadIssue: {
                     if mem_ready {
+                        request_valid = 0;
                         state = State::DepthReadWait;
                     }
                 }
@@ -179,16 +186,26 @@ module fragment_writer (
                     if mem_rsp_valid {
                         if mem_rsp_error {
                             state = State::Fault;
-                        } else if depth_pass(depth_compare, depth_value,
-                            mem_rsp_data[(depth_lane as 8) * 8'd16+:16]) {
-                            state = State::ColorIssue;
                         } else {
-                            state  = State::Idle;
+                            stored_depth =
+                                mem_rsp_data[(depth_lane as 8) * 8'd16+:16];
+                            state = State::DepthCompare;
                         }
                     }
                 }
+                State::DepthCompare: {
+                    if depth_pass(depth_compare, depth_value, stored_depth) {
+                        request_valid = 1;
+                        state = State::ColorIssue;
+                    } else {
+                        state = State::Idle;
+                    }
+                }
                 State::ColorIssue: {
-                    if mem_ready { state = State::ColorWait; }
+                    if mem_ready {
+                        request_valid = 0;
+                        state = State::ColorWait;
+                    }
                 }
                 State::ColorWait: {
                     if mem_rsp_valid {
@@ -197,6 +214,7 @@ module fragment_writer (
                         } else if depth_active && depth_write_active {
                             lane  = depth_lane;
                             pixel = depth_value;
+                            request_valid = 1;
                             state = State::DepthWriteIssue;
                         } else {
                             writes = writes + 32'd1;
@@ -205,7 +223,10 @@ module fragment_writer (
                     }
                 }
                 State::DepthWriteIssue: {
-                    if mem_ready { state = State::DepthWriteWait; }
+                    if mem_ready {
+                        request_valid = 0;
+                        state = State::DepthWriteWait;
+                    }
                 }
                 State::DepthWriteWait: {
                     if mem_rsp_valid {
@@ -220,6 +241,7 @@ module fragment_writer (
                 State::Fault: {
                     if clear {
                         state  = State::Idle;
+                        request_valid = 0;
                         writes = 0;
                     }
                 }
@@ -231,6 +253,7 @@ module fragment_writer (
                 writes = 0;
             }
             if clear {
+                request_valid = 0;
                 target_ok = target_validated;
                 depth_active = depth_enable;
                 depth_write_active = depth_write_enable;
