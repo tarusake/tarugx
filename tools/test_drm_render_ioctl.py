@@ -70,6 +70,7 @@ try:
     subprocess.run(['modprobe', '-r', 'tarugx'], check=True, timeout=30)
     subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
     subprocess.run(['modprobe', 'drm_dma_helper'], check=True, timeout=30)
+    subprocess.run(['modprobe', 'drm_exec'], check=True, timeout=30)
     module = work/'tarugx.ko'
     if keep_driver:
         persistent = Path('/run/tarugx-worktree')
@@ -180,7 +181,8 @@ try:
                              'direct_scanouts', 'dma_profile',
                              'dma_error_code')}}
     assert int(counters['render_commands']) == \
-        (578 if gpu_version >= 0x00010006 else
+        (581 if gpu_version >= 0x00010007 else
+         578 if gpu_version >= 0x00010006 else
          573 if gpu_version >= 0x00010004 else
          570 if gpu_version >= 0x00010003 else
          566 if gpu_version >= 0x00010002 else 568), counters
@@ -226,6 +228,7 @@ finally:
     if not keep_driver and not Path('/sys/module/tarugx').exists():
         subprocess.run(['modprobe', 'gpu_sched'], check=True, timeout=30)
         subprocess.run(['modprobe', 'drm_dma_helper'], check=True, timeout=30)
+        subprocess.run(['modprobe', 'drm_exec'], check=True, timeout=30)
         subprocess.run(['insmod', str(old_copy)], check=True, timeout=30)
     if keep_driver:
         subprocess.run(['systemctl', 'start', 'tarugx-main-display'],
